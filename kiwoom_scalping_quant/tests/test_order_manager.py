@@ -1,6 +1,7 @@
 import pytest
 from core.order_manager import OrderManager
 from returns.result import Success, Failure
+from returns.io import IOSuccess, IOFailure
 
 @pytest.fixture
 def order_manager():
@@ -15,9 +16,9 @@ async def test_send_order_success(order_manager, mocker):
     # 임의로 time.time을 모킹하여 항상 같은 ID 반환 유도 가능
     result = await order_manager.send_order("BUY", "005930", 50000, 10)
 
-    # future_safe 적용 시 result는 Success/Failure 인스턴스
-    assert isinstance(result, Success)
-    order_id = result.unwrap()
+    # future_safe 적용 시 result는 IOSuccess/IOFailure 인스턴스
+    assert isinstance(result, IOSuccess)
+    order_id = result.unwrap()._inner_value
     assert order_id.startswith("ORD_")
     assert order_id in order_manager.unexecuted_orders
 
@@ -45,5 +46,5 @@ async def test_send_order_failure(order_manager, mocker):
 
     result = await order_manager.send_order("BUY", "005930", 50000, 10)
 
-    assert isinstance(result, Failure)
-    assert isinstance(result.failure(), ConnectionError)
+    assert isinstance(result, IOFailure)
+    assert isinstance(result.failure()._inner_value, ConnectionError)

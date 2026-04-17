@@ -3,6 +3,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from typing import Dict, Any, List
 import asyncio
 from returns.result import Success, Failure
+from returns.io import IOSuccess, IOFailure
 
 class LiveDashboardViewModel(QObject):
     """
@@ -106,15 +107,20 @@ class AssetDataViewModel(QObject):
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
         result = await self.universe_manager.build_top_n_universe("DUMMY_TOKEN", top_n=20)
 
-        if isinstance(result, Failure):
-            self.fetch_failed.emit(f"유니버스 생성 실패: {result.failure()}")
+        # @future_safe returns IOFailure on exception and IOSuccess on success
+        if isinstance(result, IOFailure):
+            # IOFailure.failure() returns the unwrapped exception inside an IO, so we use _inner_value or str()
+            err_msg = str(result.failure()._inner_value if hasattr(result.failure(), '_inner_value') else result.failure())
+            self.fetch_failed.emit(f"유니버스 생성 실패: {err_msg}")
             return
 
-        # unwrap() 호출 시 반환되는 값은 List[Dict[str, Any]] 입니다.
-        top_stocks = result.unwrap()
+        # unwrap() on IOSuccess returns an IO object. We extract the raw list with _inner_value
+        try:
+            top_stocks = result.unwrap()._inner_value
+        except Exception as e:
+            top_stocks = []
 
-        # 만약 unwrap()한 결과가 None 이라면 빈 리스트로 처리합니다.
-        if top_stocks is None:
+        if not isinstance(top_stocks, list):
             top_stocks = []
 
         # 기존 심볼들 덮어쓰기 (모두 삭제 후 추가)
@@ -188,11 +194,18 @@ class AssetDataViewModel(QObject):
 
             fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
 
-            if isinstance(fetch_result, Failure):
-                self.symbol_update_failed.emit(f"[{symbol}] 수집 실패: {fetch_result.failure()}")
+            if isinstance(fetch_result, IOFailure):
+                err_msg = str(fetch_result.failure()._inner_value if hasattr(fetch_result.failure(), '_inner_value') else fetch_result.failure())
+                self.symbol_update_failed.emit(f"[{symbol}] 수집 실패: {err_msg}")
                 continue # 한 종목이 실패해도 다음 종목으로 계속 진행
 
-            data_list = fetch_result.unwrap()
+            try:
+                data_list = fetch_result.unwrap()._inner_value
+                if not isinstance(data_list, list):
+                    data_list = []
+            except Exception:
+                data_list = []
+
             total_data_collected += len(data_list)
 
             self.sig_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100))
