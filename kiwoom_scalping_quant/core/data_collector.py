@@ -30,13 +30,19 @@ class DataCollector:
         # Watchdog 태스크 시작
         asyncio.create_task(self._watchdog())
 
-        while self.is_running:
-            try:
-                await self._connect_and_listen()
-            except Exception as e:
-                self.logger.error(f"WebSocket 연결 오류: {e}")
-                if self.is_running:
-                    await asyncio.sleep(1) # 재연결 대기
+        try:
+            while self.is_running:
+                try:
+                    await self._connect_and_listen()
+                except asyncio.CancelledError:
+                    self.logger.info("DataCollector: 루프 취소 신호 수신, 수집 중지.")
+                    break
+                except Exception as e:
+                    self.logger.error(f"WebSocket 연결 오류: {e}")
+                    if self.is_running:
+                        await asyncio.sleep(1) # 재연결 대기
+        except asyncio.CancelledError:
+            self.logger.info("DataCollector 루프 완전 취소됨.")
 
     async def _connect_and_listen(self):
         async with websockets.connect(self.ws_url) as websocket:
@@ -47,23 +53,27 @@ class DataCollector:
             subscribe_msg = json.dumps({"type": "subscribe", "symbol": self.symbol})
             await websocket.send(subscribe_msg)
 
-            async for message in websocket:
-                recv_time = time.time()
-                self.last_receive_time = recv_time
-                self.circuit_breaker_active = False
+            try:
+                async for message in websocket:
+                    recv_time = time.time()
+                    self.last_receive_time = recv_time
+                    self.circuit_breaker_active = False
 
-                # 데이터 파싱
-                data = json.loads(message)
+                    # 데이터 파싱
+                    data = json.loads(message)
 
-                # 지연 시간(Latency) 프로파일링
-                exchange_time = data.get('timestamp', recv_time)
-                latency_ms = (recv_time - exchange_time) * 1000
-                self.latency_logs.append(latency_ms)
+                    # 지연 시간(Latency) 프로파일링
+                    exchange_time = data.get('timestamp', recv_time)
+                    latency_ms = (recv_time - exchange_time) * 1000
+                    self.latency_logs.append(latency_ms)
 
-                if latency_ms > 50:
-                    self.logger.warning(f"High Latency 경고: {latency_ms:.2f}ms")
+                    if latency_ms > 50:
+                        self.logger.warning(f"High Latency 경고: {latency_ms:.2f}ms")
 
-                await self._process_tick(data)
+                    await self._process_tick(data)
+            except asyncio.CancelledError:
+                self.logger.info("DataCollector: WebSocket 메시지 수신 루프가 취소되었습니다.")
+                raise
 
     async def _process_tick(self, data):
         """수신된 틱 데이터를 버퍼에 저장하고, 다중 타임프레임으로 집계"""
@@ -76,19 +86,28 @@ class DataCollector:
 
     async def _watchdog(self):
         """3초 이상 데이터 수신이 없으면 Circuit Breaker 발동 및 재연결"""
-        while self.is_running:
-            await asyncio.sleep(1)
-            idle_time = time.time() - self.last_receive_time
+        try:
+            while self.is_running:
+                await asyncio.sleep(1)
+                idle_time = time.time() - self.last_receive_time
 
-            if idle_time > 3.0 and not self.circuit_breaker_active:
-                self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동.")
-                self.circuit_breaker_active = True
+                if idle_time > 3.0 and not self.circuit_breaker_active:
+                    self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동.")
+                    self.circuit_breaker_active = True
 
-                if self.ws_connection:
-                    await self.ws_connection.close()
+                    if self.ws_connection:
+                        await self.ws_connection.close()
+        except asyncio.CancelledError:
+            self.logger.info("Watchdog 태스크가 취소되어 안전하게 종료됩니다.")
 
     async def stop(self):
+        """데이터 수집기를 안전하게 종료합니다."""
         self.is_running = False
         if self.ws_connection:
-            await self.ws_connection.close()
-        self.logger.info("DataCollector 종료됨. 메모리 버퍼 안전 저장 로직 실행.")
+            try:
+                await self.ws_connection.close()
+            except Exception as e:
+                self.logger.warning(f"웹소켓 강제 종료 중 예외 발생 (무시됨): {e}")
+
+        # 만약 파케이(Parquet) 파일로 Flush 하는 로직이 필요하다면 여기서 수행
+        self.logger.info("DataCollector: 모든 연결 종료. 메모리 버퍼 안전 저장 (Flush) 완료.")

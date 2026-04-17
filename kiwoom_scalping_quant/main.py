@@ -45,10 +45,9 @@ class QuantSystem:
 
         # GUI 초기화: ViewModel만 주입
         self.main_window = MainWindow(self.view_model, self)
-        self.is_running = False
+        self.shutdown_event = asyncio.Event()
 
     async def start(self):
-        self.is_running = True
         self.main_window.show()
 
         # 백그라운드 태스크 시작
@@ -57,22 +56,44 @@ class QuantSystem:
         self.view_model_task = asyncio.create_task(self.view_model.start_polling())
 
         try:
-            # 무한 루프로 유지하되, GUI가 종료되면 빠져나옴
-            while self.is_running:
-                await asyncio.sleep(0.1)
+            # 종료 시그널이 올 때까지 이벤트 루프 유지
+            await self.shutdown_event.wait()
         finally:
-            # 루프를 빠져나오면 안전하게 데이터 수집기를 종료
-            await self.data_collector.stop()
+            # 루프를 빠져나올 때 수행될 정리
+            print("시스템: 메인 루프 종료됨.")
 
-    def stop(self):
-        """시스템 종료 로직 (GUI closeEvent에서 호출됨)"""
-        self.is_running = False
+    async def stop(self):
+        """비동기 파이프라인 안전 종료 로직 (Graceful Shutdown)"""
+        print("시스템: 종료 파이프라인 가동...")
+
+        # 1. 뷰모델 갱신 중지
         self.view_model.stop()
+
+        # 2. 미체결 주문 일괄 취소 (에이전트 종료 처리)
+        print("시스템: 미체결 주문 전체 취소 중...")
+        await self.order_manager.cancel_all_orders()
+
+        # 3. 데이터 수집 루프 완전 정지 (WebSocket 및 Watchdog 취소됨)
+        print("시스템: DataCollector 및 통신 종료 중...")
+        await self.data_collector.stop()
+
+        # 4. 백그라운드 태스크 Cancel
         if hasattr(self, 'view_model_task') and not self.view_model_task.done():
             self.view_model_task.cancel()
         if hasattr(self, 'collector_task') and not self.collector_task.done():
             self.collector_task.cancel()
-        asyncio.create_task(self.influx_client.close())
+
+        # 5. InfluxDB 등 DB 커넥션 종료 및 잔여 버퍼 Flush
+        print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
+        await self.influx_client.close()
+
+        # 6. 최종 윈도우/앱 정리 및 종료
+        print("시스템: 모든 정리가 완료되었습니다. 프로그램을 종료합니다.")
+        from PyQt6.QtWidgets import QApplication
+
+        # 메인 루프를 끝내기 위해 이벤트 세트
+        self.shutdown_event.set()
+        QApplication.quit()
 
 def main():
     app = QApplication(sys.argv)

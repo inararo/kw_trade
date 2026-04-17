@@ -85,6 +85,12 @@ class MainWindow(QMainWindow):
         # 차후 ViewModel이나 DataCollector에서 latency 시그널을 연결하여 갱신 가능
 
     def closeEvent(self, event):
-        """GUI 창 닫기 버튼 클릭 시 안전한 종료 트리거"""
-        self.system.stop()
-        event.accept()
+        """GUI 창 닫기 버튼 클릭 시 비동기 종료 파이프라인 트리거"""
+        event.ignore() # 즉시 닫히지 않도록 무시
+        self.hide()    # 창부터 숨김 처리
+        self.status_bar.showMessage("안전하게 종료 중입니다...")
+        print("GUI: 종료 시그널 접수, 시스템 안전 종료 시작...")
+
+        # 시스템의 비동기 종료 루틴을 백그라운드 태스크로 실행
+        import asyncio
+        asyncio.create_task(self.system.stop())
