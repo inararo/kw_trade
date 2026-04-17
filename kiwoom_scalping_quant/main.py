@@ -3,37 +3,11 @@ import os
 import asyncio
 import yaml
 from dotenv import load_dotenv
-from PyQt6.QtWidgets import QApplication, QMainWindow, QLabel, QVBoxLayout, QWidget
-from qasync import QEventLoop, asyncSlot
+from PyQt6.QtWidgets import QApplication
+from qasync import QEventLoop
 
 from core.container import Container
-from gui.components.orderbook_ladder import OrderbookLadderWidget
-
-class MainWindow(QMainWindow):
-    def __init__(self, view_model, system):
-        super().__init__()
-        self.system = system
-        self.setWindowTitle("Kiwoom Scalping Quant - Dashboard")
-        self.setGeometry(100, 100, 400, 300)
-
-        # MVVM 패턴: View는 ViewModel만 알고, Core 객체를 직접 참조하지 않음
-        self.view_model = view_model
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout(central_widget)
-
-        label = QLabel("스캘핑 퀀트 시스템 실행 중...", self)
-        layout.addWidget(label)
-
-        # Orderbook Widget을 추가하고 ViewModel 주입
-        self.orderbook_widget = OrderbookLadderWidget(self.view_model)
-        layout.addWidget(self.orderbook_widget)
-
-    def closeEvent(self, event):
-        """GUI 창 닫기 버튼 클릭 시 안전한 종료 트리거"""
-        self.system.stop()
-        event.accept()
+from gui.main_window import MainWindow
 
 class QuantSystem:
     def __init__(self):
@@ -62,6 +36,7 @@ class QuantSystem:
         self.container.wire(modules=[__name__])
 
         # 컨테이너를 통해 코어 객체 생성
+        self.influx_client = self.container.influx_client()
         self.order_manager = self.container.order_manager()
         self.data_collector = self.container.data_collector()
 
@@ -77,6 +52,7 @@ class QuantSystem:
         self.main_window.show()
 
         # 백그라운드 태스크 시작
+        self.influx_task = asyncio.create_task(self.influx_client.start())
         self.collector_task = asyncio.create_task(self.data_collector.start())
         self.view_model_task = asyncio.create_task(self.view_model.start_polling())
 
@@ -96,6 +72,7 @@ class QuantSystem:
             self.view_model_task.cancel()
         if hasattr(self, 'collector_task') and not self.collector_task.done():
             self.collector_task.cancel()
+        asyncio.create_task(self.influx_client.close())
 
 def main():
     app = QApplication(sys.argv)

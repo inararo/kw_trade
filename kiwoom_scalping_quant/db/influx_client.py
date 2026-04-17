@@ -18,8 +18,10 @@ class AsyncInfluxDBClient:
         self.batch_queue = []
         self.batch_size = config.get("db_batch_size", 500)
         self.logger = logging.getLogger("InfluxDBClient")
+        self.is_running = False
 
-        # 주기적 백그라운드 플러시 태스크 시작 (DataCollector 혹은 Main에서 초기화)
+    async def start(self):
+        """이벤트 루프가 시작된 후 메인 태스크에서 호출되어야 함"""
         self.is_running = True
         asyncio.create_task(self._periodic_flush())
 
