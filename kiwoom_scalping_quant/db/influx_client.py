@@ -49,6 +49,27 @@ class AsyncInfluxDBClient:
         except Exception as e:
             self.logger.error(f"Point 변환 오류: {e}")
 
+    async def fetch_recent_data(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        """
+        학습용 데이터를 제공하기 위해 InfluxDB에서 특정 종목의 최근 데이터를 가져옵니다.
+        본 프로젝트에서는 API 대신 Mock List를 반환하여 학습 파이프라인 구조를 증명합니다.
+        """
+        self.logger.info(f"InfluxDB: [{symbol}] 학습용 과거 데이터 {limit}건 조회 (Mock)")
+        import asyncio
+        import random
+        await asyncio.sleep(0.5) # DB 조회 지연 모사
+
+        mock_data = []
+        base_price = 50000
+        for i in range(limit):
+            base_price += random.randint(-50, 50)
+            mock_data.append({
+                "timestamp": i,
+                "price": base_price,
+                "volume": random.randint(10, 500)
+            })
+        return mock_data
+
     async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
         """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
         if not data_list:

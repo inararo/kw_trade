@@ -72,10 +72,23 @@ class TradingAgentWrapper:
             verbose=1
         )
 
-    def train(self, total_timesteps: int = 100000):
+    def train(self, total_timesteps: int = 100000, callbacks: list = None):
+        """
+        에이전트 학습을 실행합니다.
+        추가 콜백(예: GUI 모니터링, Early Stopping 등)을 리스트로 받아 통합 실행합니다.
+        """
         log_dir = self.config.get("model_save_dir", "./saved_models/")
-        callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
-        self.model.learn(total_timesteps=total_timesteps, callback=callback)
+        best_callback = SaveOnBestTrainingRewardCallback(check_freq=1000, log_dir=log_dir)
+
+        all_callbacks = [best_callback]
+        if callbacks:
+            all_callbacks.extend(callbacks)
+
+        self.model.learn(total_timesteps=total_timesteps, callback=all_callbacks)
+
+        # 학습 완료 후 최종 가중치 저장
+        final_path = os.path.join(log_dir, "final_model")
+        self.model.save(final_path)
 
     def load_weights(self, path: str):
         """GUI에서 모델을 동적으로 교체하기 위한 메서드"""

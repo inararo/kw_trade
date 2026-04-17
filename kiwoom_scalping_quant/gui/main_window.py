@@ -77,7 +77,10 @@ class MainWindow(QMainWindow):
 
         self.tab_asset = AssetDataManagerTab(asset_vm)
 
-        self.tab_ai = AITrainingStudioTab()
+        ai_vm = getattr(self.system, "ai_training_view_model", None)
+        if ai_vm is None and hasattr(self.system, "container"):
+            ai_vm = self.system.container.ai_training_view_model()
+        self.tab_ai = AITrainingStudioTab(ai_vm)
 
         settings_vm = getattr(self.system, "settings_view_model", None)
         if settings_vm is None and hasattr(self.system, "container"):

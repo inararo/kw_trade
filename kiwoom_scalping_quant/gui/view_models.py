@@ -219,6 +219,78 @@ class AssetDataViewModel(QObject):
         self.sig_status_updated.emit("모든 종목 수집 및 적재 완료")
         self.fetch_completed.emit(f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!")
 
+class AITrainingViewModel(QObject):
+    """
+    AI 학습을 관장하는 ViewModel.
+    Data Collector와 Env, Agent를 조립하고 QThread Worker를 통해 학습을 진행.
+    """
+    sig_training_started = pyqtSignal()
+    sig_training_progress = pyqtSignal(int, float, float) # step, reward, loss
+    sig_training_log = pyqtSignal(str)
+    sig_training_finished = pyqtSignal()
+    sig_error = pyqtSignal(str)
+
+    def __init__(self, config_manager, data_collector, order_manager, influx_client):
+        super().__init__()
+        self.config_manager = config_manager
+        self.data_collector = data_collector
+        self.order_manager = order_manager
+        self.influx_client = influx_client
+        self.worker = None
+
+    def start_training(self, total_timesteps: int, learning_rate: float):
+        """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
+        if self.worker and self.worker.isRunning():
+            self.sig_error.emit("이미 학습이 진행 중입니다.")
+            return
+
+        asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate))
+
+    async def _prepare_and_start_training(self, timesteps: int, lr: float):
+        self.sig_training_log.emit("1. InfluxDB에서 과거 학습 데이터 조회 중...")
+        # 임시로 유니버스의 첫 번째 종목 사용
+        symbols = self.config_manager.get_symbols()
+        target_sym = symbols[0].get("code", "005930") if symbols else "005930"
+
+        # 1. 데이터 조회 (Mock)
+        try:
+            historical_data = await self.influx_client.fetch_recent_data(target_sym, 1000)
+            self.sig_training_log.emit(f"   => {len(historical_data)} 건 조회 완료.")
+        except Exception as e:
+            self.sig_error.emit(f"데이터 조회 실패: {e}")
+            return
+
+        # 2. Env 생성 및 Agent 주입 (추후 상세화 시 DataFrame 전달)
+        from env.trading_env import ScalpingTradingEnv
+        from models.agent import TradingAgentWrapper
+        from gui.training_worker import TrainingWorker, TrainingSignals
+
+        self.sig_training_log.emit("2. RL Environment 생성 및 Agent 초기화...")
+        env = ScalpingTradingEnv(self.data_collector, self.order_manager, {"symbol": target_sym})
+
+        # 설정 업데이트 (LR 반영 등)
+        agent_config = {"seq_len": 10, "learning_rate": lr}
+        agent = TradingAgentWrapper(env, agent_config)
+
+        # 3. Worker 생성 및 실행
+        self.sig_training_log.emit("3. QThread 학습 워커 실행...")
+
+        signals = TrainingSignals()
+        signals.started.connect(lambda: self.sig_training_started.emit())
+        signals.progress_updated.connect(lambda s, r, l: self.sig_training_progress.emit(s, r, l))
+        signals.log_msg.connect(lambda m: self.sig_training_log.emit(m))
+        signals.finished.connect(lambda: self.sig_training_finished.emit())
+        signals.error.connect(lambda e: self.sig_error.emit(f"학습 워커 에러: {e}"))
+
+        self.worker = TrainingWorker(agent, timesteps, signals)
+        self.worker.start()
+
+    def stop_training(self):
+        """학습 중지 버튼 클릭 시"""
+        if self.worker and self.worker.isRunning():
+            self.sig_training_log.emit("학습 중지 요청 전송됨...")
+            self.worker.stop()
+
 class SettingsViewModel(QObject):
     """
     Settings 탭을 위한 ViewModel.
