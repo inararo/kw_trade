@@ -2,6 +2,8 @@ import asyncio
 import time
 import logging
 from typing import Dict, Any
+from returns.result import Result, Success, Failure
+from returns.future import FutureResult, future_safe
 
 class OrderManager:
     def __init__(self, config: Dict[str, Any], auth_manager=None):
@@ -28,30 +30,39 @@ class OrderManager:
 
         self.order_timestamps.append(time.time())
 
-    async def send_order(self, order_type: str, symbol: str, price: int, qty: int):
+    @future_safe
+    async def send_order(self, order_type: str, symbol: str, price: int, qty: int) -> str:
+        """
+        REST API를 통한 주문 발송 (매수/매도)
+        함수형 에러 처리(Result 패턴)를 사용하여 예외를 안전하게 감싸서 FutureResult로 반환.
+        """
         await self._throttle_order()
 
         async with self.order_semaphore:
-            try:
-                # 1. API 요청 전송 (aiohttp 등 사용)
-                temp_order_id = f"ORD_{int(time.time() * 1000)}"
+            # 1. API 요청 전송 (aiohttp 등 사용 로직 대체)
+            # if request_fails: raise Exception("API 연결 에러")
 
-                # 2. 미체결 주문 등록 (추후 t1301 통보로 확정됨)
-                self.unexecuted_orders[temp_order_id] = {
-                    'symbol': symbol,
-                    'type': order_type,
-                    'price': price,
-                    'qty': qty,
-                    'unexecuted_qty': qty,
-                    'timestamp': time.time()
-                }
+            temp_order_id = f"ORD_{int(time.time() * 1000)}"
 
-                self.logger.info(f"주문 접수 완료: {order_type} {qty}주 @ {price}원 (ID: {temp_order_id})")
-                return temp_order_id
+            # 2. 미체결 주문 등록
+            self.unexecuted_orders[temp_order_id] = {
+                'symbol': symbol,
+                'type': order_type,
+                'price': price,
+                'qty': qty,
+                'unexecuted_qty': qty,
+                'timestamp': time.time()
+            }
 
-            except Exception as e:
-                self.logger.error(f"주문 전송 실패: {e}")
-                return None
+            self.logger.info(f"주문 접수 완료: {order_type} {qty}주 @ {price}원 (ID: {temp_order_id})")
+            return temp_order_id
+
+    # 사용 예시: (외부에서 호출할 때)
+    # result: Result[str, Exception] = await order_manager.send_order("BUY", "005930", 50000, 10)
+    # if isinstance(result, Success):
+    #     order_id = result.unwrap()
+    # else:
+    #     error = result.failure()
 
     def update_execution_from_ws(self, execution_data: Dict[str, Any]):
         order_id = execution_data.get('order_id')

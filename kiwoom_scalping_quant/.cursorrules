@@ -1,0 +1,22 @@
+# Kiwoom Scalping Quant - AI Coding Guidelines & Rules
+# 이 프로젝트는 철저한 계층 분리와 클린 아키텍처를 지향합니다.
+# AI(Cursor/MCP)는 코드 작성 및 수정 시 아래 규칙을 엄격히 준수해야 합니다.
+
+## 1. 아키텍처 및 의존성 주입 (Dependency Injection)
+- **중앙 집중식 관리:** 객체의 생성과 생명주기는 오직 `core/container.py`의 `dependency_injector` 컨테이너를 통해서만 관리됩니다.
+- **주입 강제:** 비즈니스 로직(Core), DB 클라이언트, 환경(Env) 등 어떤 클래스도 내부에서 다른 클래스를 직접 인스턴스화(`= ClassName()`)해서는 안 됩니다. 반드시 생성자(`__init__`)를 통해 외부에서 주입(Inject) 받아야 합니다.
+
+## 2. 프레젠테이션(GUI)과 도메인(Core) 계층의 엄격한 분리 (MVVM)
+- **직접 접근 금지:** `gui/` 하위의 UI 컴포넌트(QWidget 등)는 절대로 `DataCollector`, `OrderManager`, `InfluxClient` 등의 Core/DB 객체에 직접 접근하거나 메서드를 호출해서는 안 됩니다.
+- **ViewModel 통과:** 모든 UI 업데이트와 상태 참조는 오직 `ViewModel`을 통해서만 이루어져야 합니다.
+- **단방향 데이터 플로우:** ViewModel은 데이터를 가공한 후 `pyqtSignal`을 통해 UI로 단방향 이벤트를 방출(Emit)해야 합니다.
+
+## 3. 함수형 에러 처리 및 상태 불변성 (Functional Error Handling)
+- **Result/Either 패턴 강제:** API 호출, I/O 통신, DB 저장 등 예외가 발생할 수 있는 모든 작업은 전통적인 `try-except`로 예외를 던지는 대신, `returns` 라이브러리의 `Result`, `Success`, `Failure` (또는 `FutureResult`) 객체로 감싸서 반환해야 합니다.
+- **Caller의 책임:** 호출자(Caller)는 반환된 `Result` 객체를 반드시 패턴 매칭이나 if문을 통해 분기 처리하여 에러를 명시적으로 핸들링해야 합니다.
+- **불변성(Immutability):** 데이터 클래스 정의 시 `@dataclass(frozen=True)`를 사용하거나, 객체 상태 변경 시 깊은 복사(Deep Copy)를 수행하여 예측 불가능한 사이드 이펙트를 방지합니다.
+
+## 4. 성능 및 메모리 관리 (HFT 특화)
+- **Rolling Buffer 사용:** 틱 데이터나 호가창 등 폭증하는 스트림 데이터는 절대 무한히 커지는 리스트(`[]`)에 담지 마십시오. 반드시 `collections.deque(maxlen=N)`나 고정 크기의 `Numpy Array` 롤링 버퍼를 사용해야 합니다.
+- **Non-blocking I/O:** DB 적재 및 외부 API 호출은 철저히 비동기(`asyncio`) 처리되며, I/O 병목 방지를 위해 반드시 '배치(Batch)' 단위로 묶어서 플러시(Flush)해야 합니다.
+- **Zero Data Leakage:** AI/RL 모델의 Feature 추출 시 미래 데이터를 참조하지 않도록 `OnlineRollingNormalizer`와 같은 점진적 스케일링 기법만 허용됩니다.
