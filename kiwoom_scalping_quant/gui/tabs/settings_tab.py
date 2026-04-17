@@ -123,17 +123,14 @@ class SettingsTab(QWidget):
         self.view_model.connection_test_completed.connect(self.on_connection_test_completed)
 
     def _get_current_data(self):
-        """UI에 입력된 값을 env_dict와 config_dict로 분리하여 반환"""
-        env_dict = {
+        """UI에 입력된 값을 통합된 딕셔너리로 반환"""
+        return {
             "KIWOOM_APP_KEY": self.input_app_key.text(),
             "KIWOOM_APP_SECRET": self.input_app_secret.text(),
             "INFLUX_URL": self.input_db_url.text(),
             "INFLUX_TOKEN": self.input_db_token.text(),
             "INFLUX_ORG": self.input_db_org.text(),
-            "TELEGRAM_BOT_TOKEN": self.input_tg_token.text()
-        }
-
-        config_dict = {
+            "TELEGRAM_BOT_TOKEN": self.input_tg_token.text(),
             "account_number": self.input_account.text(),
             "trading_mode": self.combo_mode.currentText(),
             "influx_bucket": self.input_db_bucket.text(),
@@ -143,39 +140,38 @@ class SettingsTab(QWidget):
             "telegram_chat_id": self.input_tg_chat.text(),
             "log_level": self.combo_log_level.currentText()
         }
-        return env_dict, config_dict
 
     # --- UI Action Handlers ---
     def _on_test_clicked(self):
         self.btn_test.setEnabled(False)
         self.btn_test.setText("Testing...")
-        env_data, config_data = self._get_current_data()
-        self.view_model.test_connection(env_data, config_data)
+        data = self._get_current_data()
+        self.view_model.test_connection(data)
 
     def _on_save_clicked(self):
-        env_data, config_data = self._get_current_data()
-        self.view_model.save_settings(env_data, config_data)
+        data = self._get_current_data()
+        self.view_model.save_settings(data)
 
     # --- ViewModel Signal Slots ---
-    @pyqtSlot(dict, dict)
-    def on_settings_loaded(self, env_dict: dict, config_dict: dict):
+    @pyqtSlot(dict)
+    def on_settings_loaded(self, config: dict):
         # Env
-        self.input_app_key.setText(env_dict.get("KIWOOM_APP_KEY", ""))
-        self.input_app_secret.setText(env_dict.get("KIWOOM_APP_SECRET", ""))
-        self.input_db_url.setText(env_dict.get("INFLUX_URL", "http://localhost:8086"))
-        self.input_db_token.setText(env_dict.get("INFLUX_TOKEN", ""))
-        self.input_db_org.setText(env_dict.get("INFLUX_ORG", ""))
-        self.input_tg_token.setText(env_dict.get("TELEGRAM_BOT_TOKEN", ""))
+        self.input_app_key.setText(config.get("KIWOOM_APP_KEY", ""))
+        self.input_app_secret.setText(config.get("KIWOOM_APP_SECRET", ""))
+        self.input_db_url.setText(config.get("INFLUX_URL", "http://localhost:8086"))
+        self.input_db_token.setText(config.get("INFLUX_TOKEN", ""))
+        self.input_db_org.setText(config.get("INFLUX_ORG", ""))
+        self.input_tg_token.setText(config.get("TELEGRAM_BOT_TOKEN", ""))
 
         # Config
-        self.input_account.setText(config_dict.get("account_number", ""))
-        self.combo_mode.setCurrentText(config_dict.get("trading_mode", "모의투자 (Virtual)"))
-        self.input_db_bucket.setText(config_dict.get("influx_bucket", "kiwoom_data"))
-        self.spin_stop_loss.setValue(config_dict.get("stop_loss_pct", -2.0))
-        self.spin_max_position.setValue(config_dict.get("max_position_pct", 50.0))
-        self.spin_cb_timeout.setValue(config_dict.get("cb_timeout_sec", 3))
-        self.input_tg_chat.setText(config_dict.get("telegram_chat_id", ""))
-        self.combo_log_level.setCurrentText(config_dict.get("log_level", "INFO"))
+        self.input_account.setText(config.get("account_number", ""))
+        self.combo_mode.setCurrentText(config.get("trading_mode", "모의투자 (Virtual)"))
+        self.input_db_bucket.setText(config.get("influx_bucket", "kiwoom_data"))
+        self.spin_stop_loss.setValue(config.get("stop_loss_pct", -2.0))
+        self.spin_max_position.setValue(config.get("max_position_pct", 50.0))
+        self.spin_cb_timeout.setValue(config.get("cb_timeout_sec", 3))
+        self.input_tg_chat.setText(config.get("telegram_chat_id", ""))
+        self.combo_log_level.setCurrentText(config.get("log_level", "INFO"))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

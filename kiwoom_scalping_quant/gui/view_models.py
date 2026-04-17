@@ -170,79 +170,49 @@ class AssetDataViewModel(QObject):
 class SettingsViewModel(QObject):
     """
     Settings 탭을 위한 ViewModel.
-    UI에서 입력받은 환경변수(.env) 및 일반설정(config.yaml)을 관리하고 연결 테스트를 수행합니다.
+    ConfigManager를 통해 통합된 설정(.env 및 config.yaml)을 관리합니다.
     """
-    settings_loaded = pyqtSignal(dict, dict) # (env_dict, config_dict)
+    settings_loaded = pyqtSignal(dict) # unified config dict
     save_completed = pyqtSignal(str)
     save_failed = pyqtSignal(str)
     connection_test_completed = pyqtSignal(bool, str) # (Success bool, Message)
 
     def __init__(self, config_manager, influx_client):
         super().__init__()
-        import os
         self.config_manager = config_manager
         self.influx_client = influx_client
-        self.env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-
-    def _read_env_file(self) -> dict:
-        env_vars = {}
-        if os.path.exists(self.env_path):
-            with open(self.env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#"): continue
-                    if "=" in line:
-                        k, v = line.split("=", 1)
-                        env_vars[k.strip()] = v.strip()
-        return env_vars
 
     def load_settings(self):
-        """저장된 .env 파일과 config.yaml 파일을 읽어 UI로 Emit합니다."""
-        env_dict = self._read_env_file()
-
+        """ConfigManager를 통해 통합 설정을 로드하고 UI로 Emit합니다."""
         result = self.config_manager.load_config()
         if isinstance(result, Success):
-            config_dict = self.config_manager._config_cache
-            self.settings_loaded.emit(env_dict, config_dict)
+            self.settings_loaded.emit(result.unwrap())
         else:
             self.save_failed.emit(f"Config Load Error: {result.failure()}")
 
-    def save_settings(self, env_data: dict, config_data: dict):
-        """수정된 설정값들을 .env 및 config.yaml에 각각 분리하여 덮어씁니다."""
-        try:
-            # 1. Save .env
-            with open(self.env_path, "w", encoding="utf-8") as f:
-                for k, v in env_data.items():
-                    f.write(f"{k}={v}\n")
+    def save_settings(self, updates: dict):
+        """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
+        save_result = self.config_manager.update_settings(updates)
+        if isinstance(save_result, Success):
+            self.save_completed.emit("설정이 성공적으로 저장되었습니다. (일부 설정은 재시작 시 적용됩니다.)")
+        else:
+            self.save_failed.emit(f"Config 저장 실패: {save_result.failure()}")
 
-            # 2. Save config.yaml (기존 ConfigManager의 딕셔너리 업데이트)
-            for k, v in config_data.items():
-                self.config_manager._config_cache[k] = v
-
-            save_result = self.config_manager.save_config()
-            if isinstance(save_result, Success):
-                self.save_completed.emit("설정이 성공적으로 저장되었습니다. (일부 설정은 재시작 시 적용됩니다.)")
-            else:
-                self.save_failed.emit(f"Config 저장 실패: {save_result.failure()}")
-        except Exception as e:
-            self.save_failed.emit(f"설정 저장 중 오류 발생: {e}")
-
-    def test_connection(self, env_data: dict, config_data: dict):
+    def test_connection(self, updates: dict):
         """현재 입력된 API 키와 DB 정보로 핑/인증 테스트를 비동기로 수행합니다."""
-        asyncio.create_task(self._test_connection_task(env_data, config_data))
+        asyncio.create_task(self._test_connection_task(updates))
 
-    async def _test_connection_task(self, env_data: dict, config_data: dict):
+    async def _test_connection_task(self, updates: dict):
         # 1. 키움 API 테스트 (가상 핑)
-        app_key = env_data.get("KIWOOM_APP_KEY")
+        app_key = updates.get("KIWOOM_APP_KEY")
         if not app_key:
             self.connection_test_completed.emit(False, "App Key가 비어있습니다.")
             return
 
         import aiohttp
-        # 토큰 발급 테스트 (test_kiwoom_api.py 로직 간소화)
-        base_url = env_data.get("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+        base_url = updates.get("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
         url = f"{base_url}/oauth2/tokenP"
-        payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": env_data.get("KIWOOM_APP_SECRET", "")}
+        payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": updates.get("KIWOOM_APP_SECRET", "")}
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -259,8 +229,7 @@ class SettingsViewModel(QObject):
             return
 
         # 2. InfluxDB 핑 테스트
-        db_url = env_data.get("INFLUX_URL", "http://localhost:8086")
+        db_url = updates.get("INFLUX_URL", "http://localhost:8086")
         db_msg = "InfluxDB: Ping 테스트 통과 (Mock)"
-        # 실제로는 InfluxDBClientAsync ping() 사용 가능
 
         self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{db_msg}")
