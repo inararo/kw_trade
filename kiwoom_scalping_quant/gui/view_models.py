@@ -67,11 +67,37 @@ class AssetDataViewModel(QObject):
     fetch_completed = pyqtSignal(str)
     fetch_failed = pyqtSignal(str)
 
-    def __init__(self, config_manager, historical_fetcher, influx_client):
+    def __init__(self, config_manager, historical_fetcher, influx_client, universe_manager):
         super().__init__()
         self.config_manager = config_manager
         self.historical_fetcher = historical_fetcher
         self.influx_client = influx_client
+        self.universe_manager = universe_manager
+
+    def build_universe(self):
+        """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
+        asyncio.create_task(self._build_universe_task())
+
+    async def _build_universe_task(self):
+        self.fetch_progress_updated.emit(0, "유니버스 필터링 중...")
+        result = await self.universe_manager.build_top_n_universe("DUMMY_TOKEN", top_n=20)
+
+        if isinstance(result, Failure):
+            self.fetch_failed.emit(f"유니버스 생성 실패: {result.failure()}")
+            return
+
+        top_stocks = result.unwrap()
+
+        # 기존 심볼들 덮어쓰기 (모두 삭제 후 추가)
+        # 실제 구현시에는 ConfigManager에 bulk_replace 등을 추가하는 것이 좋음
+        for s in self.config_manager.get_symbols()[:]:
+            self.config_manager.remove_symbol(s.get("code"))
+
+        for stock in top_stocks:
+            self.config_manager.add_symbol(stock["code"], stock["name"])
+
+        self.fetch_completed.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
+        self.load_symbols() # 갱신
 
     def load_symbols(self):
         # ConfigManager의 Result 처리
@@ -99,31 +125,44 @@ class AssetDataViewModel(QObject):
             self.symbol_update_failed.emit(str(result.failure()))
 
     def start_historical_fetch(self, symbol: str, start_date: str):
-        # QThread/QTimer 대신 asyncio.create_task를 통해 비동기 실행을 위임
-        # qasync를 사용하므로 안전함
-        asyncio.create_task(self._fetch_and_store(symbol, start_date))
+        """특정 종목에 대한 수집"""
+        asyncio.create_task(self._fetch_and_store([symbol], start_date))
 
-    async def _fetch_and_store(self, symbol: str, start_date: str):
-        # 1. API 수집 (진행률 콜백을 시그널 Emit으로 연결)
-        def update_progress(pct: int, msg: str):
-            self.fetch_progress_updated.emit(pct, msg)
-
-        self.fetch_progress_updated.emit(0, "데이터 수집 시작...")
-
-        # future_safe Result 반환 확인
-        fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
-
-        if isinstance(fetch_result, Failure):
-            self.fetch_failed.emit(f"수집 실패: {fetch_result.failure()}")
+    def start_bulk_historical_fetch(self, start_date: str):
+        """Config에 등록된 모든 종목(Universe)에 대한 일괄 수집"""
+        symbols = [s.get("code") for s in self.config_manager.get_symbols()]
+        if not symbols:
+            self.fetch_failed.emit("수집할 종목이 없습니다.")
             return
+        asyncio.create_task(self._fetch_and_store(symbols, start_date))
 
-        data_list = fetch_result.unwrap()
+    async def _fetch_and_store(self, symbols: List[str], start_date: str):
+        total_symbols = len(symbols)
+        total_data_collected = 0
 
-        # 2. InfluxDB Bulk Insert
-        self.fetch_progress_updated.emit(90, "InfluxDB 적재 중...")
-        try:
-            await self.influx_client.bulk_insert(data_list)
-            self.fetch_progress_updated.emit(100, "모든 작업 완료")
-            self.fetch_completed.emit(f"총 {len(data_list)}건 적재 완료!")
-        except Exception as e:
-            self.fetch_failed.emit(f"DB 저장 중 에러: {e}")
+        for idx, symbol in enumerate(symbols):
+            def update_progress(pct: int, msg: str):
+                # 전체 진행률과 개별 진행률을 조합하여 Emit 가능
+                base_pct = (idx / total_symbols) * 100
+                current_pct = base_pct + (pct / total_symbols)
+                self.fetch_progress_updated.emit(int(current_pct), msg)
+
+            self.fetch_progress_updated.emit(int((idx / total_symbols) * 100), f"[{symbol}] 수집 시작 ({idx+1}/{total_symbols})...")
+
+            fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
+
+            if isinstance(fetch_result, Failure):
+                self.symbol_update_failed.emit(f"[{symbol}] 수집 실패: {fetch_result.failure()}")
+                continue # 한 종목이 실패해도 다음 종목으로 계속 진행
+
+            data_list = fetch_result.unwrap()
+            total_data_collected += len(data_list)
+
+            self.fetch_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100), f"[{symbol}] InfluxDB 적재 중...")
+            try:
+                await self.influx_client.bulk_insert(data_list)
+            except Exception as e:
+                self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러: {e}")
+
+        self.fetch_progress_updated.emit(100, "모든 종목 수집 완료")
+        self.fetch_completed.emit(f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!")

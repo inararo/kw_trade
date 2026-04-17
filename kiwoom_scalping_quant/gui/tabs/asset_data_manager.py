@@ -37,6 +37,11 @@ class AssetDataManagerTab(QWidget):
         btn_layout.addWidget(self.btn_remove)
         asset_layout.addLayout(btn_layout)
 
+        self.btn_auto_universe = QPushButton("Auto Generate Universe (Top 20)")
+        self.btn_auto_universe.setStyleSheet("background-color: #2b5b84; color: white;")
+        self.btn_auto_universe.clicked.connect(self._on_btn_auto_universe_clicked)
+        asset_layout.addWidget(self.btn_auto_universe)
+
         asset_group.setLayout(asset_layout)
         main_layout.addWidget(asset_group, stretch=1)
 
@@ -54,9 +59,14 @@ class AssetDataManagerTab(QWidget):
         self.date_start.setCalendarPopup(True)
         data_layout.addWidget(self.date_start)
 
-        self.btn_collect = QPushButton("Start Download to InfluxDB")
+        self.btn_collect = QPushButton("Start Download (Selected) to InfluxDB")
         self.btn_collect.clicked.connect(self._on_btn_collect_clicked)
         data_layout.addWidget(self.btn_collect)
+
+        self.btn_collect_all = QPushButton("Start Download (ALL) to InfluxDB")
+        self.btn_collect_all.setStyleSheet("background-color: #5b2b84; color: white;")
+        self.btn_collect_all.clicked.connect(self._on_btn_collect_all_clicked)
+        data_layout.addWidget(self.btn_collect_all)
 
         self.lbl_progress_msg = QLabel("Ready")
         data_layout.addWidget(self.lbl_progress_msg)
@@ -96,6 +106,11 @@ class AssetDataManagerTab(QWidget):
         else:
             QMessageBox.warning(self, "Warning", "Please select a symbol to remove.")
 
+    def _on_btn_auto_universe_clicked(self):
+        reply = QMessageBox.question(self, "Confirm", "기존 종목 리스트가 삭제되고 주도주 Top 20으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.view_model.build_universe()
+
     def _on_btn_collect_clicked(self):
         current_row = self.table.currentRow()
         if current_row < 0:
@@ -104,8 +119,19 @@ class AssetDataManagerTab(QWidget):
 
         symbol = self.table.item(current_row, 0).text()
         self.btn_collect.setEnabled(False)
+        self.btn_collect_all.setEnabled(False)
         start_date = self.date_start.date().toString("yyyyMMdd")
         self.view_model.start_historical_fetch(symbol, start_date)
+
+    def _on_btn_collect_all_clicked(self):
+        if self.table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No symbols to collect. Please add symbols first.")
+            return
+
+        self.btn_collect.setEnabled(False)
+        self.btn_collect_all.setEnabled(False)
+        start_date = self.date_start.date().toString("yyyyMMdd")
+        self.view_model.start_bulk_historical_fetch(start_date)
 
     # --- Slots (ViewModel -> View) ---
     @pyqtSlot(list)
@@ -123,6 +149,7 @@ class AssetDataManagerTab(QWidget):
     @pyqtSlot(str)
     def on_error(self, msg: str):
         self.btn_collect.setEnabled(True)
+        self.btn_collect_all.setEnabled(True)
         QMessageBox.warning(self, "Error", msg)
 
     @pyqtSlot(int, str)
@@ -133,5 +160,6 @@ class AssetDataManagerTab(QWidget):
     @pyqtSlot(str)
     def on_fetch_completed(self, msg: str):
         self.btn_collect.setEnabled(True)
+        self.btn_collect_all.setEnabled(True)
         self.lbl_progress_msg.setText("Complete")
         QMessageBox.information(self, "Download Complete", msg)

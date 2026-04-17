@@ -5,6 +5,7 @@ from core.data_collector import DataCollector
 from core.order_manager import OrderManager
 from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
+from core.universe_manager import UniverseManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import MarketDataViewModel, AssetDataViewModel
 
@@ -24,6 +25,10 @@ class Container(containers.DeclarativeContainer):
 
     historical_fetcher = providers.Singleton(
         HistoricalFetcher
+    )
+
+    universe_manager = providers.Singleton(
+        UniverseManager
     )
 
     # DB Client (싱글톤)
@@ -55,5 +60,6 @@ class Container(containers.DeclarativeContainer):
         AssetDataViewModel,
         config_manager=config_manager,
         historical_fetcher=historical_fetcher,
-        influx_client=influx_client
+        influx_client=influx_client,
+        universe_manager=universe_manager
     )
