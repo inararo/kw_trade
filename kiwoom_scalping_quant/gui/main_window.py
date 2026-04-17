@@ -5,6 +5,7 @@ from PyQt6.QtGui import QAction
 from gui.tabs.live_dashboard import LiveDashboardTab
 from gui.tabs.asset_data_manager import AssetDataManagerTab
 from gui.tabs.ai_training_studio import AITrainingStudioTab
+from gui.tabs.settings_tab import SettingsTab
 
 class MainWindow(QMainWindow):
     """
@@ -73,9 +74,16 @@ class MainWindow(QMainWindow):
 
         self.tab_ai = AITrainingStudioTab()
 
+        settings_vm = getattr(self.system, "settings_view_model", None)
+        if settings_vm is None and hasattr(self.system, "container"):
+            settings_vm = self.system.container.settings_view_model()
+
+        self.tab_settings = SettingsTab(settings_vm)
+
         self.tabs.addTab(self.tab_live, "Live Dashboard")
         self.tabs.addTab(self.tab_asset, "Asset & Data")
         self.tabs.addTab(self.tab_ai, "AI Training Studio")
+        self.tabs.addTab(self.tab_settings, "Settings")
 
     def _init_status_bar(self):
         self.status_bar = QStatusBar()

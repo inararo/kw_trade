@@ -7,7 +7,7 @@ from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
 from core.universe_manager import UniverseManager
 from db.influx_client import AsyncInfluxDBClient
-from gui.view_models import MarketDataViewModel, AssetDataViewModel
+from gui.view_models import MarketDataViewModel, AssetDataViewModel, SettingsViewModel
 
 class Container(containers.DeclarativeContainer):
     """
@@ -62,4 +62,10 @@ class Container(containers.DeclarativeContainer):
         historical_fetcher=historical_fetcher,
         influx_client=influx_client,
         universe_manager=universe_manager
+    )
+
+    settings_view_model = providers.Factory(
+        SettingsViewModel,
+        config_manager=config_manager,
+        influx_client=influx_client
     )
