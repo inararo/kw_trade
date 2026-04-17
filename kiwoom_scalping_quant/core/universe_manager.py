@@ -55,22 +55,26 @@ class UniverseManager:
         # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
         # 당일 또는 최근 5일 평균 거래대금 상위 리스트를 가져옵니다.
 
-        # [Mock Data Generation]
+        # [Mock Data Generation] (실제 환경에서는 aiohttp를 통해 API 호출 후 처리)
         import random
         mock_raw_market = []
-        for i in range(1, 100):
-            code = f"{i:05d}0"
-            is_spac = random.random() < 0.1
-            is_etf = random.random() < 0.1
 
-            name = f"Company_{i}"
+        # 비동기 블로킹 방지를 위한 가상의 네트워크 지연
+        await asyncio.sleep(1.0)
+
+        for i in range(1, 2000): # 약 2000개의 전 종목을 가정
+            code = f"{i:05d}0"
+            is_spac = random.random() < 0.05
+            is_etf = random.random() < 0.05
+
+            name = f"Stock_Company_{i}"
             if is_spac: name = f"대신스팩{i}호"
             elif is_etf: name = f"KODEX_레버리지{i}"
 
             mock_raw_market.append({
                 "code": code,
                 "name": name,
-                "trading_value": random.randint(100, 10000) * 1000000 # 거래대금 모의
+                "trading_value": random.randint(100, 100000) * 1000000 # 거래대금 모의
             })
 
         # 1. 노이즈 필터링
@@ -78,6 +82,9 @@ class UniverseManager:
             stock for stock in mock_raw_market
             if self._is_valid_scalping_symbol(stock["name"], stock["code"])
         ]
+
+        # 필터링 중 연산 지연 시뮬레이션
+        await asyncio.sleep(0.5)
 
         # 2. 거래대금(Trading Value) 기준 내림차순 정렬
         sorted_universe = sorted(filtered_universe, key=lambda x: x["trading_value"], reverse=True)

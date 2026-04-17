@@ -84,7 +84,8 @@ class AssetDataViewModel(QObject):
     symbol_update_failed = pyqtSignal(str)
     symbol_update_success = pyqtSignal(str)
 
-    fetch_progress_updated = pyqtSignal(int, str) # 진행률(%), 메시지
+    sig_progress_updated = pyqtSignal(int)
+    sig_status_updated = pyqtSignal(str)
     fetch_completed = pyqtSignal(str)
     fetch_failed = pyqtSignal(str)
 
@@ -100,7 +101,8 @@ class AssetDataViewModel(QObject):
         asyncio.create_task(self._build_universe_task())
 
     async def _build_universe_task(self):
-        self.fetch_progress_updated.emit(0, "유니버스 필터링 중...")
+        self.sig_progress_updated.emit(0)
+        self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
         result = await self.universe_manager.build_top_n_universe("DUMMY_TOKEN", top_n=20)
 
         if isinstance(result, Failure):
@@ -117,6 +119,8 @@ class AssetDataViewModel(QObject):
         for stock in top_stocks:
             self.config_manager.add_symbol(stock["code"], stock["name"])
 
+        self.sig_progress_updated.emit(100)
+        self.sig_status_updated.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
         self.fetch_completed.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
         self.load_symbols() # 갱신
 
@@ -163,12 +167,13 @@ class AssetDataViewModel(QObject):
 
         for idx, symbol in enumerate(symbols):
             def update_progress(pct: int, msg: str):
-                # 전체 진행률과 개별 진행률을 조합하여 Emit 가능
                 base_pct = (idx / total_symbols) * 100
                 current_pct = base_pct + (pct / total_symbols)
-                self.fetch_progress_updated.emit(int(current_pct), msg)
+                self.sig_progress_updated.emit(int(current_pct))
+                self.sig_status_updated.emit(msg)
 
-            self.fetch_progress_updated.emit(int((idx / total_symbols) * 100), f"[{symbol}] 수집 시작 ({idx+1}/{total_symbols})...")
+            self.sig_progress_updated.emit(int((idx / total_symbols) * 100))
+            self.sig_status_updated.emit(f"[{symbol}] 수집 시작 ({idx+1}/{total_symbols})...")
 
             fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
 
@@ -179,13 +184,15 @@ class AssetDataViewModel(QObject):
             data_list = fetch_result.unwrap()
             total_data_collected += len(data_list)
 
-            self.fetch_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100), f"[{symbol}] InfluxDB 적재 중...")
+            self.sig_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100))
+            self.sig_status_updated.emit(f"[{symbol}] InfluxDB Bulk Insert 진행 중...")
             try:
                 await self.influx_client.bulk_insert(data_list)
             except Exception as e:
                 self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러: {e}")
 
-        self.fetch_progress_updated.emit(100, "모든 종목 수집 완료")
+        self.sig_progress_updated.emit(100)
+        self.sig_status_updated.emit("모든 종목 수집 및 적재 완료")
         self.fetch_completed.emit(f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!")
 
 class SettingsViewModel(QObject):

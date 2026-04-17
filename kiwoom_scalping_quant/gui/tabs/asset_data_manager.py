@@ -84,7 +84,8 @@ class AssetDataManagerTab(QWidget):
         self.view_model.symbol_update_failed.connect(self.on_error)
         self.view_model.symbol_update_success.connect(self.on_success)
 
-        self.view_model.fetch_progress_updated.connect(self.on_fetch_progress)
+        self.view_model.sig_progress_updated.connect(self.on_progress_updated)
+        self.view_model.sig_status_updated.connect(self.on_status_updated)
         self.view_model.fetch_completed.connect(self.on_fetch_completed)
         self.view_model.fetch_failed.connect(self.on_error)
 
@@ -152,9 +153,12 @@ class AssetDataManagerTab(QWidget):
         self.btn_collect_all.setEnabled(True)
         QMessageBox.warning(self, "Error", msg)
 
-    @pyqtSlot(int, str)
-    def on_fetch_progress(self, pct: int, msg: str):
+    @pyqtSlot(int)
+    def on_progress_updated(self, pct: int):
         self.progress_bar.setValue(pct)
+
+    @pyqtSlot(str)
+    def on_status_updated(self, msg: str):
         self.lbl_progress_msg.setText(msg)
 
     @pyqtSlot(str)
