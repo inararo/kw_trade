@@ -1,5 +1,10 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QGroupBox, QProgressBar, QListWidget
+)
+from PyQt6.QtCore import pyqtSlot
 from gui.components.orderbook_ladder import OrderbookLadderWidget
+import time
 
 class LiveDashboardTab(QWidget):
     """
@@ -10,6 +15,7 @@ class LiveDashboardTab(QWidget):
         super().__init__()
         self.view_model = view_model
         self._init_ui()
+        self._connect_signals()
 
     def _init_ui(self):
         main_layout = QHBoxLayout(self)
@@ -26,24 +32,64 @@ class LiveDashboardTab(QWidget):
         control_group = QGroupBox("AI Monitor & Controls")
         control_layout = QVBoxLayout()
 
-        # AI 신뢰도 모니터 (임시 라벨)
-        self.ai_chart_label = QLabel("[Chart Placeholder] AI Confidence: Hold 60%, Buy 30%, Sell 10%")
-        self.ai_chart_label.setMinimumHeight(150)
-        self.ai_chart_label.setStyleSheet("background-color: black; color: lime; font-weight: bold; padding: 10px;")
-        control_layout.addWidget(self.ai_chart_label)
+        # AI 신뢰도 모니터
+        ai_layout = QVBoxLayout()
+        ai_layout.addWidget(QLabel("AI Agent Confidence:"))
 
-        # 체결 로그 (임시 라벨)
-        self.execution_log = QLabel("Execution Log:\n- Waiting for events...")
-        self.execution_log.setStyleSheet("border: 1px solid gray; padding: 5px;")
-        control_layout.addWidget(self.execution_log)
+        self.prog_hold = QProgressBar()
+        self.prog_hold.setStyleSheet("QProgressBar::chunk { background-color: gray; }")
+        self.prog_hold.setFormat("Hold: %p%")
 
-        control_layout.addStretch()
+        self.prog_buy = QProgressBar()
+        self.prog_buy.setStyleSheet("QProgressBar::chunk { background-color: red; }")
+        self.prog_buy.setFormat("Buy: %p%")
+
+        self.prog_sell = QProgressBar()
+        self.prog_sell.setStyleSheet("QProgressBar::chunk { background-color: blue; }")
+        self.prog_sell.setFormat("Sell: %p%")
+
+        ai_layout.addWidget(self.prog_hold)
+        ai_layout.addWidget(self.prog_buy)
+        ai_layout.addWidget(self.prog_sell)
+        control_layout.addLayout(ai_layout)
+
+        # 장외 시간 테스트용 Mock 데이터 실행 버튼
+        self.btn_mock = QPushButton("Run Mock Stream (Test)")
+        self.btn_mock.clicked.connect(self.view_model.start_mock_stream)
+        control_layout.addWidget(self.btn_mock)
+
+        # 체결 및 시스템 로그 리스트
+        control_layout.addWidget(QLabel("Execution & System Logs:"))
+        self.log_list = QListWidget()
+        self.log_list.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: monospace;")
+        control_layout.addWidget(self.log_list, stretch=1)
 
         # 패닉 버튼
         self.panic_btn = QPushButton("🚨 PANIC SELL & CANCEL ALL 🚨")
-        self.panic_btn.setStyleSheet("background-color: red; color: white; font-size: 16px; font-weight: bold; height: 50px;")
-        # 클릭 시 ViewModel을 거치거나 OrderManager로 신호 전달 로직 필요
+        self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 16px; font-weight: bold; height: 50px;")
+        self.panic_btn.clicked.connect(self.view_model.trigger_panic_sell)
         control_layout.addWidget(self.panic_btn)
 
         control_group.setLayout(control_layout)
         main_layout.addWidget(control_group, stretch=1)
+
+    def _connect_signals(self):
+        self.view_model.sig_ai_confidence_updated.connect(self.on_ai_confidence_updated)
+        self.view_model.sig_log_appended.connect(self.on_log_appended)
+        self.view_model.sig_error_occurred.connect(self.on_error)
+
+    @pyqtSlot(dict)
+    def on_ai_confidence_updated(self, conf: dict):
+        self.prog_hold.setValue(conf.get("Hold", 0))
+        self.prog_buy.setValue(conf.get("Buy", 0))
+        self.prog_sell.setValue(conf.get("Sell", 0))
+
+    @pyqtSlot(str)
+    def on_log_appended(self, msg: str):
+        ts = time.strftime("%H:%M:%S")
+        self.log_list.addItem(f"[{ts}] {msg}")
+        self.log_list.scrollToBottom()
+
+    @pyqtSlot(str)
+    def on_error(self, msg: str):
+        self.on_log_appended(f"[ERROR] {msg}")

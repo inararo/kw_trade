@@ -4,53 +4,74 @@ from typing import Dict, Any, List
 import asyncio
 from returns.result import Success, Failure
 
-class MarketDataViewModel(QObject):
+class LiveDashboardViewModel(QObject):
     """
-    DataCollector(Core)와 UI(View)를 분리하는 ViewModel.
-    UI 스레드와 asyncio 태스크 간의 연결 고리 역할을 하며 pyqtSignal을 사용해 불변 상태를 전달.
+    LiveDashboard 탭을 위한 ViewModel.
+    DataCollector, OrderManager, Agent 등의 상태를 모니터링하고 UI로 신호를 전달합니다.
     """
+    sig_orderbook_updated = pyqtSignal(dict)
+    sig_price_updated = pyqtSignal(float)
+    sig_ai_confidence_updated = pyqtSignal(dict)
+    sig_log_appended = pyqtSignal(str)
+    sig_error_occurred = pyqtSignal(str)
 
-    # UI에 전달될 시그널들 정의
-    orderbook_updated = pyqtSignal(dict)
-    price_updated = pyqtSignal(float)
-    error_occurred = pyqtSignal(str)
-
-    def __init__(self, data_collector):
+    def __init__(self, data_collector, order_manager):
         super().__init__()
         self.data_collector = data_collector
+        self.order_manager = order_manager
         self._is_running = False
+        self._mock_task = None
+
+        # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정 (또는 폴링)
+        # 이번 요구사항에서는 mock stream 내부에서 콜백으로 데이터를 쏴주는 형태를 가정합니다.
+        self.data_collector.set_ui_callback(self._on_data_received)
+
+    def _on_data_received(self, data: dict):
+        """DataCollector에서 새로운 데이터가 수집되었을 때 호출되는 콜백"""
+        try:
+            if "price" in data:
+                self.sig_price_updated.emit(float(data["price"]))
+            if "orderbook" in data:
+                self.sig_orderbook_updated.emit(dict(data["orderbook"]))
+            if "ai_confidence" in data:
+                self.sig_ai_confidence_updated.emit(dict(data["ai_confidence"]))
+        except Exception as e:
+            self.sig_error_occurred.emit(f"Data parsing error: {e}")
 
     async def start_polling(self):
-        """
-        주기적으로 혹은 DataCollector 내의 콜백을 통해 데이터를 가져와서 UI 시그널을 발생시킴.
-        실제 구현에서는 DataCollector가 이벤트를 발생시킬 때 이 ViewModel의 메서드를 호출하게 하는 옵저버 패턴도 가능.
-        """
+        """실전 매매/백테스트 모드에서의 일반 폴링 (mock 사용 시 제외)"""
         self._is_running = True
         while self._is_running:
-            try:
-                # 틱 버퍼의 가장 최근 데이터를 가져옴
-                if self.data_collector.tick_buffer:
-                    latest_tick = self.data_collector.tick_buffer[-1]
-
-                    # 1. 가격 업데이트
-                    if "price" in latest_tick:
-                        self.price_updated.emit(float(latest_tick["price"]))
-
-                    # 2. 호가창(Orderbook) 업데이트 가정
-                    if "orderbook" in latest_tick:
-                        # 불변성을 위해 데이터 복사 후 전달
-                        orderbook_copy = dict(latest_tick["orderbook"])
-                        self.orderbook_updated.emit(orderbook_copy)
-
-            except Exception as e:
-                # 에러 발생 시 UI가 멈추지 않도록 시그널만 방출
-                self.error_occurred.emit(f"ViewModel 데이터 처리 오류: {str(e)}")
-
-            # UI 갱신 빈도 조절 (예: 100ms)
             await asyncio.sleep(0.1)
+
+    def start_mock_stream(self):
+        """장외 시간 테스트용 모크 스트림 시작"""
+        self.sig_log_appended.emit("장외 테스트용 Mock 데이터 스트림 시작...")
+        if not self._mock_task or self._mock_task.done():
+            self._mock_task = asyncio.create_task(self.data_collector.start_mock_stream())
+
+    def trigger_panic_sell(self):
+        """패닉 셀 버튼 이벤트 수신: 모든 주문 취소 및 시장가 매도"""
+        self.sig_log_appended.emit("[시스템] 🚨 PANIC SELL 트리거됨! 전체 주문 취소 및 시장가 청산 진행...")
+        asyncio.create_task(self._execute_panic_sell())
+
+    async def _execute_panic_sell(self):
+        try:
+            await self.order_manager.cancel_all_orders()
+            # 잔고 확인 및 전량 시장가 매도 로직 (Mock)
+            holdings = getattr(self.order_manager, 'holdings', 0)
+            if holdings > 0:
+                await self.order_manager.send_order("SELL", "005930", 0, holdings)
+                self.sig_log_appended.emit(f"[시스템] 잔고 {holdings}주 전량 시장가 매도 주문 전송 완료.")
+            else:
+                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 주문 취소만 완료되었습니다.")
+        except Exception as e:
+            self.sig_error_occurred.emit(f"Panic Sell 에러: {e}")
 
     def stop(self):
         self._is_running = False
+        if self._mock_task and not self._mock_task.done():
+            self._mock_task.cancel()
 
 class AssetDataViewModel(QObject):
     """

@@ -24,6 +24,43 @@ class DataCollector:
         self.circuit_breaker_active = False
 
         self.logger = logging.getLogger("DataCollector")
+        self._ui_callback = None
+
+    def set_ui_callback(self, callback):
+        self._ui_callback = callback
+
+    async def start_mock_stream(self):
+        """장외 시간/주말 UI 테스트용 가상 데이터 생성기"""
+        import random
+        self.logger.info("Mock Stream Started.")
+        base_price = 50000
+
+        try:
+            while self.is_running:
+                # 가상 가격 변동
+                base_price += random.choice([-100, 0, 100])
+
+                # 10호가 가상 매수/매도 잔량 생성
+                asks = [{"price": base_price + (i * 100), "qty": random.randint(100, 5000)} for i in range(1, 11)]
+                bids = [{"price": base_price - (i * 100), "qty": random.randint(100, 5000)} for i in range(1, 11)]
+
+                # AI 확률 임의 생성
+                hold_prob = random.randint(40, 80)
+                buy_prob = random.randint(0, 100 - hold_prob)
+                sell_prob = 100 - hold_prob - buy_prob
+
+                mock_data = {
+                    "price": base_price,
+                    "orderbook": {"asks": asks, "bids": bids},
+                    "ai_confidence": {"Hold": hold_prob, "Buy": buy_prob, "Sell": sell_prob}
+                }
+
+                if self._ui_callback:
+                    self._ui_callback(mock_data)
+
+                await asyncio.sleep(0.1) # 0.1초(100ms) 간격 업데이트
+        except asyncio.CancelledError:
+            self.logger.info("Mock Stream Cancelled.")
 
     async def start(self):
         self.is_running = True

@@ -60,7 +60,12 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
 
         # 각 탭 초기화 및 의존성 주입
-        self.tab_live = LiveDashboardTab(self.view_model)
+
+        # LiveDashboardViewModel 추출 및 주입
+        live_vm = getattr(self.system, "live_dashboard_view_model", None)
+        if live_vm is None and hasattr(self.system, "container"):
+            live_vm = self.system.container.live_dashboard_view_model()
+        self.tab_live = LiveDashboardTab(live_vm)
 
         # AssetDataViewModel은 main_window를 생성할 때 주입받은 시스템 객체나 별도 라우팅을 거쳐야 하지만
         # 단순화를 위해 시스템 뷰모델에서 가져오거나 DI 컨테이너에서 꺼내옵니다.

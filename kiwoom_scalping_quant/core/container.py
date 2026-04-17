@@ -7,7 +7,7 @@ from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
 from core.universe_manager import UniverseManager
 from db.influx_client import AsyncInfluxDBClient
-from gui.view_models import MarketDataViewModel, AssetDataViewModel, SettingsViewModel
+from gui.view_models import MarketDataViewModel, AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel
 
 class Container(containers.DeclarativeContainer):
     """
@@ -54,6 +54,12 @@ class Container(containers.DeclarativeContainer):
     market_data_view_model = providers.Factory(
         MarketDataViewModel,
         data_collector=data_collector
+    )
+
+    live_dashboard_view_model = providers.Factory(
+        LiveDashboardViewModel,
+        data_collector=data_collector,
+        order_manager=order_manager
     )
 
     asset_data_view_model = providers.Factory(
