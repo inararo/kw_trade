@@ -103,13 +103,19 @@ class AssetDataViewModel(QObject):
     async def _build_universe_task(self):
         self.sig_progress_updated.emit(0)
         self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
+        # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
         result = await self.universe_manager.build_top_n_universe("DUMMY_TOKEN", top_n=20)
 
         if isinstance(result, Failure):
             self.fetch_failed.emit(f"유니버스 생성 실패: {result.failure()}")
             return
 
+        # unwrap() 호출 시 반환되는 값은 List[Dict[str, Any]] 입니다.
         top_stocks = result.unwrap()
+
+        # 만약 unwrap()한 결과가 None 이라면 빈 리스트로 처리합니다.
+        if top_stocks is None:
+            top_stocks = []
 
         # 기존 심볼들 덮어쓰기 (모두 삭제 후 추가)
         # 실제 구현시에는 ConfigManager에 bulk_replace 등을 추가하는 것이 좋음
@@ -117,7 +123,12 @@ class AssetDataViewModel(QObject):
             self.config_manager.remove_symbol(s.get("code"))
 
         for stock in top_stocks:
-            self.config_manager.add_symbol(stock["code"], stock["name"])
+            # 방어 코드: stock이 문자열로 잘못 들어왔을 경우 등을 대비
+            if isinstance(stock, dict):
+                self.config_manager.add_symbol(stock.get("code", ""), stock.get("name", ""))
+            else:
+                # 에러 로깅 가능 (여기서는 단순히 건너뜀)
+                pass
 
         self.sig_progress_updated.emit(100)
         self.sig_status_updated.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")

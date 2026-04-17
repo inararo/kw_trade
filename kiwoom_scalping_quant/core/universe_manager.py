@@ -78,10 +78,12 @@ class UniverseManager:
             })
 
         # 1. 노이즈 필터링
-        filtered_universe = [
-            stock for stock in mock_raw_market
-            if self._is_valid_scalping_symbol(stock["name"], stock["code"])
-        ]
+        filtered_universe = []
+        for stock in mock_raw_market:
+            # 방어 코드: 딕셔너리가 아닌 경우 스킵
+            if isinstance(stock, dict):
+                if self._is_valid_scalping_symbol(stock.get("name", ""), stock.get("code", "")):
+                    filtered_universe.append(stock)
 
         # 필터링 중 연산 지연 시뮬레이션
         await asyncio.sleep(0.5)
@@ -94,4 +96,6 @@ class UniverseManager:
 
         self.logger.info(f"유니버스 필터링 완료: 원본 {len(mock_raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
 
+        # FutureResult (Success)로 감싸서 반환해야 @future_safe에 맞게 동작합니다
+        # @future_safe는 자동으로 Success()로 감싸주지만, 함수 내에서 에러 없이 값을 리턴하면 됩니다.
         return top_universe

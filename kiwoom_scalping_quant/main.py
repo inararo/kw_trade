@@ -97,13 +97,24 @@ class QuantSystem:
 
 def main():
     app = QApplication(sys.argv)
+
+    # qasync 0.24.0 호환성을 위한 PyQt6.QApplication.exec_ 패치 (에러 방지용)
+    if not hasattr(app, "exec_"):
+        app.exec_ = app.exec
+
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
     system = QuantSystem()
 
     with loop:
-        loop.run_until_complete(system.start())
+        try:
+            loop.run_until_complete(system.start())
+        except RuntimeError as e:
+            if "Event loop stopped before Future completed" in str(e):
+                print("시스템: 비동기 루프가 정상적으로 종료되었습니다.")
+            else:
+                raise e
 
 if __name__ == "__main__":
     main()
