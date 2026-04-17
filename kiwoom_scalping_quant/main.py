@@ -40,11 +40,11 @@ class QuantSystem:
         self.order_manager = self.container.order_manager()
         self.data_collector = self.container.data_collector()
 
-        # ViewModel 생성
-        self.view_model = self.container.market_data_view_model()
+        # 대표 ViewModel 생성 (LiveDashboardViewModel)
+        self.live_vm = self.container.live_dashboard_view_model()
 
-        # GUI 초기화: ViewModel만 주입
-        self.main_window = MainWindow(self.view_model, self)
+        # GUI 초기화: ViewModel 주입
+        self.main_window = MainWindow(self.live_vm, self)
         self.shutdown_event = asyncio.Event()
 
     async def start(self):
@@ -53,7 +53,7 @@ class QuantSystem:
         # 백그라운드 태스크 시작
         self.influx_task = asyncio.create_task(self.influx_client.start())
         self.collector_task = asyncio.create_task(self.data_collector.start())
-        self.view_model_task = asyncio.create_task(self.view_model.start_polling())
+        self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 
         try:
             # 종료 시그널이 올 때까지 이벤트 루프 유지
@@ -67,7 +67,7 @@ class QuantSystem:
         print("시스템: 종료 파이프라인 가동...")
 
         # 1. 뷰모델 갱신 중지
-        self.view_model.stop()
+        self.live_vm.stop()
 
         # 2. 미체결 주문 일괄 취소 (에이전트 종료 처리)
         print("시스템: 미체결 주문 전체 취소 중...")
