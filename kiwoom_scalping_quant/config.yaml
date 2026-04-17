@@ -1,0 +1,5 @@
+symbol: '005930'
+initial_balance: 10000000
+slippage: 0.0005
+max_buffer_size: 10000
+ws_url: 'ws://localhost:8080/kiwoom'
