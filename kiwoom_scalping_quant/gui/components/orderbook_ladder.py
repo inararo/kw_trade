@@ -17,10 +17,10 @@ class OrderbookLadderWidget(QWidget):
 
     def _init_ui(self):
         self.layout = QVBoxLayout(self)
-        self.title_label = QLabel("Orderbook Ladder (DOM)", self)
+        self.title_label = QLabel("호가창 래더")
         self.layout.addWidget(self.title_label)
 
-        self.price_label = QLabel("Current Price: -")
+        self.price_label = QLabel("현재가: -")
         self.price_label.setStyleSheet("font-size: 18px; font-weight: bold; color: orange;")
         self.layout.addWidget(self.price_label)
 
@@ -30,8 +30,8 @@ class OrderbookLadderWidget(QWidget):
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.showGrid(x=False, y=True)
-        self.plot_widget.setLabel('bottom', "Quantity")
-        self.plot_widget.setLabel('left', "Price")
+        self.plot_widget.setLabel('bottom', "잔량")
+        self.plot_widget.setLabel('left', "가격")
 
         # 양방향 바 그래프 생성
         # Asks (매도) -> Red, Negative X (왼쪽)
@@ -53,7 +53,7 @@ class OrderbookLadderWidget(QWidget):
 
     @pyqtSlot(float)
     def on_price_updated(self, price: float):
-        self.price_label.setText(f"Current Price: {price:,.0f} KRW")
+        self.price_label.setText(f"현재가: {price:,.0f} 원")
 
     @pyqtSlot(dict)
     def on_orderbook_updated(self, orderbook: Dict):

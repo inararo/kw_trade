@@ -25,7 +25,7 @@ class GUIMonitorCallback(BaseCallback):
 
     def _on_step(self) -> bool:
         if self._is_cancelled:
-            self.signals.log_msg.emit("Training interrupted by user. Early stopping.")
+            self.signals.log_msg.emit("사용자에 의해 학습이 중단되었습니다.")
             return False # False 반환 시 SB3 훈련 루프 종료
 
         if self.n_calls % self.update_freq == 0:
@@ -59,12 +59,12 @@ class TrainingWorker(QThread):
     def run(self):
         try:
             self.signals.started.emit()
-            self.signals.log_msg.emit(f"Starting Maskable PPO Training... (Timesteps: {self.total_timesteps})")
+            self.signals.log_msg.emit(f"Maskable PPO 학습을 시작합니다... (총 스텝: {self.total_timesteps})")
 
             # Agent 학습 루프 실행 (블로킹 콜, 내부적으로 callback이 시그널 송출)
             self.agent.train(total_timesteps=self.total_timesteps, callbacks=[self.callback])
 
-            self.signals.log_msg.emit("Training completed successfully.")
+            self.signals.log_msg.emit("학습이 성공적으로 완료되었습니다.")
             self.signals.finished.emit()
         except Exception as e:
             self.signals.error.emit(str(e))

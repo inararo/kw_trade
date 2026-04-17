@@ -21,94 +21,94 @@ class SettingsTab(QWidget):
         main_layout = QVBoxLayout(self)
 
         # 1. Broker API Group (.env)
-        broker_group = QGroupBox("Broker API (Kiwoom)")
+        broker_group = QGroupBox("브로커 API 연결")
         broker_form = QFormLayout()
 
         self.input_app_key = QLineEdit()
         self.input_app_key.setEchoMode(QLineEdit.EchoMode.Password)
-        broker_form.addRow("App Key:", self.input_app_key)
+        broker_form.addRow("앱 키:", self.input_app_key)
 
         self.input_app_secret = QLineEdit()
         self.input_app_secret.setEchoMode(QLineEdit.EchoMode.Password)
-        broker_form.addRow("App Secret:", self.input_app_secret)
+        broker_form.addRow("앱 시크릿:", self.input_app_secret)
 
         self.input_account = QLineEdit()
-        broker_form.addRow("Account Number:", self.input_account)
+        broker_form.addRow("계좌 번호:", self.input_account)
 
         self.combo_mode = QComboBox()
-        self.combo_mode.addItems(["모의투자 (Virtual)", "실전투자 (Real)"])
-        broker_form.addRow("Trading Mode:", self.combo_mode)
+        self.combo_mode.addItems(["모의투자", "실전투자"])
+        broker_form.addRow("매매 모드:", self.combo_mode)
 
         broker_group.setLayout(broker_form)
         main_layout.addWidget(broker_group)
 
         # 2. Database Group (.env & config.yaml 혼합)
-        db_group = QGroupBox("Database (InfluxDB)")
+        db_group = QGroupBox("데이터베이스")
         db_form = QFormLayout()
 
         self.input_db_url = QLineEdit()
-        db_form.addRow("URL:", self.input_db_url)
+        db_form.addRow("주소:", self.input_db_url)
 
         self.input_db_token = QLineEdit()
         self.input_db_token.setEchoMode(QLineEdit.EchoMode.Password)
-        db_form.addRow("Token:", self.input_db_token)
+        db_form.addRow("토큰:", self.input_db_token)
 
         self.input_db_org = QLineEdit()
-        db_form.addRow("Organization:", self.input_db_org)
+        db_form.addRow("조직:", self.input_db_org)
 
         self.input_db_bucket = QLineEdit()
-        db_form.addRow("Bucket:", self.input_db_bucket)
+        db_form.addRow("버킷:", self.input_db_bucket)
 
         db_group.setLayout(db_form)
         main_layout.addWidget(db_group)
 
         # 3. Risk Management Group (config.yaml)
-        risk_group = QGroupBox("Risk Management")
+        risk_group = QGroupBox("리스크 관리")
         risk_form = QFormLayout()
 
         self.spin_stop_loss = QDoubleSpinBox()
         self.spin_stop_loss.setSuffix(" %")
         self.spin_stop_loss.setDecimals(2)
         self.spin_stop_loss.setRange(-20.0, 0.0)
-        risk_form.addRow("Hard Stop Loss:", self.spin_stop_loss)
+        risk_form.addRow("하드 손절 라인:", self.spin_stop_loss)
 
         self.spin_max_position = QDoubleSpinBox()
         self.spin_max_position.setSuffix(" %")
         self.spin_max_position.setRange(1.0, 100.0)
-        risk_form.addRow("Max Position Size:", self.spin_max_position)
+        risk_form.addRow("최대 진입 자금 비율:", self.spin_max_position)
 
         self.spin_cb_timeout = QSpinBox()
-        self.spin_cb_timeout.setSuffix(" Sec")
+        self.spin_cb_timeout.setSuffix(" 초")
         self.spin_cb_timeout.setRange(1, 60)
-        risk_form.addRow("Circuit Breaker Timeout:", self.spin_cb_timeout)
+        risk_form.addRow("서킷 브레이커 대기 시간:", self.spin_cb_timeout)
 
         risk_group.setLayout(risk_form)
         main_layout.addWidget(risk_group)
 
         # 4. System Group
-        system_group = QGroupBox("System & Alerts")
+        system_group = QGroupBox("시스템 알림 및 로깅")
         sys_form = QFormLayout()
 
         self.input_tg_token = QLineEdit()
         self.input_tg_token.setEchoMode(QLineEdit.EchoMode.Password)
-        sys_form.addRow("Telegram Bot Token:", self.input_tg_token)
+        sys_form.addRow("텔레그램 봇 토큰:", self.input_tg_token)
 
         self.input_tg_chat = QLineEdit()
-        sys_form.addRow("Telegram Chat ID:", self.input_tg_chat)
+        sys_form.addRow("텔레그램 채팅 ID:", self.input_tg_chat)
 
         self.combo_log_level = QComboBox()
         self.combo_log_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
-        sys_form.addRow("Log Level:", self.combo_log_level)
+        sys_form.addRow("로그 레벨:", self.combo_log_level)
 
         system_group.setLayout(sys_form)
         main_layout.addWidget(system_group)
 
         # 5. 하단 제어 버튼
         btn_layout = QHBoxLayout()
-        self.btn_test = QPushButton("Test Connection")
+        self.btn_test = QPushButton("연결 테스트")
         self.btn_test.clicked.connect(self._on_test_clicked)
 
-        self.btn_save = QPushButton("Save Settings")
+        self.btn_save = QPushButton("설정 저장")
         self.btn_save.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
         self.btn_save.clicked.connect(self._on_save_clicked)
 
@@ -144,7 +144,7 @@ class SettingsTab(QWidget):
     # --- UI Action Handlers ---
     def _on_test_clicked(self):
         self.btn_test.setEnabled(False)
-        self.btn_test.setText("Testing...")
+        self.btn_test.setText("테스트 진행 중...")
         data = self._get_current_data()
         self.view_model.test_connection(data)
 
@@ -165,7 +165,7 @@ class SettingsTab(QWidget):
 
         # Config
         self.input_account.setText(config.get("account_number", ""))
-        self.combo_mode.setCurrentText(config.get("trading_mode", "모의투자 (Virtual)"))
+        self.combo_mode.setCurrentText(config.get("trading_mode", "모의투자"))
         self.input_db_bucket.setText(config.get("influx_bucket", "kiwoom_data"))
         self.spin_stop_loss.setValue(config.get("stop_loss_pct", -2.0))
         self.spin_max_position.setValue(config.get("max_position_pct", 50.0))
@@ -175,18 +175,18 @@ class SettingsTab(QWidget):
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):
-        QMessageBox.information(self, "Success", msg)
+        QMessageBox.information(self, "저장 성공", msg)
 
     @pyqtSlot(str)
     def on_error(self, msg: str):
-        QMessageBox.warning(self, "Error", msg)
+        QMessageBox.warning(self, "오류", msg)
 
     @pyqtSlot(bool, str)
     def on_connection_test_completed(self, success: bool, msg: str):
         self.btn_test.setEnabled(True)
-        self.btn_test.setText("Test Connection")
+        self.btn_test.setText("연결 테스트")
 
         if success:
-            QMessageBox.information(self, "Connection Test Passed", msg)
+            QMessageBox.information(self, "테스트 성공", msg)
         else:
-            QMessageBox.critical(self, "Connection Test Failed", msg)
+            QMessageBox.critical(self, "테스트 실패", msg)

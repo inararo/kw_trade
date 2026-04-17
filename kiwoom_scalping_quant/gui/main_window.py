@@ -17,7 +17,7 @@ class MainWindow(QMainWindow):
         self.system = system
         self.view_model = view_model
 
-        self.setWindowTitle("Kiwoom Scalping Quant - Professional HTS")
+        self.setWindowTitle("키움 스캘핑 퀀트 - 전문가용 HTS")
         self.setGeometry(100, 100, 1200, 800)
 
         self._init_menu_bar()
@@ -88,15 +88,15 @@ class MainWindow(QMainWindow):
 
         self.tab_settings = SettingsTab(settings_vm)
 
-        self.tabs.addTab(self.tab_live, "Live Dashboard")
-        self.tabs.addTab(self.tab_asset, "Asset & Data")
-        self.tabs.addTab(self.tab_ai, "AI Training Studio")
-        self.tabs.addTab(self.tab_settings, "Settings")
+        self.tabs.addTab(self.tab_live, "라이브 대시보드")
+        self.tabs.addTab(self.tab_asset, "종목 및 데이터 관리")
+        self.tabs.addTab(self.tab_ai, "AI 학습 스튜디오")
+        self.tabs.addTab(self.tab_settings, "환경 설정")
 
     def _init_status_bar(self):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready. API Disconnected. Latency: - ms")
+        self.status_bar.showMessage("대기 중 | API 미연결 | 지연 시간: - ms")
 
         # 차후 ViewModel이나 DataCollector에서 latency 시그널을 연결하여 갱신 가능
 

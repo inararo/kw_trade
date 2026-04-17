@@ -4,7 +4,7 @@ import pyqtgraph as pg
 
 class AITrainingStudioTab(QWidget):
     """
-    탭 C: AI 학습 및 모니터링 (AI Training Studio)
+    탭 C: AI 학습 및 모니터링
     학습 파라미터 제어 및 시각화 패널.
     """
     def __init__(self, view_model):
@@ -17,26 +17,26 @@ class AITrainingStudioTab(QWidget):
         main_layout = QHBoxLayout(self)
 
         # 1. 좌측: 학습 파라미터 폼
-        params_group = QGroupBox("Training Parameters")
+        params_group = QGroupBox("학습 파라미터 설정")
         form_layout = QFormLayout()
 
         self.spin_steps = QSpinBox()
         self.spin_steps.setRange(1000, 1000000)
         self.spin_steps.setValue(10000)
-        form_layout.addRow("Total Timesteps:", self.spin_steps)
+        form_layout.addRow("총 스텝 수:", self.spin_steps)
 
         self.spin_lr = QDoubleSpinBox()
         self.spin_lr.setDecimals(5)
         self.spin_lr.setRange(0.00001, 0.1)
         self.spin_lr.setValue(0.00030)
-        form_layout.addRow("Learning Rate:", self.spin_lr)
+        form_layout.addRow("학습률:", self.spin_lr)
 
-        self.btn_start = QPushButton("Start Training")
+        self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
         self.btn_start.clicked.connect(self._on_start_clicked)
         form_layout.addRow("", self.btn_start)
 
-        self.btn_stop = QPushButton("Stop Training")
+        self.btn_stop = QPushButton("학습 중지")
         self.btn_stop.setStyleSheet("background-color: orange; color: white;")
         self.btn_stop.clicked.connect(self._on_stop_clicked)
         self.btn_stop.setEnabled(False)
@@ -46,15 +46,15 @@ class AITrainingStudioTab(QWidget):
         main_layout.addWidget(params_group, stretch=1)
 
         # 2. 우측: 실시간 학습 곡선 (PyQtGraph)
-        chart_group = QGroupBox("Training Progress / Reward Curve")
+        chart_group = QGroupBox("학습 진행 상황 및 보상 곡선")
         chart_layout = QVBoxLayout()
 
         pg.setConfigOption('background', '#2b2b2b')
         pg.setConfigOption('foreground', 'w')
 
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.setLabel('bottom', "Steps")
-        self.plot_widget.setLabel('left', "Mean Reward")
+        self.plot_widget.setLabel('bottom', "진행 스텝")
+        self.plot_widget.setLabel('left', "평균 보상")
         self.plot_widget.showGrid(x=True, y=True)
 
         self.reward_curve = self.plot_widget.plot(pen=pg.mkPen('g', width=2))
@@ -115,7 +115,7 @@ class AITrainingStudioTab(QWidget):
 
     @pyqtSlot(str)
     def on_error(self, err: str):
-        self.log_list.addItem(f"[ERROR] {err}")
+        self.log_list.addItem(f"[오류] {err}")
         self.log_list.scrollToBottom()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)

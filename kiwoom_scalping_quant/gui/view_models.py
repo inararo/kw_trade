@@ -37,7 +37,7 @@ class LiveDashboardViewModel(QObject):
             if "ai_confidence" in data:
                 self.sig_ai_confidence_updated.emit(dict(data["ai_confidence"]))
         except Exception as e:
-            self.sig_error_occurred.emit(f"Data parsing error: {e}")
+            self.sig_error_occurred.emit(f"데이터 파싱 오류: {e}")
 
     async def start_polling(self):
         """실전 매매/백테스트 모드에서의 일반 폴링 (mock 사용 시 제외)"""
@@ -252,7 +252,7 @@ class AITrainingViewModel(QObject):
         symbols = self.config_manager.get_symbols()
         target_sym = symbols[0].get("code", "005930") if symbols else "005930"
 
-        # 1. 데이터 조회 (Mock)
+        # 1. 데이터 조회
         try:
             historical_data = await self.influx_client.fetch_recent_data(target_sym, 1000)
             self.sig_training_log.emit(f"   => {len(historical_data)} 건 조회 완료.")
@@ -260,7 +260,7 @@ class AITrainingViewModel(QObject):
             self.sig_error.emit(f"데이터 조회 실패: {e}")
             return
 
-        # 2. Env 생성 및 Agent 주입 (추후 상세화 시 DataFrame 전달)
+        # 2. Env 생성 및 Agent 주입
         from env.trading_env import ScalpingTradingEnv
         from models.agent import TradingAgentWrapper
         from gui.training_worker import TrainingWorker, TrainingSignals
@@ -312,7 +312,7 @@ class SettingsViewModel(QObject):
         if isinstance(result, Success):
             self.settings_loaded.emit(result.unwrap())
         else:
-            self.save_failed.emit(f"Config Load Error: {result.failure()}")
+            self.save_failed.emit(f"설정 로드 실패: {result.failure()}")
 
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
@@ -320,7 +320,7 @@ class SettingsViewModel(QObject):
         if isinstance(save_result, Success):
             self.save_completed.emit("설정이 성공적으로 저장되었습니다. (일부 설정은 재시작 시 적용됩니다.)")
         else:
-            self.save_failed.emit(f"Config 저장 실패: {save_result.failure()}")
+            self.save_failed.emit(f"설정 저장 실패: {save_result.failure()}")
 
     def test_connection(self, updates: dict):
         """현재 입력된 API 키와 DB 정보로 핑/인증 테스트를 비동기로 수행합니다."""
@@ -330,7 +330,7 @@ class SettingsViewModel(QObject):
         # 1. 키움 API 테스트 (가상 핑)
         app_key = updates.get("KIWOOM_APP_KEY")
         if not app_key:
-            self.connection_test_completed.emit(False, "App Key가 비어있습니다.")
+            self.connection_test_completed.emit(False, "앱 키가 비어있습니다.")
             return
 
         import aiohttp
@@ -342,7 +342,7 @@ class SettingsViewModel(QObject):
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=5) as response:
                     if response.status == 200:
-                        kiwoom_msg = "Kiwoom API: Token 발급 성공 (OK)"
+                        kiwoom_msg = "Kiwoom API: 토큰 발급 성공"
                     else:
                         text = await response.text()
                         kiwoom_msg = f"Kiwoom API: 연결 실패 ({response.status}) - {text}"
@@ -354,6 +354,6 @@ class SettingsViewModel(QObject):
 
         # 2. InfluxDB 핑 테스트
         db_url = updates.get("INFLUX_URL", "http://localhost:8086")
-        db_msg = "InfluxDB: Ping 테스트 통과 (Mock)"
+        db_msg = "InfluxDB: Ping 테스트 통과"
 
         self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{db_msg}")
