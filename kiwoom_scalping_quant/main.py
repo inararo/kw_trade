@@ -110,6 +110,13 @@ def main():
     with loop:
         try:
             loop.run_until_complete(system.start())
+        except KeyboardInterrupt:
+            print("\n시스템: 사용자에 의해 강제 종료되었습니다 (KeyboardInterrupt).")
+            # 강제 종료 시에도 안전 종료 루틴 시도
+            try:
+                loop.run_until_complete(system.stop())
+            except Exception as stop_e:
+                print(f"시스템: 강제 종료 중 에러 발생: {stop_e}")
         except RuntimeError as e:
             if "Event loop stopped before Future completed" in str(e):
                 print("시스템: 비동기 루프가 정상적으로 종료되었습니다.")

@@ -28,30 +28,30 @@ class MainWindow(QMainWindow):
         menu_bar = self.menuBar()
 
         # File Menu
-        file_menu = menu_bar.addMenu("파일(File)")
+        file_menu = menu_bar.addMenu("파일")
         exit_action = QAction("프로그램 종료", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         file_menu.addAction("로그 파일 열기")
 
         # Trading Menu
-        trading_menu = menu_bar.addMenu("매매(Trading)")
+        trading_menu = menu_bar.addMenu("매매")
         trading_menu.addAction("라이브 대시보드 열기")
         trading_menu.addAction("미체결 전체 취소")
         trading_menu.addAction("당일 손익 초기화")
 
         # Data Menu
-        data_menu = menu_bar.addMenu("데이터(Data)")
+        data_menu = menu_bar.addMenu("데이터")
         data_menu.addAction("종목 관리 열기")
         data_menu.addAction("DB 상태 점검")
 
         # AI Menu
-        ai_menu = menu_bar.addMenu("AI 학습(AI Lab)")
+        ai_menu = menu_bar.addMenu("AI 학습")
         ai_menu.addAction("학습 스튜디오 열기")
         ai_menu.addAction("모델 검증 도구")
 
         # Settings Menu
-        settings_menu = menu_bar.addMenu("설정(Settings)")
+        settings_menu = menu_bar.addMenu("설정")
         settings_menu.addAction("환경 설정 창 열기")
         settings_menu.addAction("API 토큰 강제 갱신")
 
