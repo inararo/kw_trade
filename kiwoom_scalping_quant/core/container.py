@@ -1,9 +1,12 @@
 from dependency_injector import containers, providers
 
+import os
 from core.data_collector import DataCollector
 from core.order_manager import OrderManager
+from core.config_manager import ConfigManager
+from core.historical_fetcher import HistoricalFetcher
 from db.influx_client import AsyncInfluxDBClient
-from gui.view_models import MarketDataViewModel
+from gui.view_models import MarketDataViewModel, AssetDataViewModel
 
 class Container(containers.DeclarativeContainer):
     """
@@ -13,6 +16,15 @@ class Container(containers.DeclarativeContainer):
 
     # Configuration provider
     config = providers.Configuration()
+
+    config_manager = providers.Singleton(
+        ConfigManager,
+        config_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
+    )
+
+    historical_fetcher = providers.Singleton(
+        HistoricalFetcher
+    )
 
     # DB Client (싱글톤)
     influx_client = providers.Singleton(
@@ -37,4 +49,11 @@ class Container(containers.DeclarativeContainer):
     market_data_view_model = providers.Factory(
         MarketDataViewModel,
         data_collector=data_collector
+    )
+
+    asset_data_view_model = providers.Factory(
+        AssetDataViewModel,
+        config_manager=config_manager,
+        historical_fetcher=historical_fetcher,
+        influx_client=influx_client
     )

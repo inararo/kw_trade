@@ -49,6 +49,30 @@ class AsyncInfluxDBClient:
         except Exception as e:
             self.logger.error(f"Point 변환 오류: {e}")
 
+    async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
+        """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
+        if not data_list:
+            return
+
+        points = []
+        for data in data_list:
+            try:
+                point = Point(measurement) \
+                    .tag("symbol", data.get("symbol", "UNKNOWN")) \
+                    .field("price", float(data.get("price", 0))) \
+                    .time(data.get("timestamp"))
+                points.append(point)
+            except Exception as e:
+                self.logger.warning(f"Bulk Insert 포인트 변환 실패: {e}")
+
+        if points:
+            try:
+                # InfluxDB의 write_api는 리스트를 받아 한 번에 전송 가능
+                await self.write_api.write(bucket=self.bucket, record=points)
+                self.logger.info(f"Bulk Insert 완료: {len(points)}건 적재됨.")
+            except Exception as e:
+                self.logger.error(f"Bulk Insert DB 전송 실패: {e}")
+
     async def _flush_batch(self):
         if not self.batch_queue:
             return

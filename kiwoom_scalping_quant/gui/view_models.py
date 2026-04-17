@@ -1,6 +1,8 @@
 import asyncio
 from PyQt6.QtCore import QObject, pyqtSignal
-from typing import Dict, Any
+from typing import Dict, Any, List
+import asyncio
+from returns.result import Success, Failure
 
 class MarketDataViewModel(QObject):
     """
@@ -49,3 +51,79 @@ class MarketDataViewModel(QObject):
 
     def stop(self):
         self._is_running = False
+
+class AssetDataViewModel(QObject):
+    """
+    AssetDataManagerTab을 위한 ViewModel.
+    UI 이벤트(종목 로드/저장, 데이터 수집 시작)를 Core 로직으로 연결하고
+    수집 상태(Progress)를 UI로 Signal Emit 합니다.
+    """
+    # UI로 보낼 시그널들
+    symbols_loaded = pyqtSignal(list)
+    symbol_update_failed = pyqtSignal(str)
+    symbol_update_success = pyqtSignal(str)
+
+    fetch_progress_updated = pyqtSignal(int, str) # 진행률(%), 메시지
+    fetch_completed = pyqtSignal(str)
+    fetch_failed = pyqtSignal(str)
+
+    def __init__(self, config_manager, historical_fetcher, influx_client):
+        super().__init__()
+        self.config_manager = config_manager
+        self.historical_fetcher = historical_fetcher
+        self.influx_client = influx_client
+
+    def load_symbols(self):
+        # ConfigManager의 Result 처리
+        result = self.config_manager.load_config()
+        if isinstance(result, Success):
+            symbols = self.config_manager.get_symbols()
+            self.symbols_loaded.emit(symbols)
+        else:
+            self.symbol_update_failed.emit(f"설정 로드 실패: {result.failure()}")
+
+    def add_symbol(self, code: str, name: str):
+        result = self.config_manager.add_symbol(code, name)
+        if isinstance(result, Success):
+            self.symbol_update_success.emit(f"종목 추가 완료: {name}")
+            self.load_symbols() # UI 갱신 트리거
+        else:
+            self.symbol_update_failed.emit(str(result.failure()))
+
+    def remove_symbol(self, code: str):
+        result = self.config_manager.remove_symbol(code)
+        if isinstance(result, Success):
+            self.symbol_update_success.emit(f"종목 삭제 완료: {code}")
+            self.load_symbols()
+        else:
+            self.symbol_update_failed.emit(str(result.failure()))
+
+    def start_historical_fetch(self, symbol: str, start_date: str):
+        # QThread/QTimer 대신 asyncio.create_task를 통해 비동기 실행을 위임
+        # qasync를 사용하므로 안전함
+        asyncio.create_task(self._fetch_and_store(symbol, start_date))
+
+    async def _fetch_and_store(self, symbol: str, start_date: str):
+        # 1. API 수집 (진행률 콜백을 시그널 Emit으로 연결)
+        def update_progress(pct: int, msg: str):
+            self.fetch_progress_updated.emit(pct, msg)
+
+        self.fetch_progress_updated.emit(0, "데이터 수집 시작...")
+
+        # future_safe Result 반환 확인
+        fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
+
+        if isinstance(fetch_result, Failure):
+            self.fetch_failed.emit(f"수집 실패: {fetch_result.failure()}")
+            return
+
+        data_list = fetch_result.unwrap()
+
+        # 2. InfluxDB Bulk Insert
+        self.fetch_progress_updated.emit(90, "InfluxDB 적재 중...")
+        try:
+            await self.influx_client.bulk_insert(data_list)
+            self.fetch_progress_updated.emit(100, "모든 작업 완료")
+            self.fetch_completed.emit(f"총 {len(data_list)}건 적재 완료!")
+        except Exception as e:
+            self.fetch_failed.emit(f"DB 저장 중 에러: {e}")

@@ -61,10 +61,15 @@ class MainWindow(QMainWindow):
         # 각 탭 초기화 및 의존성 주입
         self.tab_live = LiveDashboardTab(self.view_model)
 
-        # `__file__` is kiwoom_scalping_quant/gui/main_window.py
-        # 1 dirname -> gui/, 2 dirnames -> kiwoom_scalping_quant/
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.yaml")
-        self.tab_asset = AssetDataManagerTab(config_path)
+        # AssetDataViewModel은 main_window를 생성할 때 주입받은 시스템 객체나 별도 라우팅을 거쳐야 하지만
+        # 단순화를 위해 시스템 뷰모델에서 가져오거나 DI 컨테이너에서 꺼내옵니다.
+        # 여기서는 MainWindow 생성자가 asset_data_view_model도 받도록 가정하고
+        # 임시로 getattr을 사용하여 확장 가능성을 열어둡니다. (또는 시스템 객체를 통해)
+        asset_vm = getattr(self.system, "asset_data_view_model", None)
+        if asset_vm is None and hasattr(self.system, "container"):
+            asset_vm = self.system.container.asset_data_view_model()
+
+        self.tab_asset = AssetDataManagerTab(asset_vm)
 
         self.tab_ai = AITrainingStudioTab()
 
