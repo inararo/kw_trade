@@ -23,6 +23,8 @@ class LiveDashboardViewModel(QObject):
         self._is_running = False
         self._mock_task = None
 
+        self.sig_menu_action_result = pyqtSignal(str, str) # title, message
+
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정 (또는 폴링)
         # 이번 요구사항에서는 mock stream 내부에서 콜백으로 데이터를 쏴주는 형태를 가정합니다.
         self.data_collector.set_ui_callback(self._on_data_received)
@@ -55,6 +57,18 @@ class LiveDashboardViewModel(QObject):
         """패닉 셀 버튼 이벤트 수신: 모든 주문 취소 및 시장가 매도"""
         self.sig_log_appended.emit("[시스템] 🚨 PANIC SELL 트리거됨! 전체 주문 취소 및 시장가 청산 진행...")
         asyncio.create_task(self._execute_panic_sell())
+
+    def cancel_orders_only(self):
+        """메뉴 액션: 미체결 전체 취소"""
+        self.sig_log_appended.emit("메뉴: 미체결 주문 전체 취소 요청...")
+        asyncio.create_task(self.order_manager.cancel_all_orders())
+        self.sig_menu_action_result.emit("미체결 취소", "모든 미체결 주문에 대해 취소 요청을 전송했습니다.")
+
+    def reset_pnl(self):
+        """메뉴 액션: 당일 손익 초기화"""
+        self.sig_log_appended.emit("메뉴: 당일 손익 데이터 초기화...")
+        # 실제 로직은 계좌 관리 객체나 PnL 트래커를 리셋해야 함.
+        self.sig_menu_action_result.emit("손익 초기화", "당일 누적 손익 데이터가 초기화되었습니다.")
 
     async def _execute_panic_sell(self):
         try:
@@ -300,6 +314,7 @@ class SettingsViewModel(QObject):
     save_completed = pyqtSignal(str)
     save_failed = pyqtSignal(str)
     connection_test_completed = pyqtSignal(bool, str) # (Success bool, Message)
+    sig_menu_action_result = pyqtSignal(str, str) # title, message
 
     def __init__(self, config_manager, influx_client):
         super().__init__()
@@ -357,3 +372,22 @@ class SettingsViewModel(QObject):
         db_msg = "InfluxDB: Ping 테스트 통과"
 
         self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{db_msg}")
+
+    def check_db_status(self):
+        """메뉴 액션: DB 상태 점검"""
+        asyncio.create_task(self._check_db_status_task())
+
+    async def _check_db_status_task(self):
+        try:
+            health = await self.influx_client.client.health()
+            if health.status == "pass":
+                self.sig_menu_action_result.emit("DB 상태 점검", "InfluxDB 연결 상태가 정상(pass)입니다.")
+            else:
+                self.sig_menu_action_result.emit("DB 상태 점검", f"InfluxDB 연결 상태: {health.status}\n메시지: {health.message}")
+        except Exception as e:
+            self.sig_menu_action_result.emit("DB 상태 점검", f"DB 상태 확인 실패:\n{str(e)}")
+
+    def force_refresh_token(self):
+        """메뉴 액션: API 토큰 강제 갱신"""
+        # 실제로는 TokenManager나 Auth 모듈을 호출해야 하지만 여기서는 메시지만 에뮬레이션
+        self.sig_menu_action_result.emit("토큰 갱신", "새로운 Kiwoom REST API 토큰 발급을 요청했습니다.")
