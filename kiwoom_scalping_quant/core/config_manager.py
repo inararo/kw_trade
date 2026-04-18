@@ -46,6 +46,20 @@ class ConfigManager:
         """두 파일의 출처를 신경 쓰지 않고 쉽게 값을 가져갈 수 있는 래퍼 메서드."""
         return self._config_cache.get(key, default)
 
+    def get_rest_url(self) -> str:
+        """현재 설정된 trading_mode에 따른 REST API Base URL을 반환합니다."""
+        kiwoom_config = self.get("kiwoom", {})
+        mode = kiwoom_config.get("trading_mode", "virtual")
+        urls = kiwoom_config.get("rest_base_url", {})
+        return urls.get(mode, "https://openapivts.kiwoom.com")
+
+    def get_ws_url(self) -> str:
+        """현재 설정된 trading_mode에 따른 WebSocket URL을 반환합니다."""
+        kiwoom_config = self.get("kiwoom", {})
+        mode = kiwoom_config.get("trading_mode", "virtual")
+        urls = kiwoom_config.get("ws_url", {})
+        return urls.get(mode, "wss://mockapi.kiwoom.com:10000/api/dostk/websocket")
+
     def save_config(self) -> Result[bool, Exception]:
         """현재 캐시된 설정들을 .env와 config.yaml에 분리하여 저장합니다."""
         try:

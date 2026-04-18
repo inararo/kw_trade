@@ -35,6 +35,8 @@ class OrderManager:
 
         self.daily_realized_pnl = 0.0
 
+        self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://openapivts.kiwoom.com"
+
         self.rate_limit = 5
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)
         self.order_timestamps = []
@@ -108,7 +110,12 @@ class OrderManager:
             self.logger.info(f"주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
 
             # API 요청 전송 로직 (Mock)
-            # 실제로는 aiohttp를 사용하여 REST API를 쏘고, 성공하면 리턴
+            # 실제 구현에서는 aiohttp를 활용하여 self.rest_base_url 에 요청을 전송합니다.
+            # endpoint = f"{self.rest_base_url}/uapi/domestic-stock/v1/trading/order-cash"
+            # headers = {"authorization": f"Bearer {self.auth_manager.get_token()}", ...}
+            # async with aiohttp.ClientSession() as session:
+            #     async with session.post(endpoint, json=payload, headers=headers) as resp:
+            #         ...
 
             # 백그라운드에서 3초 타임아웃 검사 실행
             asyncio.create_task(self._wait_for_ack(internal_id, timeout=3.0))

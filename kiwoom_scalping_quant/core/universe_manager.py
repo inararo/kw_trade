@@ -12,8 +12,15 @@ class UniverseManager:
     KOSPI, KOSDAQ 전체 종목 중 스캘핑(초단타)에 부적합한 종목(ETF, ETN, 스팩, 우선주 등)을 필터링하고
     거래대금 상위 Top N 종목을 추출하여 매매 유니버스를 구성합니다.
     """
-    def __init__(self):
-        self.base_url = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+    def __init__(self, config_manager=None):
+        self.config_manager = config_manager
+
+        self.base_url = "https://openapi.kiwoom.com"
+        if self.config_manager and hasattr(self.config_manager, "get_rest_url"):
+            self.base_url = self.config_manager.get_rest_url()
+        else:
+            self.base_url = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+
         self.app_key = os.getenv("KIWOOM_APP_KEY")
         self.app_secret = os.getenv("KIWOOM_APP_SECRET")
         self.logger = logging.getLogger("UniverseManager")

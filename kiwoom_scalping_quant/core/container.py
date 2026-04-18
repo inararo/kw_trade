@@ -25,11 +25,13 @@ class Container(containers.DeclarativeContainer):
     )
 
     historical_fetcher = providers.Singleton(
-        HistoricalFetcher
+        HistoricalFetcher,
+        config_manager=config_manager
     )
 
     universe_manager = providers.Singleton(
-        UniverseManager
+        UniverseManager,
+        config_manager=config_manager
     )
 
     # DB Client (싱글톤)

@@ -13,7 +13,7 @@ class DataCollector:
     def __init__(self, config):
         self.config = config
 
-        self.ws_url = config.get('ws_url', 'ws://localhost:8080/kiwoom')
+        self.ws_url = config.get_ws_url() if hasattr(config, 'get_ws_url') else config.get('ws_url', 'wss://mockapi.kiwoom.com:10000/api/dostk/websocket')
         self.max_buffer_size = config.get('max_buffer_size', 10000)
 
         # 구독 관리자

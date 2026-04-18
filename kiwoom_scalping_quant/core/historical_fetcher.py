@@ -13,8 +13,14 @@ class HistoricalFetcher:
     키움 REST API를 통해 과거 분봉/틱 데이터를 비동기적으로 수집.
     엄격한 시간당 호출 제한(Throttling) 회피 및 로컬 Checkpoint 기반 Resume를 지원합니다.
     """
-    def __init__(self):
-        self.base_url = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+    def __init__(self, config_manager=None):
+        self.config_manager = config_manager
+        self.base_url = "https://openapi.kiwoom.com"
+        if self.config_manager and hasattr(self.config_manager, "get_rest_url"):
+            self.base_url = self.config_manager.get_rest_url()
+        else:
+            self.base_url = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+
         self.app_key = os.getenv("KIWOOM_APP_KEY")
         self.app_secret = os.getenv("KIWOOM_APP_SECRET")
         self.logger = logging.getLogger("HistoricalFetcher")

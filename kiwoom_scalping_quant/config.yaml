@@ -1,3 +1,12 @@
+kiwoom:
+  trading_mode: "virtual" # 'real' or 'virtual'
+  rest_base_url:
+    real: "https://openapi.kiwoom.com"
+    virtual: "https://openapivts.kiwoom.com"
+  ws_url:
+    real: "wss://api.kiwoom.com:10000/api/dostk/websocket"
+    virtual: "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
+
 symbol: '005930'
 universe:
   - code: '005930'
@@ -10,7 +19,6 @@ initial_balance: 10000000
 slippage: 0.0005
 max_buffer_size: 10000
 db_batch_size: 500
-ws_url: 'ws://localhost:8080/kiwoom'
 seq_len: 10
 global_max_loss: -500000
 global_max_exposure: 50000000

@@ -378,7 +378,18 @@ class SettingsViewModel(QObject):
             return
 
         import aiohttp
-        base_url = updates.get("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+        # 업데이트된 설정을 임시 반영하여 REST URL 획득 (get_rest_url() 사용을 위해 임시 저장)
+        old_mode = self.config_manager.get("kiwoom", {}).get("trading_mode")
+
+        # Test를 위해 모드만 잠시 덮어쓰기 (임의)
+        mode = updates.get("trading_mode", "virtual")
+        base_url = "https://openapi.kiwoom.com" if mode == "real" else "https://openapivts.kiwoom.com"
+
+        # 만약 dict 구조가 온전하다면
+        kiwoom_conf = self.config_manager.get("kiwoom", {})
+        if "rest_base_url" in kiwoom_conf:
+            base_url = kiwoom_conf["rest_base_url"].get(mode, base_url)
+
         url = f"{base_url}/oauth2/tokenP"
         payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": updates.get("KIWOOM_APP_SECRET", "")}
 
