@@ -108,6 +108,14 @@ class AsyncInfluxDBClient:
             self.logger.error(f"InfluxDB Write 실패: {e}")
             # 실패 시 다시 큐에 넣거나 로컬 파일 시스템에 Fallback 처리 가능
 
+    async def ping(self) -> bool:
+        """InfluxDB 서버의 상태(Ping)를 비동기로 점검합니다."""
+        try:
+            return await self.client.ping()
+        except Exception as e:
+            self.logger.error(f"InfluxDB Ping 실패: {e}")
+            return False
+
     async def close(self):
         self.is_running = False
         await self._flush_batch()

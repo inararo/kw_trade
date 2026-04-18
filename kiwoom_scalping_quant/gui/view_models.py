@@ -378,11 +378,12 @@ class SettingsViewModel(QObject):
 
     async def _check_db_status_task(self):
         try:
-            health = await self.influx_client.client.health()
-            if health.status == "pass":
-                self.sig_menu_action_result.emit("DB 상태 점검", "InfluxDB 연결 상태가 정상(pass)입니다.")
+            # InfluxDBClientAsync는 health()를 직접 노출하지 않고 ping() 사용
+            is_alive = await getattr(self.influx_client, 'ping', lambda: self.influx_client.client.ping())()
+            if is_alive:
+                self.sig_menu_action_result.emit("DB 상태 점검", "InfluxDB 연결 상태가 정상(Ping 성공)입니다.")
             else:
-                self.sig_menu_action_result.emit("DB 상태 점검", f"InfluxDB 연결 상태: {health.status}\n메시지: {health.message}")
+                self.sig_menu_action_result.emit("DB 상태 점검", "InfluxDB 서버와 통신할 수 없습니다 (Ping 실패). URL과 설정을 확인하세요.")
         except Exception as e:
             self.sig_menu_action_result.emit("DB 상태 점검", f"DB 상태 확인 실패:\n{str(e)}")
 
