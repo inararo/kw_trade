@@ -80,8 +80,17 @@ class QuantSystem:
         # 4. 백그라운드 태스크 Cancel
         if hasattr(self, 'view_model_task') and not self.view_model_task.done():
             self.view_model_task.cancel()
+            try:
+                await self.view_model_task
+            except asyncio.CancelledError:
+                pass
+
         if hasattr(self, 'collector_task') and not self.collector_task.done():
             self.collector_task.cancel()
+            try:
+                await self.collector_task
+            except asyncio.CancelledError:
+                pass
 
         # 5. InfluxDB 등 DB 커넥션 종료 및 잔여 버퍼 Flush
         print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")

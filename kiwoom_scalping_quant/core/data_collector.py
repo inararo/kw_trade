@@ -34,6 +34,7 @@ class DataCollector:
 
         self.logger = logging.getLogger("DataCollector")
         self._ui_callback = None
+        self._watchdog_task = None
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
@@ -115,7 +116,7 @@ class DataCollector:
     async def start(self):
         self.is_running = True
         # Watchdog 태스크 시작
-        asyncio.create_task(self._watchdog())
+        self._watchdog_task = asyncio.create_task(self._watchdog())
 
         try:
             while self.is_running:
@@ -212,6 +213,13 @@ class DataCollector:
     async def stop(self):
         """데이터 수집기를 안전하게 종료합니다."""
         self.is_running = False
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+            try:
+                await self._watchdog_task
+            except asyncio.CancelledError:
+                pass
+
         if self.ws_connection:
             try:
                 await self.ws_connection.close()

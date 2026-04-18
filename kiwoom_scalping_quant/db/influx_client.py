@@ -19,11 +19,12 @@ class AsyncInfluxDBClient:
         self.batch_size = config.get("db_batch_size", 500)
         self.logger = logging.getLogger("InfluxDBClient")
         self.is_running = False
+        self._flush_task = None
 
     async def start(self):
         """이벤트 루프가 시작된 후 메인 태스크에서 호출되어야 함"""
         self.is_running = True
-        asyncio.create_task(self._periodic_flush())
+        self._flush_task = asyncio.create_task(self._periodic_flush())
 
     async def _periodic_flush(self):
         """배치가 꽉 차지 않아도 N초마다 남은 데이터를 플러시"""
@@ -118,5 +119,11 @@ class AsyncInfluxDBClient:
 
     async def close(self):
         self.is_running = False
+        if self._flush_task and not self._flush_task.done():
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except asyncio.CancelledError:
+                pass
         await self._flush_batch()
         await self.client.close()
