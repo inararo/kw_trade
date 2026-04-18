@@ -7,6 +7,7 @@ from gui.tabs.live_dashboard import LiveDashboardTab
 from gui.tabs.asset_data_manager import AssetDataManagerTab
 from gui.tabs.ai_training_studio import AITrainingStudioTab
 from gui.tabs.settings_tab import SettingsTab
+from gui.tabs.backtest_tab import BacktestStudioTab
 
 class MainWindow(QMainWindow):
     """
@@ -71,15 +72,15 @@ class MainWindow(QMainWindow):
         action_open_ai.triggered.connect(lambda: self.tabs.setCurrentIndex(2))
         ai_menu.addAction(action_open_ai)
 
-        action_model_val = QAction("모델 검증 도구", self)
-        action_model_val.triggered.connect(self._open_model_validation)
+        action_model_val = QAction("시각적 백테스트 열기", self)
+        action_model_val.triggered.connect(lambda: self.tabs.setCurrentIndex(3))
         ai_menu.addAction(action_model_val)
 
         # Settings Menu
         settings_menu = menu_bar.addMenu("설정")
 
         action_open_settings = QAction("환경 설정 창 열기", self)
-        action_open_settings.triggered.connect(lambda: self.tabs.setCurrentIndex(3))
+        action_open_settings.triggered.connect(lambda: self.tabs.setCurrentIndex(4))
         settings_menu.addAction(action_open_settings)
 
         action_force_token = QAction("API 토큰 강제 갱신", self)
@@ -95,8 +96,6 @@ class MainWindow(QMainWindow):
         os.makedirs(log_dir, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(log_dir))
 
-    def _open_model_validation(self):
-        QMessageBox.information(self, "모델 검증 도구", "모델 검증 도구는 향후 업데이트에서 제공될 예정입니다.\n현재는 AI 학습 스튜디오 탭을 이용해주세요.")
 
     def _init_tabs(self):
         self.tabs = QTabWidget()
@@ -125,6 +124,11 @@ class MainWindow(QMainWindow):
             ai_vm = self.system.container.ai_training_view_model()
         self.tab_ai = AITrainingStudioTab(ai_vm)
 
+        bt_vm = getattr(self.system, "backtest_view_model", None)
+        if bt_vm is None and hasattr(self.system, "container"):
+            bt_vm = self.system.container.backtest_view_model()
+        self.tab_bt = BacktestStudioTab(bt_vm)
+
         settings_vm = getattr(self.system, "settings_view_model", None)
         if settings_vm is None and hasattr(self.system, "container"):
             settings_vm = self.system.container.settings_view_model()
@@ -146,6 +150,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_live, "라이브 대시보드")
         self.tabs.addTab(self.tab_asset, "종목 및 데이터 관리")
         self.tabs.addTab(self.tab_ai, "AI 학습 스튜디오")
+        self.tabs.addTab(self.tab_bt, "Backtest Studio")
         self.tabs.addTab(self.tab_settings, "환경 설정")
 
     @pyqtSlot(str, str)

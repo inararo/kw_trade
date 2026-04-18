@@ -15,6 +15,7 @@ class LiveDashboardViewModel(QObject):
     sig_ai_confidence_updated = pyqtSignal(dict)
     sig_log_appended = pyqtSignal(str)
     sig_error_occurred = pyqtSignal(str)
+    sig_menu_action_result = pyqtSignal(str, str) # title, message
 
     def __init__(self, data_collector, order_manager):
         super().__init__()
@@ -22,8 +23,6 @@ class LiveDashboardViewModel(QObject):
         self.order_manager = order_manager
         self._is_running = False
         self._mock_task = None
-
-        self.sig_menu_action_result = pyqtSignal(str, str) # title, message
 
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정 (또는 폴링)
         # 이번 요구사항에서는 mock stream 내부에서 콜백으로 데이터를 쏴주는 형태를 가정합니다.
@@ -391,3 +390,95 @@ class SettingsViewModel(QObject):
         """메뉴 액션: API 토큰 강제 갱신"""
         # 실제로는 TokenManager나 Auth 모듈을 호출해야 하지만 여기서는 메시지만 에뮬레이션
         self.sig_menu_action_result.emit("토큰 갱신", "새로운 Kiwoom REST API 토큰 발급을 요청했습니다.")
+
+class BacktestViewModel(QObject):
+    """
+    백테스트 스튜디오 ViewModel.
+    UI의 백테스트 요청을 BacktestEngine으로 전달하고, 결과를 수집하여 Signal로 발송합니다.
+    """
+    sig_bt_progress = pyqtSignal(int, int, float) # step, total_steps, current_pnl
+    sig_bt_finished = pyqtSignal(dict) # kpi dict
+    sig_bt_chart_data = pyqtSignal(object) # DataFrame
+    sig_bt_error = pyqtSignal(str)
+
+    def __init__(self, config_manager, influx_client, data_collector, order_manager):
+        super().__init__()
+        self.config_manager = config_manager
+        self.influx_client = influx_client
+        self.data_collector = data_collector
+        self.order_manager = order_manager
+
+        from core.backtester import BacktestEngine
+        self.engine = BacktestEngine(self.data_collector, self.config_manager.get_symbols())
+        self.model_path = None
+
+    def set_model_path(self, path: str):
+        self.model_path = path
+
+    def start_backtest(self, start_date: str, end_date: str):
+        if not self.model_path:
+            self.sig_bt_error.emit("학습된 모델 파일(.zip)을 먼저 선택해주세요.")
+            return
+
+        asyncio.create_task(self._run_backtest_task(start_date, end_date))
+
+    async def _run_backtest_task(self, start_date: str, end_date: str):
+        try:
+            # 1. 대상 종목 및 데이터 로드 (Mock)
+            symbols = self.config_manager.get_symbols()
+            target_sym = symbols[0].get("code", "005930") if symbols else "005930"
+
+            # TODO: 실제로는 InfluxDB에서 start_date ~ end_date 데이터를 가져와야 함.
+            # 여기서는 테스트용 더미 DataFrame 생성
+            import pandas as pd
+            import numpy as np
+
+            total_steps = 1000
+            # 랜덤 워크로 가격 생성
+            prices = [1000.0]
+            for _ in range(total_steps - 1):
+                prices.append(prices[-1] * (1 + np.random.normal(0, 0.005)))
+
+            df = pd.DataFrame({"step": range(total_steps), "price": prices})
+
+            # 2. Env 생성 및 Agent 주입
+            from env.trading_env import ScalpingTradingEnv
+            from models.agent import TradingAgentWrapper
+
+            env = ScalpingTradingEnv(self.data_collector, self.order_manager, {"symbol": target_sym, "initial_balance": 10000000})
+
+            # Backtest 환경에 맞춰 가격 함수 몽키 패치 (차트 시각화를 위해)
+            def mock_get_price():
+                step = env.current_step
+                if step < len(df):
+                    return df.iloc[step]['price']
+                return df.iloc[-1]['price']
+            env._get_current_price = mock_get_price
+
+            agent_config = {"seq_len": 10}
+            agent = TradingAgentWrapper(env, agent_config)
+
+            # 모델 로드 (에러 처리는 생략하고 더미로 진행하거나 실제 로드 수행)
+            try:
+                agent.load_weights(self.model_path)
+            except FileNotFoundError:
+                print(f"Warning: Could not load {self.model_path}. Using untrained weights.")
+
+            # 3. 백테스트 실행
+            from core.backtester import KPICalculator
+
+            def progress_cb(step, total, pnl):
+                self.sig_bt_progress.emit(step, total, pnl)
+
+            trades_df = await self.engine.run_backtest(agent, env, df, callbacks=[progress_cb])
+
+            # 4. 결과 처리 및 UI 전송
+            kpi = KPICalculator.calculate(trades_df, 10000000)
+
+            # 원본 가격 차트 데이터와 매매 기록을 합쳐서 전송할 수 있음
+            # 여기서는 trades_df에 모든 스텝이 기록되도록 엔진을 수정했음
+            self.sig_bt_chart_data.emit(trades_df)
+            self.sig_bt_finished.emit(kpi)
+
+        except Exception as e:
+            self.sig_bt_error.emit(str(e))

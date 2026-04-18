@@ -7,7 +7,7 @@ from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
 from core.universe_manager import UniverseManager
 from db.influx_client import AsyncInfluxDBClient
-from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel
+from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 
 class Container(containers.DeclarativeContainer):
     """
@@ -76,4 +76,12 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         influx_client=influx_client
+    )
+
+    backtest_view_model = providers.Factory(
+        BacktestViewModel,
+        config_manager=config_manager,
+        influx_client=influx_client,
+        data_collector=data_collector,
+        order_manager=order_manager
     )
