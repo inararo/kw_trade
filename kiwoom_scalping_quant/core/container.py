@@ -6,6 +6,7 @@ from core.order_manager import OrderManager
 from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
 from core.universe_manager import UniverseManager
+from core.strategy_manager import StrategyManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 
@@ -47,6 +48,13 @@ class Container(containers.DeclarativeContainer):
         OrderManager,
         config=config,
         auth_manager=None # 추후 AuthManager provider 주입 가능
+    )
+
+    strategy_manager = providers.Singleton(
+        StrategyManager,
+        config_manager=config_manager,
+        data_collector=data_collector,
+        order_manager=order_manager
     )
 
     # Presentation Layer - ViewModels (팩토리 혹은 싱글톤으로 관리)

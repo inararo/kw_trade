@@ -39,6 +39,7 @@ class QuantSystem:
         self.influx_client = self.container.influx_client()
         self.order_manager = self.container.order_manager()
         self.data_collector = self.container.data_collector()
+        self.strategy_manager = self.container.strategy_manager()
 
         # 대표 ViewModel 생성 (LiveDashboardViewModel)
         self.live_vm = self.container.live_dashboard_view_model()
@@ -53,6 +54,11 @@ class QuantSystem:
         # 백그라운드 태스크 시작
         self.influx_task = asyncio.create_task(self.influx_client.start())
         self.collector_task = asyncio.create_task(self.data_collector.start())
+
+        # StrategyManager 가동 (모델 로드 및 개별 종목 루프 실행)
+        self.strategy_manager.load_model("") # For now, no actual model weights (Dummy test run)
+        self.strategy_task = asyncio.create_task(self.strategy_manager.start())
+
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 
         try:
@@ -73,11 +79,15 @@ class QuantSystem:
         print("시스템: 미체결 주문 전체 취소 중...")
         await self.order_manager.cancel_all_orders()
 
-        # 3. 데이터 수집 루프 완전 정지 (WebSocket 및 Watchdog 취소됨)
+        # 3. StrategyManager 정지 (AI 매매 루프 완전 종료)
+        print("시스템: StrategyManager 오케스트레이션 종료 중...")
+        await self.strategy_manager.stop()
+
+        # 4. 데이터 수집 루프 완전 정지 (WebSocket 및 Watchdog 취소됨)
         print("시스템: DataCollector 및 통신 종료 중...")
         await self.data_collector.stop()
 
-        # 4. 백그라운드 태스크 Cancel
+        # 5. 백그라운드 태스크 Cancel
         if hasattr(self, 'view_model_task') and not self.view_model_task.done():
             self.view_model_task.cancel()
             try:
@@ -92,11 +102,18 @@ class QuantSystem:
             except asyncio.CancelledError:
                 pass
 
-        # 5. InfluxDB 등 DB 커넥션 종료 및 잔여 버퍼 Flush
+        if hasattr(self, 'strategy_task') and not self.strategy_task.done():
+            self.strategy_task.cancel()
+            try:
+                await self.strategy_task
+            except asyncio.CancelledError:
+                pass
+
+        # 6. InfluxDB 등 DB 커넥션 종료 및 잔여 버퍼 Flush
         print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
         await self.influx_client.close()
 
-        # 6. 최종 윈도우/앱 정리 및 종료
+        # 7. 최종 윈도우/앱 정리 및 종료
         print("시스템: 모든 정리가 완료되었습니다. 프로그램을 종료합니다.")
         from PyQt6.QtWidgets import QApplication
 

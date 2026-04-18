@@ -17,6 +17,9 @@ class LiveDashboardViewModel(QObject):
     sig_error_occurred = pyqtSignal(str)
     sig_menu_action_result = pyqtSignal(str, str) # title, message
 
+    # 멀티 종목 요약 정보 (Symbol -> Dict of stats)
+    sig_symbols_summary_updated = pyqtSignal(dict)
+
     def __init__(self, data_collector, order_manager):
         super().__init__()
         self.data_collector = data_collector
@@ -24,19 +27,46 @@ class LiveDashboardViewModel(QObject):
         self._is_running = False
         self._mock_task = None
 
-        # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정 (또는 폴링)
-        # 이번 요구사항에서는 mock stream 내부에서 콜백으로 데이터를 쏴주는 형태를 가정합니다.
+        # 현재 화면에 상세를 띄울 대상 종목
+        self.selected_symbol = None
+        self.symbols_summary = {}
+
+        # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
         self.data_collector.set_ui_callback(self._on_data_received)
+
+    def set_selected_symbol(self, symbol: str):
+        self.selected_symbol = symbol
 
     def _on_data_received(self, data: dict):
         """DataCollector에서 새로운 데이터가 수집되었을 때 호출되는 콜백"""
         try:
+            symbol = data.get("symbol")
+            if not symbol: return
+
+            # 통합 요약 데이터 업데이트
+            if symbol not in self.symbols_summary:
+                self.symbols_summary[symbol] = {}
+
             if "price" in data:
-                self.sig_price_updated.emit(float(data["price"]))
-            if "orderbook" in data:
-                self.sig_orderbook_updated.emit(dict(data["orderbook"]))
+                self.symbols_summary[symbol]["price"] = data["price"]
             if "ai_confidence" in data:
-                self.sig_ai_confidence_updated.emit(dict(data["ai_confidence"]))
+                # 신뢰도 중 가장 높은 액션을 상태로 기록
+                best_action = max(data["ai_confidence"], key=data["ai_confidence"].get)
+                self.symbols_summary[symbol]["ai_signal"] = "Buy" if best_action == "Buy" else "Sell" if best_action == "Sell" else "Hold"
+
+            self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)
+
+            # 전체 요약 시그널 발송
+            self.sig_symbols_summary_updated.emit(self.symbols_summary)
+
+            # 선택된 종목인 경우에만 차트/호가창 등 상세 업데이트
+            if symbol == self.selected_symbol or not self.selected_symbol:
+                if "price" in data:
+                    self.sig_price_updated.emit(float(data["price"]))
+                if "orderbook" in data:
+                    self.sig_orderbook_updated.emit(dict(data["orderbook"]))
+                if "ai_confidence" in data:
+                    self.sig_ai_confidence_updated.emit(dict(data["ai_confidence"]))
         except Exception as e:
             self.sig_error_occurred.emit(f"데이터 파싱 오류: {e}")
 

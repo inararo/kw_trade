@@ -26,7 +26,14 @@ class OrderManager:
         # 키움증권 원주문번호(Broker ID)와 내부 ID 맵핑
         self.broker_id_map: Dict[str, str] = {}
 
-        self.holdings = 0
+        self.holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
+        self.avg_entry_prices = {sym: 0.0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
+
+        # Global Risk Limits
+        self.global_max_loss = config.get("global_max_loss", -500000) # e.g. Daily limit
+        self.global_max_exposure = config.get("global_max_exposure", 50000000) # e.g. Total asset exposure
+
+        self.daily_realized_pnl = 0.0
 
         self.rate_limit = 5
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)
@@ -44,12 +51,40 @@ class OrderManager:
 
         self.order_timestamps.append(time.time())
 
+    def _check_global_risk(self, symbol: str, price: int, qty: int, order_type: str) -> bool:
+        """새로운 주문(신규 진입) 시 글로벌 리스크를 점검합니다."""
+        # 매도(청산), 정정, 취소 주문은 글로벌 리스크 한도와 무관하게 허용해야 함 (포지션 정리 목적)
+        if order_type != "BUY":
+            return True
+
+        if self.daily_realized_pnl <= self.global_max_loss:
+            self.logger.error(f"Global Risk: 일일 최대 손실({self.global_max_loss}) 초과. 신규 진입 차단.")
+            return False
+
+        # 총 노출 금액 = 모든 종목의 (보유 수량 * 현재가(또는 진입가))
+        # 여기서는 단순화를 위해 현재 주문가격을 해당 종목의 현재가로 취급하여 노출 금액을 추산
+        current_exposure = 0
+        for sym, holding_qty in self.holdings.items():
+            if sym == symbol:
+                current_exposure += holding_qty * price
+            else:
+                current_exposure += holding_qty * self.avg_entry_prices.get(sym, 0)
+
+        if current_exposure + (price * qty) > self.global_max_exposure:
+            self.logger.error(f"Global Risk: 최대 노출 금액({self.global_max_exposure}) 초과. 신규 진입 차단.")
+            return False
+
+        return True
+
     @future_safe
     async def send_order(self, order_type: str, symbol: str, price: int, qty: int, orig_order_no: str = "") -> str:
         """
         REST API를 통한 주문 발송 (신규/정정/취소)
         orig_order_no가 있으면 정정/취소 주문으로 간주.
         """
+        if not orig_order_no and not self._check_global_risk(symbol, price, qty, order_type):
+            raise Exception("글로벌 리스크 점검 실패로 주문이 거부되었습니다.")
+
         await self._throttle_order()
 
         async with self.order_semaphore:
@@ -136,12 +171,31 @@ class OrderManager:
 
         elif msg_type == '체결':
             exec_qty = data.get('exec_qty', 0)
+            exec_price = data.get('exec_price', order.get('price', 0))
             order['unexecuted_qty'] -= exec_qty
+            symbol = order['symbol']
+
+            if symbol not in self.holdings:
+                self.holdings[symbol] = 0
+                self.avg_entry_prices[symbol] = 0.0
 
             if order['type'] == 'BUY':
-                self.holdings += exec_qty
+                # 평균 단가 갱신 (단순 이동 평균 형태)
+                current_qty = self.holdings[symbol]
+                total_value = (current_qty * self.avg_entry_prices[symbol]) + (exec_qty * exec_price)
+                self.holdings[symbol] += exec_qty
+                self.avg_entry_prices[symbol] = total_value / self.holdings[symbol]
+
             elif order['type'] == 'SELL':
-                self.holdings -= exec_qty
+                self.holdings[symbol] -= exec_qty
+                # 체결가 기반으로 daily_realized_pnl 업데이트
+                realized_profit = (exec_price - self.avg_entry_prices[symbol]) * exec_qty
+                self.daily_realized_pnl += realized_profit
+                self.logger.info(f"실현 손익 업데이트: {realized_profit:,.0f} (누적: {self.daily_realized_pnl:,.0f})")
+
+                if self.holdings[symbol] <= 0:
+                    self.holdings[symbol] = 0
+                    self.avg_entry_prices[symbol] = 0.0
 
             if order['unexecuted_qty'] <= 0:
                 order['status'] = OrderState.FILLED
@@ -187,7 +241,7 @@ class OrderManager:
         start_time = time.time()
 
         # 최초 1호가 진입
-        current_state = data_collector.get_latest_state(seq_len=1)
+        current_state = data_collector.get_latest_state(symbol, seq_len=1)
         # Assuming state is [price, volume, OIR, Volatility, Aggressiveness]
         # In a real setup, we would read the actual orderbook to get best bid/ask
         # For this logic, let's assume we place it at current price
@@ -248,10 +302,11 @@ class OrderManager:
             await self.send_order("CANCEL", symbol, 0, order['unexecuted_qty'], orig_order_no=order.get('broker_id'))
 
 
-    def has_unexecuted_orders(self) -> bool:
+    def has_unexecuted_orders(self, symbol: str = None) -> bool:
         for o in self.active_orders.values():
             if o['unexecuted_qty'] > 0 and o['status'] not in [OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED]:
-                return True
+                if symbol is None or o['symbol'] == symbol:
+                    return True
         return False
 
     async def cancel_all_orders(self):

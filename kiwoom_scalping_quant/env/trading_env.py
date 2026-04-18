@@ -58,14 +58,23 @@ class ScalpingTradingEnv(gym.Env):
     def action_masks(self):
         masks = [True, False, False]
 
-        if self.order_manager.has_unexecuted_orders():
+        symbol = self.config.get('symbol')
+
+        # 격리(Isolation): 특정 종목의 미체결 주문만 확인
+        if self.order_manager.has_unexecuted_orders(symbol=symbol):
             return masks
 
+        # 실거래 동기화
         current_price = self._get_current_price()
+
+        # 실제 계좌 잔고를 조회할 수 없으므로 가상 잔고 또는 글로벌/종목 리스크 한도를 참조 가능
+        # 백테스트나 시뮬레이션용 로직 (실전에서는 예수금 확인 로직 연동 필요)
         if self.balance >= current_price:
             masks[1] = True
 
-        if self.holdings > 0:
+        # 보유 수량은 실제 order_manager의 상태와 동기화
+        actual_holdings = self.order_manager.holdings.get(symbol, self.holdings)
+        if actual_holdings > 0:
             masks[2] = True
 
         return masks

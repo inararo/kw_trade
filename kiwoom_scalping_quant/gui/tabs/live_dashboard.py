@@ -1,8 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QProgressBar, QListWidget
+    QGroupBox, QProgressBar, QListWidget, QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, Qt
 from gui.components.orderbook_ladder import OrderbookLadderWidget
 import time
 
@@ -20,16 +20,30 @@ class LiveDashboardTab(QWidget):
     def _init_ui(self):
         main_layout = QHBoxLayout(self)
 
-        # 1. 좌측 패널: 호가창 래더
-        ladder_group = QGroupBox("호가창 래더")
+        # 1. 좌측 패널: 통합 다중 종목 마스터 테이블
+        master_group = QGroupBox("전체 감시 종목 (Universe)")
+        master_layout = QVBoxLayout()
+
+        self.summary_table = QTableWidget(0, 4)
+        self.summary_table.setHorizontalHeaderLabels(["종목코드", "현재가", "AI 신호", "보유량"])
+        self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.summary_table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        master_layout.addWidget(self.summary_table)
+
+        master_group.setLayout(master_layout)
+        main_layout.addWidget(master_group, stretch=1)
+
+        # 2. 중앙 패널: 상세 호가창 래더 (선택된 종목)
+        ladder_group = QGroupBox("상세 호가창 래더")
         ladder_layout = QVBoxLayout()
         self.orderbook_widget = OrderbookLadderWidget(self.view_model)
         ladder_layout.addWidget(self.orderbook_widget)
         ladder_group.setLayout(ladder_layout)
         main_layout.addWidget(ladder_group, stretch=1)
 
-        # 2. 우측 패널: AI 모니터 및 컨트롤
-        control_group = QGroupBox("AI 모니터링 및 시스템 제어")
+        # 3. 우측 패널: AI 모니터 및 컨트롤
+        control_group = QGroupBox("상세 AI 모니터링 및 시스템 제어")
         control_layout = QVBoxLayout()
 
         # AI 신뢰도 모니터
@@ -74,9 +88,41 @@ class LiveDashboardTab(QWidget):
         main_layout.addWidget(control_group, stretch=1)
 
     def _connect_signals(self):
+        self.view_model.sig_symbols_summary_updated.connect(self.on_symbols_summary_updated)
         self.view_model.sig_ai_confidence_updated.connect(self.on_ai_confidence_updated)
         self.view_model.sig_log_appended.connect(self.on_log_appended)
         self.view_model.sig_error_occurred.connect(self.on_error)
+
+    def _on_table_selection_changed(self):
+        selected_items = self.summary_table.selectedItems()
+        if selected_items:
+            # 첫 번째 컬럼(종목코드) 가져오기
+            row = selected_items[0].row()
+            symbol = self.summary_table.item(row, 0).text()
+            if hasattr(self.view_model, 'set_selected_symbol'):
+                self.view_model.set_selected_symbol(symbol)
+                self.on_log_appended(f"[UI] 상세 뷰 종목 변경: {symbol}")
+
+    @pyqtSlot(dict)
+    def on_symbols_summary_updated(self, summary_dict: dict):
+        """테이블 갱신. UI 병목을 피하기 위해 최적화가 필요할 수 있으나 현재는 전체를 다시 그림"""
+        self.summary_table.setRowCount(len(summary_dict))
+
+        for row, (symbol, data) in enumerate(summary_dict.items()):
+            self.summary_table.setItem(row, 0, QTableWidgetItem(symbol))
+
+            price_str = f"{data.get('price', 0):,.0f}"
+            self.summary_table.setItem(row, 1, QTableWidgetItem(price_str))
+
+            ai_sig = data.get('ai_signal', '-')
+            item_sig = QTableWidgetItem(ai_sig)
+            if ai_sig == "Buy":
+                item_sig.setForeground(Qt.GlobalColor.red)
+            elif ai_sig == "Sell":
+                item_sig.setForeground(Qt.GlobalColor.blue)
+            self.summary_table.setItem(row, 2, item_sig)
+
+            self.summary_table.setItem(row, 3, QTableWidgetItem(str(data.get('holdings', 0))))
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):
