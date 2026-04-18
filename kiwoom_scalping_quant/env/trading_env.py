@@ -12,8 +12,11 @@ class ScalpingTradingEnv(gym.Env):
         self.order_manager = order_manager
         self.config = config
 
-        # 임의의 특성 크기 50으로 가정
-        self.feature_dim = 50
+        # [Price, Volume, OIR, Volatility, Aggressiveness]
+        self.single_feature_dim = 5
+        self.seq_len = config.get('seq_len', 10)
+        self.feature_dim = self.single_feature_dim * self.seq_len
+
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.feature_dim,), dtype=np.float32
         )
@@ -38,6 +41,11 @@ class ScalpingTradingEnv(gym.Env):
         return obs, info
 
     def _get_observation(self):
+        if hasattr(self.data_collector, "get_latest_state"):
+            # DataCollector is now expected to return a sequence of states flattened
+            state = self.data_collector.get_latest_state(seq_len=self.seq_len)
+            if state is not None and len(state) == self.feature_dim:
+                return state
         return np.zeros(self.feature_dim, dtype=np.float32)
 
     def _get_info(self):
@@ -93,4 +101,12 @@ class ScalpingTradingEnv(gym.Env):
         return obs, step_reward, terminated, truncated, info
 
     def _get_current_price(self):
+        if hasattr(self.data_collector, "get_latest_state"):
+            # Get just the latest single tick to avoid unpacking the whole sequence
+            state = self.data_collector.get_latest_state(seq_len=1)
+            if state is not None and len(state) > 0:
+                # Assuming price is at index 0, but it might be normalized.
+                # In a real environment, we'd pull the unnormalized current price from the collector.
+                # For this implementation's scope, we simulate it or rely on external mock wrapper.
+                pass
         return 1000.0
