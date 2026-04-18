@@ -19,8 +19,8 @@ async def test_send_order_success(order_manager, mocker):
     # future_safe 적용 시 result는 IOSuccess/IOFailure 인스턴스
     assert isinstance(result, IOSuccess)
     order_id = result.unwrap()._inner_value
-    assert order_id.startswith("ORD_")
-    assert order_id in order_manager.unexecuted_orders
+    assert order_id.startswith("INT_")
+    assert order_id in order_manager.active_orders
 
 @pytest.mark.asyncio
 async def test_send_order_failure(order_manager, mocker):

@@ -1,9 +1,18 @@
 import asyncio
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from returns.result import Result, Success, Failure
 from returns.future import FutureResult, future_safe
+
+class OrderState:
+    PENDING = "PENDING"        # 서버 전송 후 응답 대기
+    ACCEPTED = "ACCEPTED"      # 서버 접수 완료 (주문번호 발급)
+    PARTIAL = "PARTIAL_FILL"   # 부분 체결
+    FILLED = "FILLED"          # 전량 체결
+    CANCELLED = "CANCELLED"    # 취소 완료
+    REPLACED = "REPLACED"      # 정정 완료
+    FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
     def __init__(self, config: Dict[str, Any], auth_manager=None):
@@ -11,7 +20,12 @@ class OrderManager:
         self.auth_manager = auth_manager
         self.logger = logging.getLogger("OrderManager")
 
-        self.unexecuted_orders = {}
+        # 고유 주문 ID(내부)를 키로, 상태 딕셔너리를 값으로 가지는 중앙 추적기
+        self.active_orders: Dict[str, Dict[str, Any]] = {}
+
+        # 키움증권 원주문번호(Broker ID)와 내부 ID 맵핑
+        self.broker_id_map: Dict[str, str] = {}
+
         self.holdings = 0
 
         self.rate_limit = 5
@@ -31,62 +45,217 @@ class OrderManager:
         self.order_timestamps.append(time.time())
 
     @future_safe
-    async def send_order(self, order_type: str, symbol: str, price: int, qty: int) -> str:
+    async def send_order(self, order_type: str, symbol: str, price: int, qty: int, orig_order_no: str = "") -> str:
         """
-        REST API를 통한 주문 발송 (매수/매도)
-        함수형 에러 처리(Result 패턴)를 사용하여 예외를 안전하게 감싸서 FutureResult로 반환.
+        REST API를 통한 주문 발송 (신규/정정/취소)
+        orig_order_no가 있으면 정정/취소 주문으로 간주.
         """
         await self._throttle_order()
 
         async with self.order_semaphore:
-            # 1. API 요청 전송 (aiohttp 등 사용 로직 대체)
-            # if request_fails: raise Exception("API 연결 에러")
+            internal_id = f"INT_{int(time.time() * 1000)}"
 
-            temp_order_id = f"ORD_{int(time.time() * 1000)}"
-
-            # 2. 미체결 주문 등록
-            self.unexecuted_orders[temp_order_id] = {
+            # 상태 추적기 등록 (PENDING)
+            self.active_orders[internal_id] = {
+                'internal_id': internal_id,
+                'broker_id': None,         # 접수 시 발급될 번호
+                'orig_broker_id': orig_order_no,
                 'symbol': symbol,
-                'type': order_type,
+                'type': order_type,        # BUY, SELL, REPLACE, CANCEL
                 'price': price,
                 'qty': qty,
                 'unexecuted_qty': qty,
-                'timestamp': time.time()
+                'status': OrderState.PENDING,
+                'timestamp': time.time(),
+                'ack_event': asyncio.Event() # 응답 대기용 이벤트
             }
 
-            self.logger.info(f"주문 접수 완료: {order_type} {qty}주 @ {price}원 (ID: {temp_order_id})")
-            return temp_order_id
+            self.logger.info(f"주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
 
-    # 사용 예시: (외부에서 호출할 때)
-    # result: Result[str, Exception] = await order_manager.send_order("BUY", "005930", 50000, 10)
-    # if isinstance(result, Success):
-    #     order_id = result.unwrap()
-    # else:
-    #     error = result.failure()
+            # API 요청 전송 로직 (Mock)
+            # 실제로는 aiohttp를 사용하여 REST API를 쏘고, 성공하면 리턴
 
-    def update_execution_from_ws(self, execution_data: Dict[str, Any]):
-        order_id = execution_data.get('order_id')
-        executed_qty = execution_data.get('executed_qty', 0)
+            # 백그라운드에서 3초 타임아웃 검사 실행
+            asyncio.create_task(self._wait_for_ack(internal_id, timeout=3.0))
 
-        if order_id in self.unexecuted_orders:
-            order = self.unexecuted_orders[order_id]
-            order['unexecuted_qty'] -= executed_qty
+            # 백테스팅/Mock 환경을 위한 자동 접수 에뮬레이션
+            asyncio.create_task(self._mock_broker_ack(internal_id))
+
+            return internal_id
+
+    async def _wait_for_ack(self, internal_id: str, timeout: float):
+        """주문 접수 후 브로커 응답(접수 확인) 타임아웃 감시"""
+        order = self.active_orders.get(internal_id)
+        if not order: return
+
+        try:
+            await asyncio.wait_for(order['ack_event'].wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            if order['status'] == OrderState.PENDING:
+                order['status'] = OrderState.FAILED
+                self.logger.error(f"주문 응답 타임아웃 (3초 초과)! 실패 처리됨. ID: {internal_id}")
+
+    async def _mock_broker_ack(self, internal_id: str):
+        """Mock: 브로커가 0.1초 후 접수 확인(ACCEPTED)을 준다고 가정"""
+        await asyncio.sleep(0.1)
+        order = self.active_orders.get(internal_id)
+        if order and order['status'] == OrderState.PENDING:
+            broker_id = f"BRK_{internal_id.split('_')[1]}"
+
+            # OnReceiveChejanData의 '접수' 이벤트 에뮬레이션
+            mock_chejan = {
+                'msg_type': '접수',
+                'internal_id': internal_id,
+                'broker_id': broker_id,
+                'status': OrderState.ACCEPTED
+            }
+            self.on_receive_chejan_data(mock_chejan)
+
+    def on_receive_chejan_data(self, data: Dict[str, Any]):
+        """
+        키움 웹소켓(또는 REST 폴링)에서 수신된 실시간 체결/잔고(t1301 등) 데이터 파싱.
+        """
+        internal_id = data.get('internal_id')
+        broker_id = data.get('broker_id')
+        msg_type = data.get('msg_type') # '접수', '체결', '취소확인' 등
+
+        order = self.active_orders.get(internal_id)
+        if not order:
+            # broker_id로 역추적
+            internal_id = self.broker_id_map.get(broker_id)
+            order = self.active_orders.get(internal_id)
+            if not order:
+                return
+
+        if msg_type == '접수':
+            order['status'] = OrderState.ACCEPTED
+            order['broker_id'] = broker_id
+            self.broker_id_map[broker_id] = internal_id
+            order['ack_event'].set() # 타임아웃 해제
+            self.logger.info(f"브로커 접수 완료. (Broker ID: {broker_id})")
+
+        elif msg_type == '체결':
+            exec_qty = data.get('exec_qty', 0)
+            order['unexecuted_qty'] -= exec_qty
 
             if order['type'] == 'BUY':
-                self.holdings += executed_qty
+                self.holdings += exec_qty
             elif order['type'] == 'SELL':
-                self.holdings -= executed_qty
+                self.holdings -= exec_qty
 
             if order['unexecuted_qty'] <= 0:
-                del self.unexecuted_orders[order_id]
-                self.logger.info(f"주문 전량 체결 완료 (ID: {order_id})")
+                order['status'] = OrderState.FILLED
+                self.logger.info(f"주문 전량 체결 완료! (Broker ID: {broker_id})")
             else:
-                self.logger.info(f"주문 부분 체결 (ID: {order_id}, 잔여: {order['unexecuted_qty']})")
+                order['status'] = OrderState.PARTIAL
+                self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
+                self.handle_partial_fill(order)
+
+        elif msg_type == '취소확인':
+            order['status'] = OrderState.CANCELLED
+            order['unexecuted_qty'] = 0
+            self.logger.info(f"주문 취소 완료. (Broker ID: {broker_id})")
+
+        elif msg_type == '정정확인':
+            order['status'] = OrderState.REPLACED
+            self.logger.info(f"주문 정정 완료. (Broker ID: {broker_id})")
+
+    def handle_partial_fill(self, order: Dict[str, Any]):
+        """
+        부분 체결 발생 시 미체결 잔량을 즉시 시장가 취소(또는 정정)하여 포지션 꼬임 방지.
+        """
+        if order['unexecuted_qty'] > 0:
+            self.logger.warning(f"부분 체결 감지! 잔여 수량({order['unexecuted_qty']}주) 긴급 취소 진행. (Broker ID: {order['broker_id']})")
+            # 비동기로 취소 주문 전송
+            asyncio.create_task(self.send_order(
+                order_type="CANCEL",
+                symbol=order['symbol'],
+                price=0,
+                qty=order['unexecuted_qty'],
+                orig_order_no=order['broker_id']
+            ))
+
+    async def execute_smart_order(self, action: str, symbol: str, target_qty: int, data_collector):
+        """
+        동적 지정가 추적 매매 (Cancel & Replace 로직).
+        시장가 대신 최우선 호가를 추적하며 유리한 가격에 체결되도록 유도합니다.
+        """
+        max_retries = 3
+        timeout_sec = 5.0
+
+        retries = 0
+        start_time = time.time()
+
+        # 최초 1호가 진입
+        current_state = data_collector.get_latest_state(seq_len=1)
+        # Assuming state is [price, volume, OIR, Volatility, Aggressiveness]
+        # In a real setup, we would read the actual orderbook to get best bid/ask
+        # For this logic, let's assume we place it at current price
+        best_price = int(current_state[0])
+
+        self.logger.info(f"[Smart Order] 진입 시작: {action} {target_qty}주 @ {best_price}")
+
+        from returns.io import IOFailure, IOSuccess
+
+        # 1. 주문 발송
+        result = await self.send_order(action, symbol, best_price, target_qty)
+        if isinstance(result, IOFailure):
+            self.logger.error("스마트 주문 전송 실패")
+            return
+
+        internal_id = result.unwrap()._inner_value
+
+        while time.time() - start_time < timeout_sec and retries < max_retries:
+            await asyncio.sleep(0.5) # 0.5초마다 호가 확인
+
+            order = self.active_orders.get(internal_id)
+            if not order or order['status'] in [OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED]:
+                self.logger.info("[Smart Order] 추적 종료 (체결/취소/실패 완료).")
+                return
+
+            if order['status'] == OrderState.PENDING:
+                continue # 아직 접수 안됨
+
+            # 호가 변화 감지 (Mock 로직: 10% 확률로 가격이 도망갔다고 가정)
+            import random
+            if random.random() < 0.1:
+                retries += 1
+                new_price = best_price + (100 if action == "BUY" else -100)
+                broker_id = order.get('broker_id')
+
+                self.logger.warning(f"[Smart Order] 호가 이탈 감지! 정정 주문 발송 (Retries: {retries}/{max_retries}) | {best_price} -> {new_price}")
+
+                # 기존 주문 정정 (Replace)
+                replace_res = await self.send_order(
+                    order_type="REPLACE",
+                    symbol=symbol,
+                    price=new_price,
+                    qty=order['unexecuted_qty'],
+                    orig_order_no=broker_id
+                )
+
+                if isinstance(replace_res, IOSuccess):
+                    internal_id = replace_res.unwrap()._inner_value
+                    best_price = new_price
+                else:
+                    self.logger.error("[Smart Order] 정정 주문 실패.")
+                    break
+
+        # 루프 종료 후에도 미체결 남아있으면 전량 취소
+        order = self.active_orders.get(internal_id)
+        if order and order['unexecuted_qty'] > 0 and order['status'] not in [OrderState.FILLED, OrderState.CANCELLED]:
+            self.logger.error(f"[Smart Order] 시간 초과(5초) 또는 재시도 초과! 남은 {order['unexecuted_qty']}주 전량 취소.")
+            await self.send_order("CANCEL", symbol, 0, order['unexecuted_qty'], orig_order_no=order.get('broker_id'))
+
 
     def has_unexecuted_orders(self) -> bool:
-        return len(self.unexecuted_orders) > 0
+        for o in self.active_orders.values():
+            if o['unexecuted_qty'] > 0 and o['status'] not in [OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED]:
+                return True
+        return False
 
     async def cancel_all_orders(self):
-        for order_id, order in list(self.unexecuted_orders.items()):
-            self.logger.info(f"미체결 주문 취소 요청 (ID: {order_id})")
-            del self.unexecuted_orders[order_id]
+        for int_id, order in list(self.active_orders.items()):
+            if order['unexecuted_qty'] > 0 and order['status'] not in [OrderState.CANCELLED, OrderState.FILLED]:
+                self.logger.info(f"전체 미체결 취소 요청 (Internal ID: {int_id})")
+                await self.send_order("CANCEL", order['symbol'], 0, order['unexecuted_qty'], orig_order_no=order.get('broker_id'))
