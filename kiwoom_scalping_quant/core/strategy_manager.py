@@ -114,14 +114,16 @@ class StrategyManager:
                             self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
                         )
 
+                await asyncio.sleep(poll_interval)
+
             except asyncio.CancelledError:
                 self.logger.info(f"StrategyManager: [{symbol}] 루프 중지됨.")
                 break
             except Exception as e:
                 # 오류 격리(Isolation): 한 종목의 오류가 다른 종목에 영향을 미치지 않도록 함
                 self.logger.error(f"StrategyManager: [{symbol}] 매매 루프 중 에러 발생: {e}")
-
-            await asyncio.sleep(poll_interval)
+                # 에러 시에도 루프 폭주를 막기 위해 대기
+                await asyncio.sleep(poll_interval)
 
     async def stop(self):
         """모든 종목의 매매 루프 정지"""
@@ -129,7 +131,10 @@ class StrategyManager:
         for task in self._tasks:
             if not task.done():
                 task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()
         self.logger.info("StrategyManager: 모든 매매 루프가 안전하게 종료되었습니다.")
