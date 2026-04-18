@@ -1,24 +1,64 @@
-kiwoom:
-  trading_mode: "virtual" # 'real' or 'virtual'
-  rest_base_url:
-    real: "https://openapi.kiwoom.com"
-    virtual: "https://openapivts.kiwoom.com"
-  ws_url:
-    real: "wss://api.kiwoom.com:10000/api/dostk/websocket"
-    virtual: "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
-
-symbol: '005930'
-universe:
-  - code: '005930'
-    name: 'Samsung'
-  - code: '000660'
-    name: 'SK Hynix'
-  - code: '035420'
-    name: 'Naver'
-initial_balance: 10000000
-slippage: 0.0005
-max_buffer_size: 10000
 db_batch_size: 500
-seq_len: 10
-global_max_loss: -500000
 global_max_exposure: 50000000
+global_max_loss: -500000
+initial_balance: 10000000
+kiwoom:
+  rest_base_url:
+    real: https://openapi.kiwoom.com
+    virtual: https://openapivts.kiwoom.com
+  trading_mode: virtual
+  ws_url:
+    real: wss://api.kiwoom.com:10000/api/dostk/websocket
+    virtual: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
+max_buffer_size: 10000
+seq_len: 10
+slippage: 0.0005
+symbol: 005930
+symbols:
+- code: 009130
+  name: Stock_Company_913
+- code: '015650'
+  name: Stock_Company_1565
+- code: 019530
+  name: Stock_Company_1953
+- code: '006320'
+  name: Stock_Company_632
+- code: '010020'
+  name: Stock_Company_1002
+- code: '014110'
+  name: Stock_Company_1411
+- code: '015710'
+  name: Stock_Company_1571
+- code: 008050
+  name: Stock_Company_805
+- code: 018430
+  name: Stock_Company_1843
+- code: '005620'
+  name: Stock_Company_562
+- code: '017750'
+  name: Stock_Company_1775
+- code: '015370'
+  name: Stock_Company_1537
+- code: 008610
+  name: Stock_Company_861
+- code: '014610'
+  name: Stock_Company_1461
+- code: 008970
+  name: Stock_Company_897
+- code: '014430'
+  name: Stock_Company_1443
+- code: '017130'
+  name: Stock_Company_1713
+- code: 012580
+  name: Stock_Company_1258
+- code: 010960
+  name: Stock_Company_1096
+- code: 013390
+  name: Stock_Company_1339
+universe:
+- code: 005930
+  name: Samsung
+- code: '000660'
+  name: SK Hynix
+- code: '035420'
+  name: Naver

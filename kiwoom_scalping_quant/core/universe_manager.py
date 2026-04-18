@@ -57,7 +57,8 @@ class UniverseManager:
             "tr_id": "OPT10030" # 당일거래대금상위요청 (가상 TR)
         }
 
-        self.logger.info("거래대금 상위 종목 리스트 수집 및 필터링 시작...")
+        endpoint = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
 
         # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
         # 당일 또는 최근 5일 평균 거래대금 상위 리스트를 가져옵니다.

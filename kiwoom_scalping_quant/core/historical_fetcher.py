@@ -98,7 +98,10 @@ class HistoricalFetcher:
                 await self._throttle()
 
                 params = {"symbol": symbol, "start_date": target_start_date, "next": next_token}
-                url = f"{self.base_url}/v1/domestic-stock/quotations/inquire-time-item"
+                url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-item"
+
+                if current_page == 0:
+                    self.logger.info(f"[{symbol}] 과거 데이터 조회 시작 (Target URL: {url})")
 
                 # Mock API 호출 (서버 과부하 회피를 위한 시간 추가)
                 await asyncio.sleep(0.5)
