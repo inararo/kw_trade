@@ -63,38 +63,56 @@ class UniverseManager:
         # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
         # 당일 또는 최근 5일 평균 거래대금 상위 리스트를 가져옵니다.
 
-        # [Mock Data Generation] (실제 환경에서는 aiohttp를 통해 API 호출 후 처리)
-        import random
-        mock_raw_market = []
+        raw_market = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                # payload may be required for Kiwoom API depending on the spec, usually GET for inquiry
+                # Adjust method (GET/POST) and parameters according to the exact Kiwoom OpenAPI spec
+                async with session.get(endpoint, headers=headers, timeout=10) as response:
+                    if response.status != 200:
+                        err_text = await response.text()
+                        self.logger.error(f"API Error ({response.status}): {err_text}")
+                        # Return empty list or we could raise an Exception to be caught by @future_safe
+                        raise RuntimeError(f"Kiwoom API 연동 실패: {response.status} - {err_text}")
 
-        # 비동기 블로킹 방지를 위한 가상의 네트워크 지연
-        await asyncio.sleep(1.0)
+                    data = await response.json()
 
-        for i in range(1, 2000): # 약 2000개의 전 종목을 가정
-            code = f"{i:05d}0"
-            is_spac = random.random() < 0.05
-            is_etf = random.random() < 0.05
+                    # Kiwoom API returns a list of items typically in "output" or "output1"
+                    # We will parse out standard keys
+                    items = data.get("output", [])
+                    if not items and "output1" in data:
+                        items = data["output1"]
 
-            name = f"Stock_Company_{i}"
-            if is_spac: name = f"대신스팩{i}호"
-            elif is_etf: name = f"KODEX_레버리지{i}"
+                    for item in items:
+                        code = item.get("stck_shrn_iscd") or item.get("code") or ""
+                        name = item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
 
-            mock_raw_market.append({
-                "code": code,
-                "name": name,
-                "trading_value": random.randint(100, 100000) * 1000000 # 거래대금 모의
-            })
+                        # Handle string representation of trading value
+                        try:
+                            tval_str = item.get("acml_tr_pbmn") or item.get("trading_value") or "0"
+                            trading_value = float(tval_str)
+                        except (ValueError, TypeError):
+                            trading_value = 0.0
+
+                        raw_market.append({
+                            "code": code,
+                            "name": name,
+                            "trading_value": trading_value
+                        })
+        except asyncio.TimeoutError:
+            self.logger.error("API 요청 시간 초과 (Timeout).")
+            raise RuntimeError("API 연동 시간 초과")
+        except Exception as e:
+            self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
+            raise e
 
         # 1. 노이즈 필터링
         filtered_universe = []
-        for stock in mock_raw_market:
+        for stock in raw_market:
             # 방어 코드: 딕셔너리가 아닌 경우 스킵
             if isinstance(stock, dict):
                 if self._is_valid_scalping_symbol(stock.get("name", ""), stock.get("code", "")):
                     filtered_universe.append(stock)
-
-        # 필터링 중 연산 지연 시뮬레이션
-        await asyncio.sleep(0.5)
 
         # 2. 거래대금(Trading Value) 기준 내림차순 정렬
         sorted_universe = sorted(filtered_universe, key=lambda x: x["trading_value"], reverse=True)
@@ -102,8 +120,6 @@ class UniverseManager:
         # 3. Top N 선정
         top_universe = sorted_universe[:top_n]
 
-        self.logger.info(f"유니버스 필터링 완료: 원본 {len(mock_raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
+        self.logger.info(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
 
-        # FutureResult (Success)로 감싸서 반환해야 @future_safe에 맞게 동작합니다
-        # @future_safe는 자동으로 Success()로 감싸주지만, 함수 내에서 에러 없이 값을 리턴하면 됩니다.
         return top_universe
