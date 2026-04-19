@@ -147,8 +147,14 @@ class AssetDataViewModel(QObject):
     async def _build_universe_task(self):
         self.sig_progress_updated.emit(0)
         self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
+
+        access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
+        if not access_token:
+            self.fetch_failed.emit("API 접근 토큰이 없습니다. 설정에서 발급해 주세요.")
+            return
+
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
-        result = await self.universe_manager.build_top_n_universe("DUMMY_TOKEN", top_n=20)
+        result = await self.universe_manager.build_top_n_universe(access_token, top_n=20)
 
         # @future_safe returns IOFailure on exception and IOSuccess on success
         if isinstance(result, IOFailure):
@@ -220,6 +226,11 @@ class AssetDataViewModel(QObject):
         total_symbols = len(symbols)
         total_data_collected = 0
 
+        access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
+        if not access_token:
+            self.fetch_failed.emit("API 접근 토큰이 없습니다. 설정에서 발급해 주세요.")
+            return
+
         for idx, symbol in enumerate(symbols):
             def update_progress(pct: int, msg: str):
                 base_pct = (idx / total_symbols) * 100
@@ -230,7 +241,7 @@ class AssetDataViewModel(QObject):
             self.sig_progress_updated.emit(int((idx / total_symbols) * 100))
             self.sig_status_updated.emit(f"[{symbol}] 수집 시작 ({idx+1}/{total_symbols})...")
 
-            fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, "DUMMY_TOKEN", update_progress)
+            fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, access_token, update_progress)
 
             if isinstance(fetch_result, IOFailure):
                 err_msg = str(fetch_result.failure()._inner_value if hasattr(fetch_result.failure(), '_inner_value') else fetch_result.failure())
@@ -418,7 +429,6 @@ class SettingsViewModel(QObject):
         url = f"{base_url}/oauth2/token"
         payload = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": updates.get("KIWOOM_APP_SECRET", "")}
 
-        print(f"URL:{url} \n Payload: {payload}")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, data=payload, timeout=5) as response:

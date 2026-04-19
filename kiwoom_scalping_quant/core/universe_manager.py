@@ -56,8 +56,6 @@ class UniverseManager:
         # endpoint = '/api/dostk/rkinfo'
         # url = host + endpoint
 
-        self.logger.error(f"JYJ 222 access_token : {access_token}")
-
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
 
