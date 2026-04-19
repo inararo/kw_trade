@@ -77,8 +77,6 @@ async def inquire_current_price(session: aiohttp.ClientSession, access_token: st
     headers = {
         'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
         "Authorization": f"Bearer {access_token}",
-        "appkey": APP_KEY,
-        "secretkey": APP_SECRET,
         "api-id": "TEST_PRICE_INQUIRY_001" # 임의의 트랜잭션 ID
     }
 

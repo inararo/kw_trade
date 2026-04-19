@@ -50,11 +50,23 @@ class UniverseManager:
         거래소에서 전체 종목 리스트와 거래대금을 가져와 필터링 후 Top N 종목을 선정합니다.
         (현재는 구조적 예시를 위해 Mock API 흐름으로 구현합니다)
         """
+        # 1. 요청할 API URL
+        # host = 'https://mockapi.kiwoom.com' # 모의투자
+        # host = 'https://api.kiwoom.com'  # 실전투자
+        # endpoint = '/api/dostk/rkinfo'
+        # url = host + endpoint
+
+        self.logger.error(f"JYJ 222 access_token : {access_token}")
+
+        endpoint = f"{self.base_url}/api/dostk/rkinfo"
+        self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
+
+        # 2. header 데이터
         headers = {
             'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
-            "Authorization": f"Bearer {access_token}",
-            "appkey": self.app_key,
-            "secretkey": self.app_secret,
+            "authorization": f"Bearer {access_token}",
+            'cont-yn': 'N',  # 연속조회여부
+            'next-key': '',  # 연속조회키
             "api-id": "ka10030" # 당일거래대금상위요청 (가상 TR)
         }
 
@@ -75,9 +87,6 @@ class UniverseManager:
             'stex_tp': '3',  # 거래소구분 1:KRX, 2:NXT 3.통합
         }
 
-        endpoint = f"{self.base_url}/api/dostk/rkinfo"
-        self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
-
         # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
         # 당일 또는 최근 5일 평균 거래대금 상위 리스트를 가져옵니다.
 
@@ -86,7 +95,7 @@ class UniverseManager:
             async with aiohttp.ClientSession() as session:
                 # payload may be required for Kiwoom API depending on the spec, usually GET for inquiry
                 # Adjust method (GET/POST) and parameters according to the exact Kiwoom OpenAPI spec
-                async with session.get(endpoint, headers=headers, params= params, timeout=10) as response:
+                async with session.get(endpoint, headers=headers, json=params, timeout=10) as response:
                     if response.status != 200:
                         err_text = await response.text()
                         self.logger.error(f"API Error ({response.status}): {err_text}")

@@ -88,8 +88,6 @@ class HistoricalFetcher:
         headers = {
             'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
             "Authorization": f"Bearer {access_token}",
-            "appkey": self.app_key,
-            "secretkey": self.app_secret,
             "api-id": "OPT10080" # 주식분봉차트조회요청
         }
 
