@@ -17,7 +17,7 @@ class ConfigManager:
         self.config_path = config_path
         self.env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
         self._config_cache: Dict[str, Any] = {}
-        self._env_keys = {"KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "TELEGRAM_BOT_TOKEN"}
+        self._env_keys = {"KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "TELEGRAM_BOT_TOKEN"}
 
         self.load_config() # 동기 로드
 

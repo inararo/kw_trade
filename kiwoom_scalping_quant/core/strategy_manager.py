@@ -84,6 +84,14 @@ class StrategyManager:
 
         while self.is_running:
             try:
+                # Scheduler state protection
+                from core.scheduler import MarketState
+                scheduler = getattr(self.config_manager, "_injected_scheduler", None)
+                if scheduler and scheduler.current_state in [MarketState.LIQUIDATING, MarketState.STOPPED, MarketState.IDLE, MarketState.PREPARE]:
+                    # No new AI logic executed outside TRADING
+                    await asyncio.sleep(poll_interval)
+                    continue
+
                 # 1. State 조회 (DataCollector에서 해당 종목의 정규화된 롤링 버퍼 획득)
                 seq_len = self.shared_agent.seq_len
                 obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)

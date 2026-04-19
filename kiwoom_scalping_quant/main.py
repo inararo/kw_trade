@@ -40,6 +40,12 @@ class QuantSystem:
         self.order_manager = self.container.order_manager()
         self.data_collector = self.container.data_collector()
         self.strategy_manager = self.container.strategy_manager()
+        self.token_manager = self.container.token_manager()
+        self.market_scheduler = self.container.market_scheduler()
+
+        # Inject scheduler reference for StrategyManager state protection safely
+        config_mgr = self.container.config_manager()
+        config_mgr._injected_scheduler = self.market_scheduler
 
         # 대표 ViewModel 생성 (LiveDashboardViewModel)
         self.live_vm = self.container.live_dashboard_view_model()
@@ -48,10 +54,24 @@ class QuantSystem:
         self.main_window = MainWindow(self.live_vm, self)
         self.shutdown_event = asyncio.Event()
 
+        # Connect TokenManager signals to UI
+        self.token_manager.signals.token_updated.connect(self._on_token_updated)
+        self.token_manager.signals.token_error.connect(self._on_token_error)
+
+    def _on_token_updated(self, msg: str):
+        if hasattr(self.main_window, 'statusBar'):
+            self.main_window.statusBar().showMessage(f"[알림] {msg}", 5000)
+
+    def _on_token_error(self, msg: str):
+        if hasattr(self.main_window, 'statusBar'):
+            self.main_window.statusBar().showMessage(f"[에러] {msg}", 5000)
+
     async def start(self):
         self.main_window.show()
 
         # 백그라운드 태스크 시작
+        self.token_task = asyncio.create_task(self.token_manager.start())
+        self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
         self.influx_task = asyncio.create_task(self.influx_client.start())
         self.collector_task = asyncio.create_task(self.data_collector.start())
 
@@ -101,8 +121,16 @@ class QuantSystem:
         tasks = [
             ('view_model', getattr(self, 'view_model_task', None)),
             ('collector', getattr(self, 'collector_task', None)),
-            ('strategy', getattr(self, 'strategy_task', None))
+            ('strategy', getattr(self, 'strategy_task', None)),
+            ('scheduler', getattr(self, 'scheduler_task', None)),
+            ('token_manager', getattr(self, 'token_task', None))
         ]
+
+        # Stop background helpers gracefully first if they have stop methods
+        if hasattr(self, 'token_manager'):
+            await self.token_manager.stop()
+        if hasattr(self, 'market_scheduler'):
+            await self.market_scheduler.stop()
 
         for name, task in tasks:
             if task and not task.done():

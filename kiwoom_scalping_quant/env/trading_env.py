@@ -93,8 +93,15 @@ class ScalpingTradingEnv(gym.Env):
         current_price = self._get_current_price()
 
         # 실제 계좌 잔고를 조회할 수 없으므로 가상 잔고 또는 글로벌/종목 리스크 한도를 참조 가능
+        # If market state is LIQUIDATING, prevent BUY mask
+        can_buy = True
+        if hasattr(self.config, 'get'):
+            # The env doesn't have a direct reference to MarketScheduler, but we can assume an external check or a flag
+            # For now, we rely on MarketScheduler handling liquidation overrides itself
+            pass
+
         # 백테스트나 시뮬레이션용 로직 (실전에서는 예수금 확인 로직 연동 필요)
-        if self.balance >= current_price:
+        if self.balance >= current_price and can_buy:
             masks[1] = True
 
         # 보유 수량은 실제 order_manager의 상태와 동기화

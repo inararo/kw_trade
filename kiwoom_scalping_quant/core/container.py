@@ -7,6 +7,8 @@ from core.config_manager import ConfigManager
 from core.historical_fetcher import HistoricalFetcher
 from core.universe_manager import UniverseManager
 from core.strategy_manager import StrategyManager
+from core.token_manager import TokenManager
+from core.scheduler import MarketScheduler
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 
@@ -57,6 +59,19 @@ class Container(containers.DeclarativeContainer):
         config_manager=config_manager,
         data_collector=data_collector,
         order_manager=order_manager
+    )
+
+    token_manager = providers.Singleton(
+        TokenManager,
+        config_manager=config_manager
+    )
+
+    market_scheduler = providers.Singleton(
+        MarketScheduler,
+        data_collector=data_collector,
+        order_manager=order_manager,
+        universe_manager=universe_manager,
+        telegram_bot=None
     )
 
     # Presentation Layer - ViewModels (팩토리 혹은 싱글톤으로 관리)
