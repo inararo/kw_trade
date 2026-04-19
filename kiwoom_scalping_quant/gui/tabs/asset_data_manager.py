@@ -77,14 +77,15 @@ class AssetDataManagerTab(QWidget):
         main_layout.addWidget(data_group, stretch=1)
 
     def _connect_signals(self):
+        from PyQt6.QtCore import Qt
         self.view_model.symbols_loaded.connect(self.on_symbols_loaded)
-        self.view_model.symbol_update_failed.connect(self.on_error)
-        self.view_model.symbol_update_success.connect(self.on_success)
+        self.view_model.symbol_update_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
+        self.view_model.symbol_update_success.connect(self.on_success, Qt.ConnectionType.QueuedConnection)
 
         self.view_model.sig_progress_updated.connect(self.on_progress_updated)
         self.view_model.sig_status_updated.connect(self.on_status_updated)
-        self.view_model.fetch_completed.connect(self.on_fetch_completed)
-        self.view_model.fetch_failed.connect(self.on_error)
+        self.view_model.fetch_completed.connect(self.on_fetch_completed, Qt.ConnectionType.QueuedConnection)
+        self.view_model.fetch_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
 
     # --- UI Actions (View -> ViewModel) ---
     def _on_btn_add_clicked(self):

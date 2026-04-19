@@ -94,9 +94,10 @@ class BacktestStudioTab(QWidget):
         main_layout.addWidget(splitter, stretch=1)
 
     def _connect_signals(self):
+        from PyQt6.QtCore import Qt
         self.view_model.sig_bt_progress.connect(self.on_bt_progress)
-        self.view_model.sig_bt_finished.connect(self.on_bt_finished)
-        self.view_model.sig_bt_error.connect(self.on_bt_error)
+        self.view_model.sig_bt_finished.connect(self.on_bt_finished, Qt.ConnectionType.QueuedConnection)
+        self.view_model.sig_bt_error.connect(self.on_bt_error, Qt.ConnectionType.QueuedConnection)
         self.view_model.sig_bt_chart_data.connect(self.on_bt_chart_data)
 
     def _on_load_model(self):

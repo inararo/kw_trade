@@ -29,6 +29,9 @@ class ScalpingTradingEnv(gym.Env):
         self.current_step = 0
         self.reward_history = []
 
+        # Historical / Backtest 모드에서 사용할 정적 데이터 (리스트 또는 DataFrame)
+        self.historical_data = config.get("historical_data", None)
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.balance = self.config.get('initial_balance', 10000000)
@@ -41,9 +44,31 @@ class ScalpingTradingEnv(gym.Env):
         return obs, info
 
     def _get_observation(self):
+        # 만약 학습/백테스트 모드라서 historical_data가 주어졌다면,
+        # data_collector 대신 historical_data 배열에서 상태를 구성
+        if self.historical_data is not None:
+            max_idx = len(self.historical_data) - 1
+            idx = min(self.current_step, max_idx)
+
+            # (단순화: historical_data에서 seq_len 만큼 추출하여 패딩)
+            seq = []
+            for i in range(self.seq_len):
+                target_idx = max(0, idx - self.seq_len + 1 + i)
+                # Assuming data is a dict with raw prices/volumes, we'd normally pass it to FeatureEngineer.
+                # For this snippet's scope, we construct a dummy or simple normalized state.
+                row = self.historical_data[target_idx]
+                state_slice = np.array([
+                    row.get("price", 1000),
+                    row.get("volume", 0),
+                    0.0, 0.0, 0.0 # OIR, Volatility, Agg (Mocked for historical if not pre-calculated)
+                ], dtype=np.float32)
+                seq.append(state_slice)
+            return np.concatenate(seq)
+
+        symbol = self.config.get('symbol')
         if hasattr(self.data_collector, "get_latest_state"):
             # DataCollector is now expected to return a sequence of states flattened
-            state = self.data_collector.get_latest_state(seq_len=self.seq_len)
+            state = self.data_collector.get_latest_state(symbol, seq_len=self.seq_len)
             if state is not None and len(state) == self.feature_dim:
                 return state
         return np.zeros(self.feature_dim, dtype=np.float32)
@@ -107,15 +132,20 @@ class ScalpingTradingEnv(gym.Env):
         terminated = self.balance < 0
         truncated = False
 
+        if self.historical_data is not None and self.current_step >= len(self.historical_data) - 1:
+            truncated = True
+
         return obs, step_reward, terminated, truncated, info
 
     def _get_current_price(self):
-        if hasattr(self.data_collector, "get_latest_state"):
-            # Get just the latest single tick to avoid unpacking the whole sequence
-            state = self.data_collector.get_latest_state(seq_len=1)
-            if state is not None and len(state) > 0:
-                # Assuming price is at index 0, but it might be normalized.
-                # In a real environment, we'd pull the unnormalized current price from the collector.
-                # For this implementation's scope, we simulate it or rely on external mock wrapper.
-                pass
+        if self.historical_data is not None:
+            max_idx = len(self.historical_data) - 1
+            idx = min(self.current_step, max_idx)
+            return float(self.historical_data[idx].get("price", 1000.0))
+
+        symbol = self.config.get('symbol')
+        if hasattr(self.data_collector, "get_latest_price"):
+            price = self.data_collector.get_latest_price(symbol)
+            if price > 0:
+                return price
         return 1000.0

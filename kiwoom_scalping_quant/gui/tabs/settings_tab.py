@@ -117,10 +117,11 @@ class SettingsTab(QWidget):
         main_layout.addLayout(btn_layout)
 
     def _connect_signals(self):
+        from PyQt6.QtCore import Qt
         self.view_model.settings_loaded.connect(self.on_settings_loaded)
-        self.view_model.save_completed.connect(self.on_save_completed)
-        self.view_model.save_failed.connect(self.on_error)
-        self.view_model.connection_test_completed.connect(self.on_connection_test_completed)
+        self.view_model.save_completed.connect(self.on_save_completed, Qt.ConnectionType.QueuedConnection)
+        self.view_model.save_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
+        self.view_model.connection_test_completed.connect(self.on_connection_test_completed, Qt.ConnectionType.QueuedConnection)
 
     def _get_current_data(self):
         """UI에 입력된 값을 통합된 딕셔너리로 반환"""

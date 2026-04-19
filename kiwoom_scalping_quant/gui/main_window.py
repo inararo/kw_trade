@@ -135,17 +135,19 @@ class MainWindow(QMainWindow):
 
         self.tab_settings = SettingsTab(settings_vm)
 
+        from PyQt6.QtCore import Qt
+
         # Connect settings VM menu actions
         if hasattr(settings_vm, "check_db_status"):
             self._action_check_db.triggered.connect(settings_vm.check_db_status)
         if hasattr(settings_vm, "force_refresh_token"):
             self._action_force_token.triggered.connect(settings_vm.force_refresh_token)
         if hasattr(settings_vm, "sig_menu_action_result"):
-            settings_vm.sig_menu_action_result.connect(self._on_menu_action_result)
+            settings_vm.sig_menu_action_result.connect(self._on_menu_action_result, Qt.ConnectionType.QueuedConnection)
 
         # Connect live VM menu actions
         if hasattr(live_vm, "sig_menu_action_result"):
-            live_vm.sig_menu_action_result.connect(self._on_menu_action_result)
+            live_vm.sig_menu_action_result.connect(self._on_menu_action_result, Qt.ConnectionType.QueuedConnection)
 
         self.tabs.addTab(self.tab_live, "라이브 대시보드")
         self.tabs.addTab(self.tab_asset, "종목 및 데이터 관리")

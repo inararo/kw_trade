@@ -247,12 +247,11 @@ class OrderManager:
         retries = 0
         start_time = time.time()
 
-        # 최초 1호가 진입
-        current_state = data_collector.get_latest_state(symbol, seq_len=1)
-        # Assuming state is [price, volume, OIR, Volatility, Aggressiveness]
-        # In a real setup, we would read the actual orderbook to get best bid/ask
-        # For this logic, let's assume we place it at current price
-        best_price = int(current_state[0])
+        # 최초 1호가 진입 (실제 가격 추출)
+        best_price = int(data_collector.get_latest_price(symbol))
+        if best_price <= 0:
+            self.logger.error("스마트 주문 실패: 최신 가격 정보를 가져오지 못했습니다.")
+            return
 
         self.logger.info(f"[Smart Order] 진입 시작: {action} {target_qty}주 @ {best_price}")
 

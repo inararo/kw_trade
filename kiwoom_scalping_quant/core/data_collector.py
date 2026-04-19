@@ -158,6 +158,16 @@ class DataCollector:
         # Flatten sequence: [t-n_1, t-n_2, ..., t_1, t_2, ...]
         return np.concatenate(seq).astype(np.float32)
 
+    def get_latest_price(self, symbol: str) -> float:
+        """스마트 주문 등을 위해 정규화되지 않은 최신 가격 반환"""
+        if symbol in self.feature_engineers:
+            fe = self.feature_engineers[symbol]
+            if len(fe.price_buffer) > 0 and fe.count > 0:
+                # 링 버퍼에서 가장 최근 입력된 가격 반환 (head-1)
+                idx = (fe.head - 1) % fe.max_ticks
+                return float(fe.price_buffer[idx])
+        return 0.0
+
     async def start(self):
         self.is_running = True
         # Watchdog 태스크 시작

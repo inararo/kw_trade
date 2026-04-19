@@ -107,3 +107,8 @@ class ConfigManager:
 
         self._config_cache["symbols"] = filtered
         return self.save_config()
+
+    def set_symbols(self, new_symbols: List[Dict[str, str]]) -> Result[bool, Exception]:
+        """새로운 종목 리스트로 전체를 덮어씁니다 (Bulk update)."""
+        self._config_cache["symbols"] = new_symbols
+        return self.save_config()

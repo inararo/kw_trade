@@ -166,18 +166,13 @@ class AssetDataViewModel(QObject):
         if not isinstance(top_stocks, list):
             top_stocks = []
 
-        # 기존 심볼들 덮어쓰기 (모두 삭제 후 추가)
-        # 실제 구현시에는 ConfigManager에 bulk_replace 등을 추가하는 것이 좋음
-        for s in self.config_manager.get_symbols()[:]:
-            self.config_manager.remove_symbol(s.get("code"))
-
+        # Bulk save newly selected top_stocks to config
+        new_symbols = []
         for stock in top_stocks:
-            # 방어 코드: stock이 문자열로 잘못 들어왔을 경우 등을 대비
-            if isinstance(stock, dict):
-                self.config_manager.add_symbol(stock.get("code", ""), stock.get("name", ""))
-            else:
-                # 에러 로깅 가능 (여기서는 단순히 건너뜀)
-                pass
+            if isinstance(stock, dict) and "code" in stock and "name" in stock:
+                new_symbols.append({"code": stock["code"], "name": stock["name"]})
+
+        self.config_manager.set_symbols(new_symbols)
 
         self.sig_progress_updated.emit(100)
         self.sig_status_updated.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
@@ -309,7 +304,11 @@ class AITrainingViewModel(QObject):
         from gui.training_worker import TrainingWorker, TrainingSignals
 
         self.sig_training_log.emit("2. RL Environment 생성 및 Agent 초기화...")
-        env = ScalpingTradingEnv(self.data_collector, self.order_manager, {"symbol": target_sym})
+        env_config = {
+            "symbol": target_sym,
+            "historical_data": historical_data
+        }
+        env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
         # 설정 업데이트 (LR 반영 등)
         agent_config = {"seq_len": 10, "learning_rate": lr}
