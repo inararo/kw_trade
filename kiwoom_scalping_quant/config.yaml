@@ -1,60 +1,26 @@
+account_number: ''
+cb_timeout_sec: 3
 db_batch_size: 500
 global_max_exposure: 50000000
 global_max_loss: -500000
+influx_bucket: stock_data
 initial_balance: 10000000
 kiwoom:
   rest_base_url:
-    real: https://openapi.kiwoom.com
-    virtual: https://openapivts.kiwoom.com
-  trading_mode: virtual
+    real: https://api.kiwoom.com
+    virtual: https://mockapi.kiwoom.com
+  trading_mode: real
   ws_url:
     real: wss://api.kiwoom.com:10000/api/dostk/websocket
     virtual: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
+log_level: INFO
 max_buffer_size: 10000
+max_position_pct: 50.0
 seq_len: 10
 slippage: 0.0005
-symbol: 005930
-symbols:
-- code: '016330'
-  name: Stock_Company_1633
-- code: 004970
-  name: Stock_Company_497
-- code: 006390
-  name: Stock_Company_639
-- code: 011180
-  name: Stock_Company_1118
-- code: 003890
-  name: Stock_Company_389
-- code: '017530'
-  name: Stock_Company_1753
-- code: '015070'
-  name: Stock_Company_1507
-- code: 009350
-  name: Stock_Company_935
-- code: 015870
-  name: Stock_Company_1587
-- code: '015050'
-  name: Stock_Company_1505
-- code: '012450'
-  name: Stock_Company_1245
-- code: '005710'
-  name: Stock_Company_571
-- code: '017310'
-  name: Stock_Company_1731
-- code: '001240'
-  name: Stock_Company_124
-- code: 008820
-  name: Stock_Company_882
-- code: '016020'
-  name: Stock_Company_1602
-- code: '005730'
-  name: Stock_Company_573
-- code: '014130'
-  name: Stock_Company_1413
-- code: 008570
-  name: Stock_Company_857
-- code: '001330'
-  name: Stock_Company_133
+stop_loss_pct: -2.0
+telegram_chat_id: '8338432975'
+trading_mode: 실전투자
 universe:
 - code: 005930
   name: Samsung

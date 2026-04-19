@@ -408,16 +408,17 @@ class SettingsViewModel(QObject):
         elif mode == "모의투자":
             mode = "virtual"
 
-        base_url = "https://openapi.kiwoom.com" if mode == "real" else "https://openapivts.kiwoom.com"
+        base_url = "https://api.kiwoom.com" if mode == "real" else "https://mockapi.kiwoom.com"
 
         # 만약 dict 구조가 온전하다면
         kiwoom_conf = self.config_manager.get("kiwoom", {})
         if "rest_base_url" in kiwoom_conf and mode in kiwoom_conf["rest_base_url"]:
             base_url = kiwoom_conf["rest_base_url"][mode]
 
-        url = f"{base_url}/oauth2/tokenP"
-        payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": updates.get("KIWOOM_APP_SECRET", "")}
+        url = f"{base_url}/oauth2/token"
+        payload = {"grant_type": "client_credentials", "appkey": app_key, "secretkey": updates.get("KIWOOM_APP_SECRET", "")}
 
+        print(f"URL:{url} \n Payload: {payload}")
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, timeout=5) as response:

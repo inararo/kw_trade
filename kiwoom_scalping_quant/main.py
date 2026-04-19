@@ -72,54 +72,65 @@ class QuantSystem:
         """비동기 파이프라인 안전 종료 로직 (Graceful Shutdown)"""
         print("시스템: 종료 파이프라인 가동...")
 
-        # 1. 뷰모델 갱신 중지
+        # 1. 뷰모델 갱신 즉시 중지
         self.live_vm.stop()
 
-        # 2. 미체결 주문 일괄 취소 (에이전트 종료 처리)
-        print("시스템: 미체결 주문 전체 취소 중...")
-        await self.order_manager.cancel_all_orders()
+        # 2. 미체결 주문 일괄 취소 (최대 3초 대기)
+        try:
+            print("시스템: 미체결 주문 전체 취소 중...")
+            await asyncio.wait_for(self.order_manager.cancel_all_orders(), timeout=3.0)
+        except Exception as e:
+            print(f"시스템: 주문 취소 중 오류 또는 타임아웃 발생: {e}")
 
-        # 3. StrategyManager 정지 (AI 매매 루프 완전 종료)
-        print("시스템: StrategyManager 오케스트레이션 종료 중...")
-        await self.strategy_manager.stop()
+        # 3 & 4. 매매 및 수집 정지
+        try:
+            print("시스템: Strategy 및 DataCollector 정지 중...")
+            # 동시에 정지 프로세스 가동 (시간 절약)
+            await asyncio.wait_for(
+                asyncio.gather(
+                    self.strategy_manager.stop(),
+                    self.data_collector.stop(),
+                    return_exceptions=True
+                ),
+                timeout=5.0
+            )
+        except asyncio.TimeoutError:
+            print("시스템: 정지 프로세스 타임아웃 - 강제 다음 단계 진행")
 
-        # 4. 데이터 수집 루프 완전 정지 (WebSocket 및 Watchdog 취소됨)
-        print("시스템: DataCollector 및 통신 종료 중...")
-        await self.data_collector.stop()
+        # 5. 백그라운드 태스크 Cancel 및 정리
+        tasks = [
+            ('view_model', getattr(self, 'view_model_task', None)),
+            ('collector', getattr(self, 'collector_task', None)),
+            ('strategy', getattr(self, 'strategy_task', None))
+        ]
 
-        # 5. 백그라운드 태스크 Cancel
-        if hasattr(self, 'view_model_task') and not self.view_model_task.done():
-            self.view_model_task.cancel()
-            try:
-                await self.view_model_task
-            except asyncio.CancelledError:
-                pass
+        for name, task in tasks:
+            if task and not task.done():
+                print(f"시스템: {name} 태스크 취소 중...")
+                task.cancel()
+                try:
+                    # 짧게 대기하며 정리 기회 부여
+                    await asyncio.wait_for(task, timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
 
-        if hasattr(self, 'collector_task') and not self.collector_task.done():
-            self.collector_task.cancel()
-            try:
-                await self.collector_task
-            except asyncio.CancelledError:
-                pass
-
-        if hasattr(self, 'strategy_task') and not self.strategy_task.done():
-            self.strategy_task.cancel()
-            try:
-                await self.strategy_task
-            except asyncio.CancelledError:
-                pass
-
-        # 6. InfluxDB 등 DB 커넥션 종료 및 잔여 버퍼 Flush
+        # 6. DB 연결 닫기 (가장 마지막에 수행)
         print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
-        await self.influx_client.close()
+        if hasattr(self, 'influx_client'):
+            try:
+                await asyncio.wait_for(self.influx_client.close(), timeout=2.0)
+            except:
+                pass
 
-        # 7. 최종 윈도우/앱 정리 및 종료
-        print("시스템: 모든 정리가 완료되었습니다. 프로그램을 종료합니다.")
-        from PyQt6.QtWidgets import QApplication
-
-        # 메인 루프를 끝내기 위해 이벤트 세트
+        # 7. 종료 이벤트 세트 (main 함수의 loop가 이를 인지하고 탈출하도록 함)
+        print("시스템: 모든 정리가 완료되었습니다.")
         self.shutdown_event.set()
-        QApplication.quit()
+
+        # 주의: 여기서 QApplication.quit()를 호출하기보다
+        # main()의 루프가 끝난 직후 호출하는 것이 더 안전할 수 있습니다.
+        # 일단 현재 구조를 유지한다면:
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
 
 def main():
     app = QApplication(sys.argv)

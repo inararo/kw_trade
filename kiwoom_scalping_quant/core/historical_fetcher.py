@@ -15,11 +15,11 @@ class HistoricalFetcher:
     """
     def __init__(self, config_manager=None):
         self.config_manager = config_manager
-        self.base_url = "https://openapi.kiwoom.com"
+        self.base_url = "https://api.kiwoom.com"
         if self.config_manager and hasattr(self.config_manager, "get_rest_url"):
             self.base_url = self.config_manager.get_rest_url()
         else:
-            self.base_url = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+            self.base_url = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
         self.app_key = os.getenv("KIWOOM_APP_KEY")
         self.app_secret = os.getenv("KIWOOM_APP_SECRET")
@@ -88,7 +88,7 @@ class HistoricalFetcher:
         headers = {
             "Authorization": f"Bearer {access_token}",
             "appkey": self.app_key,
-            "appsecret": self.app_secret,
+            "secretkey": self.app_secret,
             "tr_id": "OPT10080" # 주식분봉차트조회요청
         }
 

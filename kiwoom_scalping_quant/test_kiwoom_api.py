@@ -21,19 +21,19 @@ logger = logging.getLogger("KiwoomAPITest")
 load_dotenv()
 APP_KEY = os.getenv("KIWOOM_APP_KEY")
 APP_SECRET = os.getenv("KIWOOM_APP_SECRET")
-BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://openapi.kiwoom.com")
+BASE_URL = os.getenv("KIWOOM_BASE_URL", "https://api.kiwoom.com")
 
 async def get_access_token(session: aiohttp.ClientSession) -> str:
     """
     Client Credentials 방식을 사용하여 키움증권 REST API 접근 토큰을 발급받습니다.
     """
-    url = f"{BASE_URL}/oauth2/tokenP"
+    url = f"{BASE_URL}/oauth2/token"
 
     # 키움증권 가이드에 따른 Body 파라미터 구성 (client_credentials)
     payload = {
         "grant_type": "client_credentials",
         "appkey": APP_KEY,
-        "appsecret": APP_SECRET
+        "secretkey": APP_SECRET
     }
 
     logger.info(f"접근 토큰 발급 요청 중... (URL: {url})")
@@ -77,7 +77,7 @@ async def inquire_current_price(session: aiohttp.ClientSession, access_token: st
     headers = {
         "Authorization": f"Bearer {access_token}",
         "appkey": APP_KEY,
-        "appsecret": APP_SECRET,
+        "secretkey": APP_SECRET,
         "tr_id": "TEST_PRICE_INQUIRY_001" # 임의의 트랜잭션 ID
     }
 

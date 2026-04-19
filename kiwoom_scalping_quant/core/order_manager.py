@@ -35,7 +35,7 @@ class OrderManager:
 
         self.daily_realized_pnl = 0.0
 
-        self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://openapivts.kiwoom.com"
+        self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://mockapi.kiwoom.com"
 
         self.rate_limit = 5
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)

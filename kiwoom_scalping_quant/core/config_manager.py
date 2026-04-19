@@ -51,7 +51,7 @@ class ConfigManager:
         kiwoom_config = self.get("kiwoom", {})
         mode = kiwoom_config.get("trading_mode", "virtual")
         urls = kiwoom_config.get("rest_base_url", {})
-        return urls.get(mode, "https://openapivts.kiwoom.com")
+        return urls.get(mode, "https://mockapi.kiwoom.com")
 
     def get_ws_url(self) -> str:
         """현재 설정된 trading_mode에 따른 WebSocket URL을 반환합니다."""
