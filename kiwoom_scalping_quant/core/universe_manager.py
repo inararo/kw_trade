@@ -51,13 +51,31 @@ class UniverseManager:
         (현재는 구조적 예시를 위해 Mock API 흐름으로 구현합니다)
         """
         headers = {
+            'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
             "Authorization": f"Bearer {access_token}",
             "appkey": self.app_key,
             "secretkey": self.app_secret,
-            "tr_id": "OPT10030" # 당일거래대금상위요청 (가상 TR)
+            "api-id": "ka10030" # 당일거래대금상위요청 (가상 TR)
         }
 
-        endpoint = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+        # 2. 요청 데이터
+        params = {
+            'mrkt_tp': '000',  # 시장구분 000:전체, 001:코스피, 101:코스닥
+            'sort_tp': '1',  # 정렬구분 1:거래량, 2:거래회전율, 3:거래대금
+            'mang_stk_incls': '0',
+            # 관리종목포함 0:관리종목 포함, 1:관리종목 미포함, 3:우선주제외, 11:정리매매종목제외, 4:관리종목, 우선주제외, 5:증100제외, 6:증100마나보기, 13:증60만보기, 12:증50만보기, 7:증40만보기, 8:증30만보기, 9:증20만보기, 14:ETF제외, 15:스팩제외, 16:ETF+ETN제외
+            'crd_tp': '0',  # 신용구분 0:전체조회, 9:신용융자전체, 1:신용융자A군, 2:신용융자B군, 3:신용융자C군, 4:신용융자D군, 8:신용대주
+            'trde_qty_tp': '0',
+            # 거래량구분 0:전체조회, 5:5천주이상, 10:1만주이상, 50:5만주이상, 100:10만주이상, 200:20만주이상, 300:30만주이상, 500:500만주이상, 1000:백만주이상
+            'pric_tp': '0',
+            # 가격구분 0:전체조회, 1:1천원미만, 2:1천원이상, 3:1천원~2천원, 4:2천원~5천원, 5:5천원이상, 6:5천원~1만원, 10:1만원미만, 7:1만원이상, 8:5만원이상, 9:10만원이상
+            'trde_prica_tp': '0',
+            # 거래대금구분 0:전체조회, 1:1천만원이상, 3:3천만원이상, 4:5천만원이상, 10:1억원이상, 30:3억원이상, 50:5억원이상, 100:10억원이상, 300:30억원이상, 500:50억원이상, 1000:100억원이상, 3000:300억원이상, 5000:500억원이상
+            'mrkt_open_tp': '0',  # 장운영구분 0:전체조회, 1:장중, 2:장전시간외, 3:장후시간외
+            'stex_tp': '3',  # 거래소구분 1:KRX, 2:NXT 3.통합
+        }
+
+        endpoint = f"{self.base_url}/api/dostk/rkinfo"
         self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
 
         # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
@@ -68,7 +86,7 @@ class UniverseManager:
             async with aiohttp.ClientSession() as session:
                 # payload may be required for Kiwoom API depending on the spec, usually GET for inquiry
                 # Adjust method (GET/POST) and parameters according to the exact Kiwoom OpenAPI spec
-                async with session.get(endpoint, headers=headers, timeout=10) as response:
+                async with session.get(endpoint, headers=headers, params= params, timeout=10) as response:
                     if response.status != 200:
                         err_text = await response.text()
                         self.logger.error(f"API Error ({response.status}): {err_text}")

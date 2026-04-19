@@ -75,10 +75,11 @@ async def inquire_current_price(session: aiohttp.ClientSession, access_token: st
     params = {"symbol": symbol}
 
     headers = {
+        'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
         "Authorization": f"Bearer {access_token}",
         "appkey": APP_KEY,
         "secretkey": APP_SECRET,
-        "tr_id": "TEST_PRICE_INQUIRY_001" # 임의의 트랜잭션 ID
+        "api-id": "TEST_PRICE_INQUIRY_001" # 임의의 트랜잭션 ID
     }
 
     logger.info(f"[{symbol}] 현재가 조회 요청 중... (URL: {url})")
