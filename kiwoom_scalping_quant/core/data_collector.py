@@ -272,6 +272,20 @@ class DataCollector:
         try:
             while self.is_running:
                 await asyncio.sleep(1)
+
+                # Check Market Scheduler state if available
+                scheduler = getattr(self.config, "_injected_scheduler", None)
+                if scheduler:
+                    from core.scheduler import MarketState
+                    if scheduler.current_state not in [MarketState.TRADING, MarketState.LIQUIDATING]:
+                        # Log debug info periodically (every ~30s to avoid spam)
+                        if int(time.time()) % 30 == 0:
+                            self.logger.info("장외 시간: Watchdog 대기 중")
+
+                        # Reset last receive time to prevent immediate breaker when market opens
+                        self.last_receive_time = time.time()
+                        continue
+
                 idle_time = time.time() - self.last_receive_time
 
                 if idle_time > 3.0 and not self.circuit_breaker_active:

@@ -59,11 +59,6 @@ class TokenManager:
 
         base_url = self.config_manager.get_rest_url()
         url = f"{base_url}/oauth2/token"
-
-        headers = {
-            'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
-        }
-
         payload = {
             "grant_type": "client_credentials",
             "appkey": app_key,
@@ -72,10 +67,10 @@ class TokenManager:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json=payload, timeout=10) as response:
+                async with session.post(url, data=payload, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()
-                        self.access_token = data.get("token")
+                        self.access_token = data.get("access_token")
                         # Kiwoom tokens are usually valid for 24 hours (86400 seconds)
                         expires_in = int(data.get("expires_in", 86400))
                         self.expires_at = datetime.now() + timedelta(seconds=expires_in)

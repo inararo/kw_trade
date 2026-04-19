@@ -421,7 +421,7 @@ class SettingsViewModel(QObject):
         print(f"URL:{url} \n Payload: {payload}")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=5) as response:
+                async with session.post(url, data=payload, timeout=5) as response:
                     if response.status == 200:
                         kiwoom_msg = "Kiwoom API: 토큰 발급 성공"
                     else:

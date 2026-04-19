@@ -74,6 +74,19 @@ class Container(containers.DeclarativeContainer):
         telegram_bot=None
     )
 
+    token_manager = providers.Singleton(
+        TokenManager,
+        config_manager=config_manager
+    )
+
+    market_scheduler = providers.Singleton(
+        MarketScheduler,
+        data_collector=data_collector,
+        order_manager=order_manager,
+        universe_manager=universe_manager,
+        telegram_bot=None
+    )
+
     # Presentation Layer - ViewModels (팩토리 혹은 싱글톤으로 관리)
     live_dashboard_view_model = providers.Factory(
         LiveDashboardViewModel,
