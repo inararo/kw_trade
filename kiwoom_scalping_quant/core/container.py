@@ -43,12 +43,12 @@ class Container(containers.DeclarativeContainer):
     # Core 비즈니스 로직 (싱글톤)
     data_collector = providers.Singleton(
         DataCollector,
-        config=config
+        config=config_manager
     )
 
     order_manager = providers.Singleton(
         OrderManager,
-        config=config,
+        config=config_manager,
         auth_manager=None # 추후 AuthManager provider 주입 가능
     )
 

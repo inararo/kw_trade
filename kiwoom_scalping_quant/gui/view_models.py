@@ -359,6 +359,19 @@ class SettingsViewModel(QObject):
 
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
+        # Convert UI mode string to internal mode string and map to nested structure
+        mode_str = updates.get("trading_mode", "모의투자")
+        mapped_mode = "real" if mode_str == "실전투자" else "virtual"
+
+        # update nested kiwoom dictionary properly
+        kiwoom_conf = self.config_manager.get("kiwoom", {})
+        kiwoom_conf["trading_mode"] = mapped_mode
+        updates["kiwoom"] = kiwoom_conf
+
+        # we can remove trading_mode from the root dict
+        if "trading_mode" in updates:
+            del updates["trading_mode"]
+
         save_result = self.config_manager.update_settings(updates)
         if isinstance(save_result, Success):
             self.save_completed.emit("설정이 성공적으로 저장되었습니다. (일부 설정은 재시작 시 적용됩니다.)")
@@ -381,13 +394,26 @@ class SettingsViewModel(QObject):
         old_mode = self.config_manager.get("kiwoom", {}).get("trading_mode")
 
         # Test를 위해 모드만 잠시 덮어쓰기 (임의)
-        mode = updates.get("trading_mode", "virtual")
+        # updates는 {"kiwoom.trading_mode": "real"} 이런 식으로 들어올 수도 있음
+        # dict 병합 과정에서 kiwoom이 안 넘어올 수 있으므로 명시적으로 추출
+        mode = "virtual"
+        if "kiwoom" in updates and "trading_mode" in updates["kiwoom"]:
+             mode = updates["kiwoom"]["trading_mode"]
+        elif "trading_mode" in updates:
+             mode = updates["trading_mode"]
+
+        # 모의투자, 실전투자 매핑 (UI 한글 -> 내부 영어)
+        if mode == "실전투자":
+            mode = "real"
+        elif mode == "모의투자":
+            mode = "virtual"
+
         base_url = "https://openapi.kiwoom.com" if mode == "real" else "https://openapivts.kiwoom.com"
 
         # 만약 dict 구조가 온전하다면
         kiwoom_conf = self.config_manager.get("kiwoom", {})
-        if "rest_base_url" in kiwoom_conf:
-            base_url = kiwoom_conf["rest_base_url"].get(mode, base_url)
+        if "rest_base_url" in kiwoom_conf and mode in kiwoom_conf["rest_base_url"]:
+            base_url = kiwoom_conf["rest_base_url"][mode]
 
         url = f"{base_url}/oauth2/tokenP"
         payload = {"grant_type": "client_credentials", "appkey": app_key, "appsecret": updates.get("KIWOOM_APP_SECRET", "")}
