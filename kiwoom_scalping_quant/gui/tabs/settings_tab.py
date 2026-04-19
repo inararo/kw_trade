@@ -89,6 +89,10 @@ class SettingsTab(QWidget):
         system_group = QGroupBox("시스템 알림 및 로깅")
         sys_form = QFormLayout()
 
+        from PyQt6.QtWidgets import QCheckBox
+        self.chk_signal_only = QCheckBox("Signal Only Mode (매매 신호만 발생, 실제 주문 X)")
+        sys_form.addRow("안전 모드:", self.chk_signal_only)
+
         self.input_tg_token = QLineEdit()
         self.input_tg_token.setEchoMode(QLineEdit.EchoMode.Password)
         sys_form.addRow("텔레그램 봇 토큰:", self.input_tg_token)
@@ -139,7 +143,8 @@ class SettingsTab(QWidget):
             "max_position_pct": self.spin_max_position.value(),
             "cb_timeout_sec": self.spin_cb_timeout.value(),
             "telegram_chat_id": self.input_tg_chat.text(),
-            "log_level": self.combo_log_level.currentText()
+            "log_level": self.combo_log_level.currentText(),
+            "signal_only_mode": self.chk_signal_only.isChecked()
         }
 
     # --- UI Action Handlers ---
@@ -173,6 +178,7 @@ class SettingsTab(QWidget):
         self.spin_cb_timeout.setValue(config.get("cb_timeout_sec", 3))
         self.input_tg_chat.setText(config.get("telegram_chat_id", ""))
         self.combo_log_level.setCurrentText(config.get("log_level", "INFO"))
+        self.chk_signal_only.setChecked(config.get("signal_only_mode", False))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

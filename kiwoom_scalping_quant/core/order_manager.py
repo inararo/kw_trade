@@ -4,6 +4,10 @@ import logging
 from typing import Dict, Any, Optional
 from returns.result import Result, Success, Failure
 from returns.future import FutureResult, future_safe
+from PyQt6.QtCore import QObject, pyqtSignal
+
+class OrderSignals(QObject):
+    signal_only_log = pyqtSignal(str)
 
 class OrderState:
     PENDING = "PENDING"        # 서버 전송 후 응답 대기
@@ -19,6 +23,7 @@ class OrderManager:
         self.config = config
         self.auth_manager = auth_manager
         self.logger = logging.getLogger("OrderManager")
+        self.signals = OrderSignals()
 
         # 고유 주문 ID(내부)를 키로, 상태 딕셔너리를 값으로 가지는 중앙 추적기
         self.active_orders: Dict[str, Dict[str, Any]] = {}
@@ -91,6 +96,34 @@ class OrderManager:
 
         async with self.order_semaphore:
             internal_id = f"INT_{int(time.time() * 1000)}"
+
+            # --- Signal Only Bypass Logic ---
+            signal_only = False
+            # Check config manager if available, else standard config dict fallback
+            if hasattr(self.config, 'get'):
+                signal_only = self.config.get('signal_only_mode', False)
+
+            if signal_only:
+                msg = f"[SIGNAL ONLY] 🔴 {order_type}: {symbol} ({qty}주 @ {price}) - 실제 주문 생략됨"
+                self.logger.info(msg)
+
+                # EMIT SIGNAL
+                self.signals.signal_only_log.emit(msg)
+
+                # Fake success order tracking registration
+                self.active_orders[internal_id] = {
+                    'internal_id': internal_id,
+                    'broker_id': f"SIG_{internal_id}",
+                    'orig_broker_id': orig_order_no,
+                    'symbol': symbol,
+                    'type': order_type,
+                    'price': price,
+                    'qty': qty,
+                    'unexecuted_qty': 0, # Immediately consider "filled" mentally or bypassed
+                    'status': OrderState.FILLED,
+                    'timestamp': time.time()
+                }
+                return internal_id
 
             # 상태 추적기 등록 (PENDING)
             self.active_orders[internal_id] = {
