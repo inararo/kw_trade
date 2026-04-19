@@ -29,23 +29,28 @@ class UniverseManager:
         """
         정규식과 문자열 패턴을 이용하여 순수 주식이 아닌 종목을 엄격히 걸러냅니다.
         """
-        # 스팩(SPAC), ETF, ETN, KODEX, TIGER, KBSTAR 등 시장 인덱스 제외
+        # 1. 키워드 기반 필터링 (ETF, ETN, 스팩 등)
         invalid_keywords = r"(스팩|SPAC|ETF|ETN|KODEX|TIGER|KBSTAR|ARIRANG|KINDEX|KOSEF)"
         if re.search(invalid_keywords, name, re.IGNORECASE):
+            self.logger.debug(f"필터링 제외: {name}({code}) - 키워드 매칭")
             return False
 
-        # 우선주(우, 우B 등), 선박, 리츠 등 제외 패턴
-        if re.search(r"(우$|우B$|우C$|리츠|인프라|선박)", name):
+        # 2. 우선주/리츠 등 명어 기반 필터링
+        if re.search(r"(우$|우B$|우C$|리츠|인프라|선박|ETN)", name):
+            self.logger.debug(f"필터링 제외: {name}({code}) - 우선주/리츠 등 명칭")
             return False
 
-        # 종목코드 끝자리가 0이 아닌 경우(보통 우선주나 파생상품) 제외
-        if not code.endswith("0"):
+        # 3. 종목코드 기반 필터링 (우선주 등 체크)
+        # 종목코드에 '_AL' 등 접미사가 붙어있을 수 있으므로 전처리 후 마지막 자리 체크
+        clean_code = code.split('_')[0]
+        if not clean_code.endswith("0"):
+            self.logger.debug(f"필터링 제외: {name}({code}) - 우선주/파생상품 코드({clean_code})")
             return False
 
         return True
 
     @future_safe
-    async def build_top_n_universe(self, access_token: str, top_n: int = 20) -> List[Dict[str, Any]]:
+    async def build_top_n_universe(self, access_token: str, top_n: int = 40) -> List[Dict[str, Any]]:
         """
         거래소에서 전체 종목 리스트와 거래대금을 가져와 필터링 후 Top N 종목을 선정합니다.
         (현재는 구조적 예시를 위해 Mock API 흐름으로 구현합니다)
@@ -55,6 +60,8 @@ class UniverseManager:
         # host = 'https://api.kiwoom.com'  # 실전투자
         # endpoint = '/api/dostk/rkinfo'
         # url = host + endpoint
+
+        self.logger.error(f"JYJ 222 access_token : {access_token}")
 
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
@@ -91,9 +98,8 @@ class UniverseManager:
         raw_market = []
         try:
             async with aiohttp.ClientSession() as session:
-                # payload may be required for Kiwoom API depending on the spec, usually GET for inquiry
-                # Adjust method (GET/POST) and parameters according to the exact Kiwoom OpenAPI spec
-                async with session.get(endpoint, headers=headers, json=params, timeout=10) as response:
+                # 공식 샘플 가이드에 따라 조회성 TR인 ka10030도 POST 방식을 사용합니다.
+                async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
                     if response.status != 200:
                         err_text = await response.text()
                         self.logger.error(f"API Error ({response.status}): {err_text}")
@@ -104,26 +110,32 @@ class UniverseManager:
 
                     # Kiwoom API returns a list of items typically in "output" or "output1"
                     # We will parse out standard keys
-                    items = data.get("output", [])
+                    items = data.get("tdy_trde_qty_upper", [])
                     if not items and "output1" in data:
                         items = data["output1"]
 
+                    self.logger.error(f"API 수신 데이터 확인: 총 {len(items)}개의 종목 수신됨.")
+
                     for item in items:
-                        code = item.get("stck_shrn_iscd") or item.get("code") or ""
-                        name = item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
+                        # 제공된 명세(stk_cd, stk_nm, trde_amt)를 최우선으로 적용합니다.
+                        code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
+                        name = item.get("stk_nm") or item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
 
                         # Handle string representation of trading value
                         try:
-                            tval_str = item.get("acml_tr_pbmn") or item.get("trading_value") or "0"
+                            # 명세상 '거래금액'은 trde_amt 필드입니다.
+                            tval_str = item.get("trde_amt") or item.get("acml_tr_pbmn") or item.get("trading_value") or "0"
                             trading_value = float(tval_str)
                         except (ValueError, TypeError):
                             trading_value = 0.0
 
-                        raw_market.append({
+                        parsed_stock = {
                             "code": code,
                             "name": name,
                             "trading_value": trading_value
-                        })
+                        }
+                        raw_market.append(parsed_stock)
+
         except asyncio.TimeoutError:
             self.logger.error("API 요청 시간 초과 (Timeout).")
             raise RuntimeError("API 연동 시간 초과")
@@ -145,6 +157,10 @@ class UniverseManager:
         # 3. Top N 선정
         top_universe = sorted_universe[:top_n]
 
-        self.logger.info(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
+        # 최종 선정된 유니버스 종목들 로그 출력
+        top_symbols = [f"{s.get('name')}({s.get('code')})" for s in top_universe]
+        self.logger.error(f"최종 선정된 유니버스 Top {len(top_universe)}: {', '.join(top_symbols)}")
+
+        self.logger.error(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
 
         return top_universe

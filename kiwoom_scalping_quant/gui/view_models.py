@@ -1,7 +1,7 @@
 import asyncio
+import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 from typing import Dict, Any, List
-import asyncio
 from returns.result import Success, Failure
 from returns.io import IOSuccess, IOFailure
 
@@ -139,6 +139,7 @@ class AssetDataViewModel(QObject):
         self.historical_fetcher = historical_fetcher
         self.influx_client = influx_client
         self.universe_manager = universe_manager
+        self.logger = logging.getLogger("AssetDataViewModel")
 
     def build_universe(self):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
@@ -255,18 +256,24 @@ class AssetDataViewModel(QObject):
             except Exception:
                 data_list = []
 
-            total_data_collected += len(data_list)
+            fetch_count = len(data_list)
+            self.logger.error(f"[{symbol}] 수집 완료: {fetch_count}건의 데이터를 불러왔습니다.")
+            total_data_collected += fetch_count
 
             self.sig_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100))
             self.sig_status_updated.emit(f"[{symbol}] InfluxDB Bulk Insert 진행 중...")
             try:
                 await self.influx_client.bulk_insert(data_list)
+                self.logger.error(f"[{symbol}] InfluxDB 저장 성공: {fetch_count}건 적재 완료.")
             except Exception as e:
+                self.logger.error(f"[{symbol}] DB 저장 중 에러 발생: {e}")
                 self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러: {e}")
 
         self.sig_progress_updated.emit(100)
         self.sig_status_updated.emit("모든 종목 수집 및 적재 완료")
-        self.fetch_completed.emit(f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!")
+        msg = f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!"
+        self.logger.error(f"전체 수집 프로세스 종료: {msg}")
+        self.fetch_completed.emit(msg)
 
 class AITrainingViewModel(QObject):
     """
@@ -431,9 +438,20 @@ class SettingsViewModel(QObject):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=payload, timeout=5) as response:
+                async with session.post(url, json=payload, timeout=5) as response:
                     if response.status == 200:
-                        kiwoom_msg = "Kiwoom API: 토큰 발급 성공"
+                        data = await response.json()
+                        # 각 필드를 가져오되, 데이터가 없으면 빈 문자열("")을 기본값으로 설정
+                        token_val = data.get("token", "")
+                        expires = data.get("expires_dt", "")
+                        t_type = data.get("token_type", "")
+                        r_code = data.get("return_code", "")
+                        r_msg = data.get("return_msg", "")
+
+                        # f-string을 사용하면 None이나 숫자 데이터도 안전하게 문자열로 합쳐집니다.
+                        token_info = f"{token_val}, {expires}, {t_type}, {r_code}, {r_msg}"
+                        print(f"JYJ  r_msg: {r_msg}")
+                        kiwoom_msg = f"Kiwoom API: 토큰 발급 성공 ({token_info})"
                     else:
                         text = await response.text()
                         kiwoom_msg = f"Kiwoom API: 연결 실패 ({response.status}) - {text}"
