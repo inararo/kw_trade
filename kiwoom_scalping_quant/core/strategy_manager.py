@@ -26,7 +26,10 @@ class StrategyManager:
         self.envs: Dict[str, ScalpingTradingEnv] = {}
         self.shared_agent: TradingAgentWrapper = None
         self.is_running = False
-        self._tasks: List[asyncio.Task] = []
+
+        # Changed _tasks to track by symbol for dynamic swap targeting
+        self._tasks: Dict[str, asyncio.Task] = {}
+        self._swap_lock = asyncio.Lock()
 
     def load_model(self, model_path: str):
         """
@@ -68,10 +71,85 @@ class StrategyManager:
         # 각 종목별로 비동기 무한 루프 태스크(마이크로스레드) 생성
         for sym in self.symbols:
             task = asyncio.create_task(self._run_symbol_loop(sym))
-            self._tasks.append(task)
+            self._tasks[sym] = task
 
-        # 모든 태스크 대기 (오류 발생 시에도 개별적으로 무시/재시작되도록 묶어둠)
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        # 무한 루프로 유지 (동적 스왑으로 인해 task 목록이 변하므로 gather는 부적합할 수 있으나,
+        # 일단 메인 루프를 살려두기 위해 gather 방식을 수정)
+        while self.is_running:
+            await asyncio.sleep(1)
+
+    async def update_universe(self, new_universe: List[Dict[str, Any]]):
+        """
+        동적 유니버스 스캐너가 호출하는 Safe Swap Logic.
+        """
+        async with self._swap_lock:
+            new_symbols = [s.get("code") for s in new_universe if s.get("code")]
+            current_symbols = list(self.symbols)
+
+            # 1. 퇴출(Out) 로직: 기존에 있는데 새 리스트에 없는 종목
+            for sym in current_symbols:
+                if sym not in new_symbols:
+                    # 보유량 또는 미체결 잔량 확인 (Orphan 방지)
+                    holdings = self.order_manager.holdings.get(sym, 0)
+                    has_unexecuted = self.order_manager.has_unexecuted_orders(sym)
+
+                    if holdings > 0 or has_unexecuted:
+                        self.logger.warning(f"StrategyManager: [{sym}] 유니버스에서 탈락했으나 잔고({holdings}) 또는 미체결이 있어 유예합니다.")
+                        continue
+
+                    self.logger.info(f"StrategyManager: [{sym}] 유니버스 퇴출 및 구독 해제.")
+                    self.symbols.remove(sym)
+
+                    # Task 취소
+                    if sym in self._tasks:
+                        self._tasks[sym].cancel()
+                        del self._tasks[sym]
+
+                    # Env 제거
+                    if sym in self.envs:
+                        del self.envs[sym]
+
+                    # WebSocket 구독 해제 (DataCollector)
+                    if hasattr(self.data_collector, 'unsubscribe_symbol'):
+                        result = self.data_collector.unsubscribe_symbol(sym)
+                        if asyncio.iscoroutine(result):
+                            await result
+
+                    # UI Log Emission
+                    vm = getattr(self.config_manager, "_injected_live_vm", None)
+                    if vm:
+                        vm.sig_log_appended.emit(f"[UNIVERSE UPDATE] OUT: {sym}")
+
+            # 2. 진입(In) 로직: 새 리스트에 있는데 기존에 없던 종목
+            config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+
+            for sym in new_symbols:
+                if sym not in self.symbols:
+                    self.logger.info(f"StrategyManager: [{sym}] 신규 유니버스 편입. Agent 할당 및 구독 시작.")
+                    self.symbols.append(sym)
+
+                    # Env 할당
+                    env_config = {"symbol": sym, "initial_balance": config_dict.get("initial_balance", 10000000)}
+                    self.envs[sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+
+                    # WebSocket 구독 추가
+                    if hasattr(self.data_collector, 'subscribe_symbol'):
+                        result = self.data_collector.subscribe_symbol(sym)
+                        if asyncio.iscoroutine(result):
+                            await result
+
+                    # Task 시작
+                    self._tasks[sym] = asyncio.create_task(self._run_symbol_loop(sym))
+
+                    # UI Log Emission
+                    vm = getattr(self.config_manager, "_injected_live_vm", None)
+                    if vm:
+                        vm.sig_log_appended.emit(f"[UNIVERSE UPDATE] IN: {sym}")
+
+            # 업데이트된 심볼 리스트 Config 반영
+            updated_dicts = [{"code": s, "name": f"Dynamic_{s}"} for s in self.symbols]
+            self.config_manager.set_symbols(updated_dicts)
+
 
     async def _run_symbol_loop(self, symbol: str):
         """특정 종목에 대한 독립적인 추론 및 주문 집행 루프"""
@@ -136,7 +214,7 @@ class StrategyManager:
     async def stop(self):
         """모든 종목의 매매 루프 정지"""
         self.is_running = False
-        for task in self._tasks:
+        for sym, task in self._tasks.items():
             if not task.done():
                 task.cancel()
                 try:

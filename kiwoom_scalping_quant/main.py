@@ -50,12 +50,14 @@ class QuantSystem:
         # Connect Daily Stop-Loss Signal
         self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
 
-        # Inject scheduler reference for StrategyManager state protection safely
-        config_mgr = self.container.config_manager()
-        config_mgr._injected_scheduler = self.market_scheduler
-
         # 대표 ViewModel 생성 (LiveDashboardViewModel)
         self.live_vm = self.container.live_dashboard_view_model()
+
+        # Inject references for background managers safely
+        config_mgr = self.container.config_manager()
+        config_mgr._injected_scheduler = self.market_scheduler
+        config_mgr._injected_strategy_manager = self.strategy_manager
+        config_mgr._injected_live_vm = self.live_vm
 
         # GUI 초기화: ViewModel 주입
         self.main_window = MainWindow(self.live_vm, self)

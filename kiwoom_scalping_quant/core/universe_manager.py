@@ -126,13 +126,30 @@ class UniverseManager:
                             # 명세상 '거래금액'은 trde_amt 필드입니다.
                             tval_str = item.get("trde_amt") or item.get("acml_tr_pbmn") or item.get("trading_value") or "0"
                             trading_value = float(tval_str)
+
+                            # 추가 필터링용 데이터 추출 (명세에 따라 키명이 다를 수 있으므로 Fallback 포함)
+                            # 전일 대비 부호: 1(상한), 2(상승), 3(보합), 4(하한), 5(하락) 등
+                            sign = item.get("prdy_vrss_sign") or "3"
+
+                            # 당일 시가 및 전일 종가
+                            opn_prc_str = item.get("opn_prc") or item.get("stck_oprc") or "0"
+                            prdy_clprc_str = item.get("prdy_clprc") or item.get("stck_prdy_clprc") or "0"
+                            opn_prc = float(opn_prc_str)
+                            prdy_clprc = float(prdy_clprc_str)
+
                         except (ValueError, TypeError):
                             trading_value = 0.0
+                            sign = "3"
+                            opn_prc = 0.0
+                            prdy_clprc = 0.0
 
                         parsed_stock = {
                             "code": code,
                             "name": name,
-                            "trading_value": trading_value
+                            "trading_value": trading_value,
+                            "sign": str(sign),
+                            "opn_prc": opn_prc,
+                            "prdy_clprc": prdy_clprc
                         }
                         raw_market.append(parsed_stock)
 
@@ -143,13 +160,37 @@ class UniverseManager:
             self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
             raise e
 
-        # 1. 노이즈 필터링
+        # 1. 노이즈 및 조건(시가 갭 상승, 상/하한가) 필터링
         filtered_universe = []
         for stock in raw_market:
-            # 방어 코드: 딕셔너리가 아닌 경우 스킵
-            if isinstance(stock, dict):
-                if self._is_valid_scalping_symbol(stock.get("name", ""), stock.get("code", "")):
-                    filtered_universe.append(stock)
+            if not isinstance(stock, dict):
+                continue
+
+            code = stock.get("code", "")
+            name = stock.get("name", "")
+
+            # 기본 이름/종목코드 검증
+            if not self._is_valid_scalping_symbol(name, code):
+                continue
+
+            # 등락률 필터링: 1(상한가)나 4,5(하한가, 하락) 등 극단적 호가잠김 방지 (스캘핑 불가)
+            sign = stock.get("sign", "3")
+            if sign in ["1", "4"]:
+                self.logger.debug(f"필터링 제외: {name}({code}) - 상/하한가(호가 잠김)")
+                continue
+
+            # 당일 시가 갭상승 필터링 (예: 2% 이상 상승 출발)
+            opn_prc = stock.get("opn_prc", 0.0)
+            prdy_clprc = stock.get("prdy_clprc", 0.0)
+
+            # Note: API 응답에 0이 들어올 수 있으므로 방어 로직 필수
+            if prdy_clprc > 0 and opn_prc > 0:
+                gap_ratio = ((opn_prc - prdy_clprc) / prdy_clprc) * 100
+                if gap_ratio < 2.0:
+                    self.logger.debug(f"필터링 제외: {name}({code}) - 갭상승 미달 ({gap_ratio:.2f}%)")
+                    continue
+
+            filtered_universe.append(stock)
 
         # 2. 거래대금(Trading Value) 기준 내림차순 정렬
         sorted_universe = sorted(filtered_universe, key=lambda x: x["trading_value"], reverse=True)

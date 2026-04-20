@@ -32,6 +32,8 @@ class MarketScheduler:
         self.current_state = MarketState.IDLE
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
+        self._intraday_scanner_task: Optional[asyncio.Task] = None
+        self._universe_lock = asyncio.Lock()
 
         # Debug / Time travel
         self._mock_time: Optional[datetime] = None
@@ -109,6 +111,12 @@ class MarketScheduler:
                 await self._loop_task
             except asyncio.CancelledError:
                 pass
+        if self._intraday_scanner_task:
+            self._intraday_scanner_task.cancel()
+            try:
+                await self._intraday_scanner_task
+            except asyncio.CancelledError:
+                pass
 
     async def _transition_state(self, old_state: str, new_state: str):
         if old_state == new_state:
@@ -128,6 +136,10 @@ class MarketScheduler:
             if self.data_collector and not self.data_collector.is_running:
                 # Assuming data collector starts listening
                 pass
+
+            # Start Intraday dynamic universe scanner
+            if not self._intraday_scanner_task or self._intraday_scanner_task.done():
+                self._intraday_scanner_task = asyncio.create_task(self._intraday_scanner_loop())
 
         elif new_state == MarketState.LIQUIDATING:
             self.logger.warning("Market Closing Soon: Liquidating positions (Panic Sell).")
@@ -156,6 +168,54 @@ class MarketScheduler:
                     if qty > 0:
                         self.logger.critical(f"Emergency Liquidating {qty} shares of {symbol}")
                         await self.order_manager.send_order("SELL", symbol, price=0, qty=qty, order_type="03")
+
+    async def _intraday_scanner_loop(self):
+        """
+        장중 주기적 스캐너. TRADING 상태일 때만 동작합니다.
+        30분 주기(1800초)로 실행하여 동적 주도주 유니버스를 업데이트합니다.
+        """
+        try:
+            while self._is_running and self.current_state == MarketState.TRADING:
+                # API 호출 제한 방지: 30분 대기 (최초 1회 스킵 방지 시 순서 조절 가능)
+                # 초기 TRADING 상태 진입 직후에는 5분 뒤 첫 스캔, 이후 30분 간격
+                await asyncio.sleep(300)
+
+                while self._is_running and self.current_state == MarketState.TRADING:
+                    async with self._universe_lock:
+                        self.logger.info("Intraday Scanner: 장중 주도주 재검색 시작...")
+                        if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+                            token = self.universe_manager.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                            if token:
+                                from returns.io import IOFailure, IOSuccess
+                                result = await self.universe_manager.build_top_n_universe(token, top_n=20)
+
+                                if isinstance(result, IOFailure):
+                                    self.logger.error("Intraday Scanner: 유니버스 업데이트 실패")
+                                else:
+                                    new_universe = result.unwrap()._inner_value
+                                    if new_universe:
+                                        # Safe Swap Logic Delegate
+                                        await self._safe_swap_universe(new_universe)
+
+                    # 30분 (1800초) 대기
+                    await asyncio.sleep(1800)
+        except asyncio.CancelledError:
+            self.logger.info("Intraday Scanner 태스크가 종료되었습니다.")
+
+    async def _safe_swap_universe(self, new_universe):
+        """
+        안전한 종목 교체 (Safe Swap Logic). StrategyManager에 위임하거나 직접 관리합니다.
+        """
+        self.logger.info(f"Intraday Scanner: {len(new_universe)}개의 새 유니버스가 발견되었습니다. (스왑 위임)")
+        # container를 통해 strategy_manager에 직접 호출을 전달하는 로직이 필요합니다.
+        # 이 메서드는 의존성 또는 Signal을 통해 StrategyManager의 update_universe()를 트리거합니다.
+
+        # 임시로 Signal을 만들거나 hasattr로 직접 호출
+        # GUI의 live_vm 등을 통해 signal_log에 이벤트를 띄웁니다.
+        # 실제 교체 로직은 StrategyManager 안에서 수행하는 것이 안전합니다.
+        strategy_manager = getattr(self.universe_manager.config_manager, "_injected_strategy_manager", None)
+        if strategy_manager and hasattr(strategy_manager, 'update_universe'):
+            await strategy_manager.update_universe(new_universe)
 
     async def _schedule_loop(self):
         while self._is_running:

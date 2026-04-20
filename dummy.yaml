@@ -2,5 +2,11 @@ daily_stop_loss_limit: -500000
 max_invest_per_symbol: 5000000
 max_open_positions: 2
 signal_only_mode: true
-symbols: []
+symbols:
+- code: 005930
+  name: Dynamic_005930
+- code: '035420'
+  name: Dynamic_035420
+- code: '123456'
+  name: Dynamic_123456
 ws_url: ws://localhost:8080
