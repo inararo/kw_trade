@@ -404,15 +404,18 @@ class SettingsViewModel(QObject):
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
         # Convert UI mode string to internal mode string and map to nested structure
-        mode_str = updates.get("trading_mode", "모의투자")
-        mapped_mode = "real" if mode_str == "실전투자" else "virtual"
+        # UI now directly passes {"kiwoom": {"trading_mode": "real"/"virtual"}}
+        # Ensure we properly merge this nested dict with existing kiwoom config to not wipe other kiwoom keys
 
-        # update nested kiwoom dictionary properly
-        kiwoom_conf = self.config_manager.get("kiwoom", {})
-        kiwoom_conf["trading_mode"] = mapped_mode
-        updates["kiwoom"] = kiwoom_conf
+        new_kiwoom_conf = updates.get("kiwoom", {})
+        if new_kiwoom_conf:
+            kiwoom_conf = self.config_manager.get("kiwoom", {})
+            kiwoom_conf.update(new_kiwoom_conf)
+            updates["kiwoom"] = kiwoom_conf
 
-        # we can remove trading_mode from the root dict
+        # Clean up legacy top-level trading_mode just in case
+        if "trading_mode" in self.config_manager._config_cache:
+            del self.config_manager._config_cache["trading_mode"]
         if "trading_mode" in updates:
             del updates["trading_mode"]
 
