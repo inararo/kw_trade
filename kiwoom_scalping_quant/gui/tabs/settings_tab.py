@@ -161,10 +161,6 @@ class SettingsTab(QWidget):
 
     def _get_current_data(self):
         """UI에 입력된 값을 통합된 딕셔너리로 반환"""
-        # Map localized string to internal key
-        t_mode_text = self.combo_mode.currentText()
-        t_mode_val = "real" if t_mode_text == "실전투자" else "virtual"
-
         return {
             "KIWOOM_APP_KEY": self.input_app_key.text(),
             "KIWOOM_APP_SECRET": self.input_app_secret.text(),
@@ -173,7 +169,7 @@ class SettingsTab(QWidget):
             "INFLUX_ORG": self.input_db_org.text(),
             "TELEGRAM_BOT_TOKEN": self.input_tg_token.text(),
             "account_number": self.input_account.text(),
-            "kiwoom": {"trading_mode": t_mode_val},
+            "trading_mode": self.combo_mode.currentText(),
             "influx_bucket": self.input_db_bucket.text(),
             "stop_loss_pct": self.spin_stop_loss.value(),
             "max_position_pct": self.spin_max_position.value(),
@@ -212,13 +208,7 @@ class SettingsTab(QWidget):
 
         # Config
         self.input_account.setText(config.get("account_number", ""))
-
-        # Determine internal kiwoom mode, fallback to string if exists
-        k_conf = config.get("kiwoom", {})
-        t_mode = k_conf.get("trading_mode", config.get("trading_mode", "virtual"))
-        ui_mode = "실전투자" if t_mode == "real" else "모의투자"
-        self.combo_mode.setCurrentText(ui_mode)
-
+        self.combo_mode.setCurrentText(config.get("trading_mode", "모의투자"))
         self.input_db_bucket.setText(config.get("influx_bucket", "kiwoom_data"))
         self.spin_stop_loss.setValue(config.get("stop_loss_pct", -2.0))
         self.spin_max_position.setValue(config.get("max_position_pct", 50.0))

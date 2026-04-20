@@ -127,14 +127,24 @@ class LiveDashboardViewModel(QObject):
 
     async def _execute_panic_sell(self):
         try:
+            # 1. 모든 미체결 주문 취소
             await self.order_manager.cancel_all_orders()
-            # 잔고 확인 및 전량 시장가 매도 로직 (Mock)
-            holdings = getattr(self.order_manager, 'holdings', 0)
-            if holdings > 0:
-                await self.order_manager.send_order("SELL", "005930", 0, holdings)
-                self.sig_log_appended.emit(f"[시스템] 잔고 {holdings}주 전량 시장가 매도 주문 전송 완료.")
-            else:
-                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 주문 취소만 완료되었습니다.")
+
+            # 2. 보유 종목 순회하며 전량 시장가 매도
+            holdings_dict = getattr(self.order_manager, 'holdings', {})
+            sell_count = 0
+
+            if isinstance(holdings_dict, dict):
+                for symbol, qty in holdings_dict.items():
+                    if qty > 0:
+                        # 시장가 매도 (가격 0 지정 시 키움 시장가 03 로직 등에 맞게 추후 OrderManager 내부에서 매핑)
+                        await self.order_manager.send_order("SELL", symbol, 0, qty)
+                        self.sig_log_appended.emit(f"[시스템] 🚨 {symbol} 잔고 {qty}주 전량 시장가 매도 주문 전송.")
+                        sell_count += 1
+
+            if sell_count == 0:
+                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 미체결 주문 취소만 완료되었습니다.")
+
         except Exception as e:
             self.sig_error_occurred.emit(f"Panic Sell 에러: {e}")
 
@@ -404,18 +414,15 @@ class SettingsViewModel(QObject):
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
         # Convert UI mode string to internal mode string and map to nested structure
-        # UI now directly passes {"kiwoom": {"trading_mode": "real"/"virtual"}}
-        # Ensure we properly merge this nested dict with existing kiwoom config to not wipe other kiwoom keys
+        mode_str = updates.get("trading_mode", "모의투자")
+        mapped_mode = "real" if mode_str == "실전투자" else "virtual"
 
-        new_kiwoom_conf = updates.get("kiwoom", {})
-        if new_kiwoom_conf:
-            kiwoom_conf = self.config_manager.get("kiwoom", {})
-            kiwoom_conf.update(new_kiwoom_conf)
-            updates["kiwoom"] = kiwoom_conf
+        # update nested kiwoom dictionary properly
+        kiwoom_conf = self.config_manager.get("kiwoom", {})
+        kiwoom_conf["trading_mode"] = mapped_mode
+        updates["kiwoom"] = kiwoom_conf
 
-        # Clean up legacy top-level trading_mode just in case
-        if "trading_mode" in self.config_manager._config_cache:
-            del self.config_manager._config_cache["trading_mode"]
+        # we can remove trading_mode from the root dict
         if "trading_mode" in updates:
             del updates["trading_mode"]
 

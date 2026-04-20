@@ -20,6 +20,7 @@ seq_len: 10
 slippage: 0.0005
 stop_loss_pct: -2.0
 telegram_chat_id: '8338432975'
+trading_mode: 실전투자
 universe:
 - code: 005930
   name: Samsung
