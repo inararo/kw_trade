@@ -55,6 +55,15 @@ class RiskManager:
             self.logger.warning(f"Risk Check Failed: System is STOPPED_FOR_DAY due to Daily Stop-Loss.")
             return False
 
+        # Check Cutoff Time through MarketScheduler
+        scheduler = getattr(self.config_manager, "_injected_scheduler", None)
+        if scheduler:
+            from core.scheduler import MarketState
+            if scheduler.current_state in [MarketState.CUTOFF, MarketState.LIQUIDATING, MarketState.STOPPED]:
+                self.logger.info(f"Risk Check: 마감 시간 경과로 인한 신규 진입 생략 ({order_type} {symbol})")
+                self.signals.risk_warning.emit("마감 시간 경과로 신규 매수 주문이 차단되었습니다.")
+                return False
+
         # 1. Max Invest Per Symbol Check
         current_holding_qty = self.order_manager.holdings.get(symbol, 0)
         avg_price = self.order_manager.avg_entry_prices.get(symbol, 0.0)

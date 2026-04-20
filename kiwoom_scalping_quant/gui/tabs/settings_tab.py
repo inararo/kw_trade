@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QMessageBox
+    QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QMessageBox,
+    QTimeEdit, QCheckBox
 )
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, QTime
 
 class SettingsTab(QWidget):
     """
@@ -102,11 +103,25 @@ class SettingsTab(QWidget):
         risk_group.setLayout(risk_form)
         main_layout.addWidget(risk_group)
 
-        # 4. System Group
+        # 4. Time Management Group
+        time_group = QGroupBox("매매 스케줄 관리")
+        time_form = QFormLayout()
+
+        self.chk_enable_cutoff = QCheckBox("Enable Trading Cutoff Time (지정 시간 이후 신규 매수 금지)")
+        time_form.addRow("마감 설정:", self.chk_enable_cutoff)
+
+        self.time_cutoff = QTimeEdit()
+        self.time_cutoff.setDisplayFormat("HH:mm")
+        self.time_cutoff.setTime(QTime(13, 0))
+        time_form.addRow("신규 진입 마감 시간:", self.time_cutoff)
+
+        time_group.setLayout(time_form)
+        main_layout.addWidget(time_group)
+
+        # 5. System Group
         system_group = QGroupBox("시스템 알림 및 로깅")
         sys_form = QFormLayout()
 
-        from PyQt6.QtWidgets import QCheckBox
         self.chk_signal_only = QCheckBox("Signal Only Mode (매매 신호만 발생, 실제 주문 X)")
         sys_form.addRow("안전 모드:", self.chk_signal_only)
 
@@ -164,7 +179,9 @@ class SettingsTab(QWidget):
             "signal_only_mode": self.chk_signal_only.isChecked(),
             "max_invest_per_symbol": self.spin_max_invest_per_symbol.value(),
             "daily_stop_loss_limit": self.spin_daily_stop_loss_limit.value(),
-            "max_open_positions": self.spin_max_open_positions.value()
+            "max_open_positions": self.spin_max_open_positions.value(),
+            "enable_cutoff": self.chk_enable_cutoff.isChecked(),
+            "cutoff_time": self.time_cutoff.time().toString("HH:mm")
         }
 
     # --- UI Action Handlers ---
@@ -203,6 +220,10 @@ class SettingsTab(QWidget):
         self.spin_max_invest_per_symbol.setValue(float(config.get("max_invest_per_symbol", 5000000)))
         self.spin_daily_stop_loss_limit.setValue(float(config.get("daily_stop_loss_limit", -500000)))
         self.spin_max_open_positions.setValue(int(config.get("max_open_positions", 3)))
+
+        self.chk_enable_cutoff.setChecked(config.get("enable_cutoff", False))
+        cutoff_str = config.get("cutoff_time", "13:00")
+        self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

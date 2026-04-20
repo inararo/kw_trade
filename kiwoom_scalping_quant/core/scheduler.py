@@ -11,6 +11,7 @@ class MarketState:
     IDLE = "IDLE"           # 휴장 또는 야간
     PREPARE = "PREPARE"     # 08:50 ~ 09:00 - 유니버스 갱신 및 WS 연결 준비
     TRADING = "TRADING"     # 09:00 ~ 15:20 - 정상 매매 진행
+    CUTOFF = "CUTOFF"       # 지정 시간 이후 신규 매수 금지 (모니터링 및 매도만 가능)
     LIQUIDATING = "LIQUIDATING" # 15:20 ~ 15:30 - 신규 진입 금지 및 청산 (Panic Sell)
     STOPPED = "STOPPED"     # 15:30 이후 - 데이터 Flush 및 연결 종료
     STOPPED_FOR_DAY = "STOPPED_FOR_DAY" # 당일 거래 강제 중지 (Stop-Loss 등)
@@ -80,11 +81,33 @@ class MarketScheduler:
         t_1520 = time(15, 20)
         t_1530 = time(15, 30)
 
+        # Check Custom Cutoff Time
+        t_cutoff = None
+
+        # Determine config manager reference
+        config_mgr = None
+        if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+            config_mgr = self.universe_manager.config_manager
+        elif hasattr(self, 'config_manager'):
+            config_mgr = self.config_manager
+        elif self.order_manager and hasattr(self.order_manager, 'config'):
+            config_mgr = self.order_manager.config
+
+        if config_mgr and config_mgr.get("enable_cutoff", False):
+            cutoff_str = config_mgr.get("cutoff_time", "13:00")
+            try:
+                h, m = map(int, cutoff_str.split(':'))
+                t_cutoff = time(h, m)
+            except Exception:
+                pass
+
         if current_time < t_0850:
             return MarketState.IDLE
         elif t_0850 <= current_time < t_0900:
             return MarketState.PREPARE
         elif t_0900 <= current_time < t_1520:
+            if t_cutoff and current_time >= t_cutoff:
+                return MarketState.CUTOFF
             return MarketState.TRADING
         elif t_1520 <= current_time < t_1530:
             return MarketState.LIQUIDATING
@@ -140,6 +163,10 @@ class MarketScheduler:
             # Start Intraday dynamic universe scanner
             if not self._intraday_scanner_task or self._intraday_scanner_task.done():
                 self._intraday_scanner_task = asyncio.create_task(self._intraday_scanner_loop())
+
+        elif new_state == MarketState.CUTOFF:
+            self.logger.warning("Market Cutoff Time Reached. New AI buys are blocked. Only monitoring and liquidating active.")
+            # Scanner loop inherently halts because it checks `self.current_state == MarketState.TRADING`
 
         elif new_state == MarketState.LIQUIDATING:
             self.logger.warning("Market Closing Soon: Liquidating positions (Panic Sell).")

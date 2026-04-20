@@ -1,7 +1,9 @@
+cutoff_time: '13:00'
 daily_stop_loss_limit: -500000
+enable_cutoff: true
 max_invest_per_symbol: 5000000
 max_open_positions: 2
-signal_only_mode: true
+signal_only_mode: false
 symbols:
 - code: 005930
   name: Dynamic_005930
