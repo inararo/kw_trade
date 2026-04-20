@@ -31,19 +31,19 @@ class LiveDashboardViewModel(QObject):
         self._is_running = False
         self._mock_task = None
 
-        # UI logging hook for Signal Only mode bypass messages
-        if hasattr(self.order_manager, 'signals'):
-            self.order_manager.signals.signal_only_log.connect(self.append_log)
-
         # 현재 화면에 상세를 띄울 대상 종목
         self.selected_symbol = None
         self.symbols_summary = {}
 
-    def append_log(self, msg: str):
-        self.sig_log_appended.emit(msg)
+        # UI logging hook for Signal Only mode bypass messages
+        if hasattr(self.order_manager, 'signals'):
+            self.order_manager.signals.signal_only_log.connect(self.append_log)
 
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
         self.data_collector.set_ui_callback(self._on_data_received)
+
+    def append_log(self, msg: str):
+        self.sig_log_appended.emit(msg)
 
     def set_selected_symbol(self, symbol: str):
         self.selected_symbol = symbol
