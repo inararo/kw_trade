@@ -9,6 +9,7 @@ from core.universe_manager import UniverseManager
 from core.strategy_manager import StrategyManager
 from core.token_manager import TokenManager
 from core.scheduler import MarketScheduler
+from core.risk_manager import RiskManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 
@@ -52,6 +53,12 @@ class Container(containers.DeclarativeContainer):
         OrderManager,
         config=config_manager,
         auth_manager=None # 추후 AuthManager provider 주입 가능
+    )
+
+    risk_manager = providers.Singleton(
+        RiskManager,
+        config_manager=config_manager,
+        order_manager=order_manager
     )
 
     strategy_manager = providers.Singleton(

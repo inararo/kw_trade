@@ -82,6 +82,23 @@ class SettingsTab(QWidget):
         self.spin_cb_timeout.setRange(1, 60)
         risk_form.addRow("서킷 브레이커 대기 시간:", self.spin_cb_timeout)
 
+        self.spin_max_invest_per_symbol = QDoubleSpinBox()
+        self.spin_max_invest_per_symbol.setSuffix(" 원")
+        self.spin_max_invest_per_symbol.setRange(0, 1000000000)
+        self.spin_max_invest_per_symbol.setSingleStep(100000)
+        risk_form.addRow("종목당 최대 투자 한도:", self.spin_max_invest_per_symbol)
+
+        self.spin_daily_stop_loss_limit = QDoubleSpinBox()
+        self.spin_daily_stop_loss_limit.setSuffix(" 원")
+        self.spin_daily_stop_loss_limit.setRange(-1000000000, 0)
+        self.spin_daily_stop_loss_limit.setSingleStep(10000)
+        risk_form.addRow("일간 최대 손실 한도:", self.spin_daily_stop_loss_limit)
+
+        self.spin_max_open_positions = QSpinBox()
+        self.spin_max_open_positions.setSuffix(" 개")
+        self.spin_max_open_positions.setRange(1, 100)
+        risk_form.addRow("최대 동시 보유 종목 수:", self.spin_max_open_positions)
+
         risk_group.setLayout(risk_form)
         main_layout.addWidget(risk_group)
 
@@ -144,7 +161,10 @@ class SettingsTab(QWidget):
             "cb_timeout_sec": self.spin_cb_timeout.value(),
             "telegram_chat_id": self.input_tg_chat.text(),
             "log_level": self.combo_log_level.currentText(),
-            "signal_only_mode": self.chk_signal_only.isChecked()
+            "signal_only_mode": self.chk_signal_only.isChecked(),
+            "max_invest_per_symbol": self.spin_max_invest_per_symbol.value(),
+            "daily_stop_loss_limit": self.spin_daily_stop_loss_limit.value(),
+            "max_open_positions": self.spin_max_open_positions.value()
         }
 
     # --- UI Action Handlers ---
@@ -179,6 +199,10 @@ class SettingsTab(QWidget):
         self.input_tg_chat.setText(config.get("telegram_chat_id", ""))
         self.combo_log_level.setCurrentText(config.get("log_level", "INFO"))
         self.chk_signal_only.setChecked(config.get("signal_only_mode", False))
+
+        self.spin_max_invest_per_symbol.setValue(float(config.get("max_invest_per_symbol", 5000000)))
+        self.spin_daily_stop_loss_limit.setValue(float(config.get("daily_stop_loss_limit", -500000)))
+        self.spin_max_open_positions.setValue(int(config.get("max_open_positions", 3)))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

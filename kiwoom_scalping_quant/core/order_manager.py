@@ -34,7 +34,10 @@ class OrderManager:
         self.holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
         self.avg_entry_prices = {sym: 0.0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
 
-        # Global Risk Limits
+        # Safety Guard Risk Manager
+        self.risk_manager = None # Will be injected
+
+        # Global Risk Limits (Deprecated in favor of RiskManager)
         self.global_max_loss = config.get("global_max_loss", -500000) # e.g. Daily limit
         self.global_max_exposure = config.get("global_max_exposure", 50000000) # e.g. Total asset exposure
 
@@ -89,8 +92,11 @@ class OrderManager:
         REST API를 통한 주문 발송 (신규/정정/취소)
         orig_order_no가 있으면 정정/취소 주문으로 간주.
         """
-        if not orig_order_no and not self._check_global_risk(symbol, price, qty, order_type):
-            raise Exception("글로벌 리스크 점검 실패로 주문이 거부되었습니다.")
+        if not orig_order_no:
+            if self.risk_manager and not self.risk_manager.can_order(symbol, price * qty, order_type):
+                raise Exception(f"RiskManager: 글로벌 세이프티 가드 제한으로 인해 신규 주문({order_type} {symbol})이 거부되었습니다.")
+            elif not self.risk_manager and not self._check_global_risk(symbol, price, qty, order_type):
+                raise Exception("글로벌 리스크 점검 실패로 주문이 거부되었습니다.")
 
         await self._throttle_order()
 
@@ -232,6 +238,10 @@ class OrderManager:
                 realized_profit = (exec_price - self.avg_entry_prices[symbol]) * exec_qty
                 self.daily_realized_pnl += realized_profit
                 self.logger.info(f"실현 손익 업데이트: {realized_profit:,.0f} (누적: {self.daily_realized_pnl:,.0f})")
+
+                # Update global safety guard PnL
+                if self.risk_manager:
+                    self.risk_manager.update_pnl(realized_profit)
 
                 if self.holdings[symbol] <= 0:
                     self.holdings[symbol] = 0

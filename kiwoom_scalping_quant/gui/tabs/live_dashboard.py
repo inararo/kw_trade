@@ -18,7 +18,21 @@ class LiveDashboardTab(QWidget):
         self._connect_signals()
 
     def _init_ui(self):
-        main_layout = QHBoxLayout(self)
+        main_vertical_layout = QVBoxLayout(self)
+
+        # Risk / Status Bar (Top)
+        self.status_bar = QLabel("시스템 정상 대기 중")
+        self.status_bar.setStyleSheet("background-color: #2b5b84; color: white; padding: 10px; font-weight: bold;")
+        self.status_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_vertical_layout.addWidget(self.status_bar)
+
+        self.risk_bar = QLabel("당일 누적 손익: 0원 | 잔여 매수 가능 한도: 계산 중...")
+        self.risk_bar.setStyleSheet("background-color: #3b3b3b; color: #a9b7c6; padding: 5px; font-weight: bold;")
+        self.risk_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_vertical_layout.addWidget(self.risk_bar)
+
+        main_layout = QHBoxLayout()
+        main_vertical_layout.addLayout(main_layout)
 
         # 1. 좌측 패널: 통합 다중 종목 마스터 테이블
         master_group = QGroupBox("전체 감시 종목 (Universe)")
@@ -91,6 +105,8 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_symbols_summary_updated.connect(self.on_symbols_summary_updated)
         self.view_model.sig_ai_confidence_updated.connect(self.on_ai_confidence_updated)
         self.view_model.sig_log_appended.connect(self.on_log_appended)
+        self.view_model.sig_risk_metrics_updated.connect(self.on_risk_metrics_updated)
+        self.view_model.sig_status_alert.connect(self.on_status_alert)
         self.view_model.sig_error_occurred.connect(self.on_error)
 
     def _on_table_selection_changed(self):
@@ -135,6 +151,15 @@ class LiveDashboardTab(QWidget):
         ts = time.strftime("%H:%M:%S")
         self.log_list.addItem(f"[{ts}] {msg}")
         self.log_list.scrollToBottom()
+
+    @pyqtSlot(float, float)
+    def on_risk_metrics_updated(self, pnl: float, available_limit: float):
+        self.risk_bar.setText(f"당일 누적 손익: {pnl:,.0f} 원 | 잔여 매수 가능 한도: {available_limit:,.0f} 원")
+
+    @pyqtSlot(str)
+    def on_status_alert(self, alert_msg: str):
+        self.status_bar.setText(alert_msg)
+        self.status_bar.setStyleSheet("background-color: darkred; color: yellow; padding: 10px; font-weight: bold;")
 
     @pyqtSlot(str)
     def on_error(self, msg: str):

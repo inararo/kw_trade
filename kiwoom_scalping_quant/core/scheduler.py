@@ -13,6 +13,7 @@ class MarketState:
     TRADING = "TRADING"     # 09:00 ~ 15:20 - 정상 매매 진행
     LIQUIDATING = "LIQUIDATING" # 15:20 ~ 15:30 - 신규 진입 금지 및 청산 (Panic Sell)
     STOPPED = "STOPPED"     # 15:30 이후 - 데이터 Flush 및 연결 종료
+    STOPPED_FOR_DAY = "STOPPED_FOR_DAY" # 당일 거래 강제 중지 (Stop-Loss 등)
 
 class MarketScheduler:
     """
@@ -56,7 +57,17 @@ class MarketScheduler:
             return True
         return False
 
+    def trigger_daily_stop_loss(self):
+        """Force the system into STOPPED_FOR_DAY state."""
+        self.logger.critical("🚨 Triggering Daily Stop-Loss. Force-stopping market scheduler.")
+        asyncio.create_task(self._transition_state(self.current_state, MarketState.STOPPED_FOR_DAY))
+
     def determine_state(self, dt: datetime) -> str:
+        if self.current_state == MarketState.STOPPED_FOR_DAY:
+            # Remain stopped for the rest of the day.
+            # To reset, the system must be restarted the next day.
+            return MarketState.STOPPED_FOR_DAY
+
         if self.is_holiday_or_weekend(dt):
             return MarketState.IDLE
 
@@ -135,6 +146,16 @@ class MarketScheduler:
             if self.telegram_bot:
                 # Send daily summary
                 pass
+
+        elif new_state == MarketState.STOPPED_FOR_DAY:
+            self.logger.critical("🚨 Market Stopped For Day: Emergency Liquidation Triggered.")
+            if self.order_manager:
+                # Cancel all and market sell immediately
+                await self.order_manager.cancel_all_orders()
+                for symbol, qty in self.order_manager.holdings.items():
+                    if qty > 0:
+                        self.logger.critical(f"Emergency Liquidating {qty} shares of {symbol}")
+                        await self.order_manager.send_order("SELL", symbol, price=0, qty=qty, order_type="03")
 
     async def _schedule_loop(self):
         while self._is_running:

@@ -42,6 +42,13 @@ class QuantSystem:
         self.strategy_manager = self.container.strategy_manager()
         self.token_manager = self.container.token_manager()
         self.market_scheduler = self.container.market_scheduler()
+        self.risk_manager = self.container.risk_manager()
+
+        # Risk Manager injection loop closing
+        self.order_manager.risk_manager = self.risk_manager
+
+        # Connect Daily Stop-Loss Signal
+        self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
 
         # Inject scheduler reference for StrategyManager state protection safely
         config_mgr = self.container.config_manager()
@@ -65,6 +72,26 @@ class QuantSystem:
     def _on_token_error(self, msg: str):
         if hasattr(self.main_window, 'statusBar'):
             self.main_window.statusBar().showMessage(f"[에러] {msg}", 5000)
+
+    def _on_stop_loss_hit(self, loss_amount: float):
+        # Notify UI and trigger Scheduler panic
+        msg = f"🚨 [CRITICAL] 당일 최대 손실 도달 ({loss_amount:,.0f}원): 거래 강제 종료"
+        self.live_vm.sig_log_appended.emit(msg)
+        self.market_scheduler.trigger_daily_stop_loss()
+
+        # Send telegram bot message
+        import requests
+        tg_token = self.container.config_manager().get("TELEGRAM_BOT_TOKEN")
+        chat_id = self.container.config_manager().get("telegram_chat_id")
+
+        if tg_token and chat_id:
+            try:
+                url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                payload = {"chat_id": chat_id, "text": msg}
+                # Fire and forget request
+                requests.post(url, json=payload, timeout=2.0)
+            except Exception as e:
+                print(f"시스템: 텔레그램 발송 실패: {e}")
 
     async def start(self):
         self.main_window.show()

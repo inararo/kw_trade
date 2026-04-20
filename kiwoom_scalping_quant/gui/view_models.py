@@ -20,6 +20,10 @@ class LiveDashboardViewModel(QObject):
     # 멀티 종목 요약 정보 (Symbol -> Dict of stats)
     sig_symbols_summary_updated = pyqtSignal(dict)
 
+    # Risk Limits and Alerts
+    sig_risk_metrics_updated = pyqtSignal(float, float) # current PnL, available invest limit
+    sig_status_alert = pyqtSignal(str)
+
     def __init__(self, data_collector, order_manager):
         super().__init__()
         self.data_collector = data_collector
@@ -81,7 +85,22 @@ class LiveDashboardViewModel(QObject):
         """실전 매매/백테스트 모드에서의 일반 폴링 (mock 사용 시 제외)"""
         self._is_running = True
         while self._is_running:
-            await asyncio.sleep(0.1)
+            # Emit Risk Manager details periodically
+            if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
+                rm = self.order_manager.risk_manager
+                pnl = rm.daily_realized_pnl
+                max_invest = rm.get_max_invest_per_symbol()
+
+                # Calculate basic rough available limit (e.g. max_invest - current holding of selected symbol)
+                # Using 0 if none selected for simple UI purpose
+                curr_invested = 0
+                if self.selected_symbol:
+                    curr_invested = self.order_manager.holdings.get(self.selected_symbol, 0) * self.order_manager.avg_entry_prices.get(self.selected_symbol, 0)
+
+                avail_limit = max(0, max_invest - curr_invested)
+                self.sig_risk_metrics_updated.emit(pnl, avail_limit)
+
+            await asyncio.sleep(1.0)
 
     def start_mock_stream(self):
         """장외 시간 테스트용 모크 스트림 시작"""
