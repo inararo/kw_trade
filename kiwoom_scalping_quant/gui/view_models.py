@@ -127,24 +127,14 @@ class LiveDashboardViewModel(QObject):
 
     async def _execute_panic_sell(self):
         try:
-            # 1. 모든 미체결 주문 취소
             await self.order_manager.cancel_all_orders()
-
-            # 2. 보유 종목 순회하며 전량 시장가 매도
-            holdings_dict = getattr(self.order_manager, 'holdings', {})
-            sell_count = 0
-
-            if isinstance(holdings_dict, dict):
-                for symbol, qty in holdings_dict.items():
-                    if qty > 0:
-                        # 시장가 매도 (가격 0 지정 시 키움 시장가 03 로직 등에 맞게 추후 OrderManager 내부에서 매핑)
-                        await self.order_manager.send_order("SELL", symbol, 0, qty)
-                        self.sig_log_appended.emit(f"[시스템] 🚨 {symbol} 잔고 {qty}주 전량 시장가 매도 주문 전송.")
-                        sell_count += 1
-
-            if sell_count == 0:
-                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 미체결 주문 취소만 완료되었습니다.")
-
+            # 잔고 확인 및 전량 시장가 매도 로직 (Mock)
+            holdings = getattr(self.order_manager, 'holdings', 0)
+            if holdings > 0:
+                await self.order_manager.send_order("SELL", "005930", 0, holdings)
+                self.sig_log_appended.emit(f"[시스템] 잔고 {holdings}주 전량 시장가 매도 주문 전송 완료.")
+            else:
+                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 주문 취소만 완료되었습니다.")
         except Exception as e:
             self.sig_error_occurred.emit(f"Panic Sell 에러: {e}")
 
@@ -179,16 +169,36 @@ class AssetDataViewModel(QObject):
 
     def build_universe(self):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
-        asyncio.create_task(self._build_universe_task())
+        asyncio.create_task(self._build_universe_task(is_auto=False))
 
-    async def _build_universe_task(self):
+    async def auto_collect_after_market(self):
+        """
+        장 종료 후 호출되는 스크립트.
+        최종 유니버스를 업데이트하고, 당일 데이터를 자동으로 DB에 벌크 수집합니다.
+        """
+        self.sig_status_updated.emit("[POST-MARKET COLLECTION] 장 종료 후 최종 주도주 유니버스 갱신 시작...")
+
+        # 1. Build Universe (Auto mode, bypasses some strict UI popups if needed)
+        success = await self._build_universe_task(is_auto=True)
+
+        if success:
+            import datetime
+            today_str = datetime.datetime.now().strftime("%Y%m%d")
+            self.sig_status_updated.emit(f"[POST-MARKET COLLECTION] 유니버스 갱신 완료. {today_str} 데이터 수집 시작...")
+            # 2. Fetch and Store (uses the newly updated config symbols)
+            await self.start_bulk_historical_fetch(today_str, is_auto=True)
+        else:
+            self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
+
+    async def _build_universe_task(self, is_auto=False):
         self.sig_progress_updated.emit(0)
-        self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
+        if not is_auto:
+            self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
 
         access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
         if not access_token:
             self.fetch_failed.emit("API 접근 토큰이 없습니다. 설정에서 발급해 주세요.")
-            return
+            return False
 
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
         result = await self.universe_manager.build_top_n_universe(access_token, top_n=20)
@@ -198,7 +208,7 @@ class AssetDataViewModel(QObject):
             # IOFailure.failure() returns the unwrapped exception inside an IO, so we use _inner_value or str()
             err_msg = str(result.failure()._inner_value if hasattr(result.failure(), '_inner_value') else result.failure())
             self.fetch_failed.emit(f"유니버스 생성 실패: {err_msg}")
-            return
+            return False
 
         # unwrap() on IOSuccess returns an IO object. We extract the raw list with _inner_value
         try:
@@ -218,9 +228,17 @@ class AssetDataViewModel(QObject):
         self.config_manager.set_symbols(new_symbols)
 
         self.sig_progress_updated.emit(100)
-        self.sig_status_updated.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
-        self.fetch_completed.emit(f"상위 {len(top_stocks)}개 유니버스 생성 완료!")
+
+        msg = f"상위 {len(top_stocks)}개 유니버스 생성 완료!"
+        if is_auto:
+            msg = "[POST-MARKET COLLECTION] " + msg
+
+        self.sig_status_updated.emit(msg)
+        if not is_auto:
+            self.fetch_completed.emit(msg)
+
         self.load_symbols() # 갱신
+        return True
 
     def load_symbols(self):
         # ConfigManager의 Result 처리
@@ -251,15 +269,15 @@ class AssetDataViewModel(QObject):
         """특정 종목에 대한 수집"""
         asyncio.create_task(self._fetch_and_store([symbol], start_date))
 
-    def start_bulk_historical_fetch(self, start_date: str):
+    def start_bulk_historical_fetch(self, start_date: str, is_auto: bool = False):
         """Config에 등록된 모든 종목(Universe)에 대한 일괄 수집"""
         symbols = [s.get("code") for s in self.config_manager.get_symbols()]
         if not symbols:
             self.fetch_failed.emit("수집할 종목이 없습니다.")
             return
-        asyncio.create_task(self._fetch_and_store(symbols, start_date))
+        asyncio.create_task(self._fetch_and_store(symbols, start_date, is_auto))
 
-    async def _fetch_and_store(self, symbols: List[str], start_date: str):
+    async def _fetch_and_store(self, symbols: List[str], start_date: str, is_auto: bool = False):
         total_symbols = len(symbols)
         total_data_collected = 0
 
@@ -306,10 +324,18 @@ class AssetDataViewModel(QObject):
                 self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러: {e}")
 
         self.sig_progress_updated.emit(100)
-        self.sig_status_updated.emit("모든 종목 수집 및 적재 완료")
+
+        status_msg = "모든 종목 수집 및 적재 완료"
         msg = f"총 {total_symbols}개 종목, {total_data_collected}건 적재 완료!"
+        if is_auto:
+            status_msg = "[POST-MARKET COLLECTION] " + status_msg
+            msg = "[POST-MARKET COLLECTION] " + msg
+
+        self.sig_status_updated.emit(status_msg)
         self.logger.error(f"전체 수집 프로세스 종료: {msg}")
-        self.fetch_completed.emit(msg)
+
+        if not is_auto:
+            self.fetch_completed.emit(msg)
 
 class AITrainingViewModel(QObject):
     """

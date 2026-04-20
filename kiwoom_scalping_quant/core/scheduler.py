@@ -15,6 +15,7 @@ class MarketState:
     LIQUIDATING = "LIQUIDATING" # 15:20 ~ 15:30 - 신규 진입 금지 및 청산 (Panic Sell)
     STOPPED = "STOPPED"     # 15:30 이후 - 데이터 Flush 및 연결 종료
     STOPPED_FOR_DAY = "STOPPED_FOR_DAY" # 당일 거래 강제 중지 (Stop-Loss 등)
+    POST_MARKET = "POST_MARKET" # 16:00 - 장 종료 후 데이터 수집 스캔
 
 class MarketScheduler:
     """
@@ -80,6 +81,7 @@ class MarketScheduler:
         t_0900 = time(9, 0)
         t_1520 = time(15, 20)
         t_1530 = time(15, 30)
+        t_1600 = time(16, 0)
 
         # Check Custom Cutoff Time
         t_cutoff = None
@@ -111,9 +113,10 @@ class MarketScheduler:
             return MarketState.TRADING
         elif t_1520 <= current_time < t_1530:
             return MarketState.LIQUIDATING
-        else:
-            # After 15:30
+        elif t_1530 <= current_time < t_1600:
             return MarketState.STOPPED
+        else:
+            return MarketState.POST_MARKET
 
     async def start(self):
         if self._is_running:
@@ -196,6 +199,13 @@ class MarketScheduler:
                         self.logger.critical(f"Emergency Liquidating {qty} shares of {symbol}")
                         await self.order_manager.send_order("SELL", symbol, price=0, qty=qty, order_type="03")
 
+        elif new_state == MarketState.POST_MARKET:
+            self.logger.info("Post-Market: Starting end-of-day data collection for final top 20 universe.")
+            vm = getattr(self.universe_manager.config_manager, "_injected_asset_data_vm", None)
+            if vm and hasattr(vm, 'auto_collect_after_market'):
+                # Call view model UI flow properly asynchronously
+                asyncio.create_task(vm.auto_collect_after_market())
+
     async def _intraday_scanner_loop(self):
         """
         장중 주기적 스캐너. TRADING 상태일 때만 동작합니다.
@@ -203,9 +213,8 @@ class MarketScheduler:
         """
         try:
             while self._is_running and self.current_state == MarketState.TRADING:
-                # API 호출 제한 방지: 30분 대기 (최초 1회 스킵 방지 시 순서 조절 가능)
-                # 초기 TRADING 상태 진입 직후에는 5분 뒤 첫 스캔, 이후 30분 간격
-                await asyncio.sleep(300)
+                # 09:00에 시작 시 09:01까지 대기하여 당일 첫 1분 거래대금이 집계될 수 있도록 함.
+                await asyncio.sleep(60)
 
                 while self._is_running and self.current_state == MarketState.TRADING:
                     async with self._universe_lock:

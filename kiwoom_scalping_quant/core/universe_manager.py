@@ -53,15 +53,14 @@ class UniverseManager:
     async def build_top_n_universe(self, access_token: str, top_n: int = 40) -> List[Dict[str, Any]]:
         """
         거래소에서 전체 종목 리스트와 거래대금을 가져와 필터링 후 Top N 종목을 선정합니다.
-        (현재는 구조적 예시를 위해 Mock API 흐름으로 구현합니다)
+        09:00 이전에는 거래대금이 집계되지 않으므로 우회(Bypass)합니다.
         """
-        # 1. 요청할 API URL
-        # host = 'https://mockapi.kiwoom.com' # 모의투자
-        # host = 'https://api.kiwoom.com'  # 실전투자
-        # endpoint = '/api/dostk/rkinfo'
-        # url = host + endpoint
-
-        self.logger.error(f"JYJ 222 access_token : {access_token}")
+        import datetime
+        now = datetime.datetime.now()
+        # 09:00 이전 시간 방어 로직
+        if now.hour < 9:
+            self.logger.info(f"현재 시간 {now.strftime('%H:%M')} (09:00 이전). 당일 거래대금이 없으므로 유니버스 스캔을 생략합니다.")
+            return []
 
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
@@ -128,28 +127,24 @@ class UniverseManager:
                             trading_value = float(tval_str)
 
                             # 추가 필터링용 데이터 추출 (명세에 따라 키명이 다를 수 있으므로 Fallback 포함)
-                            # 전일 대비 부호: 1(상한), 2(상승), 3(보합), 4(하한), 5(하락) 등
-                            sign = item.get("prdy_vrss_sign") or "3"
+                            # 전일 대비 기호 (1: 상한, 2: 상승, 3: 보합, 4: 하한, 5: 하락 등)
+                            sign = item.get("pred_pre_sig") or item.get("prdy_vrss_sign") or "3"
 
-                            # 당일 시가 및 전일 종가
-                            opn_prc_str = item.get("opn_prc") or item.get("stck_oprc") or "0"
-                            prdy_clprc_str = item.get("prdy_clprc") or item.get("stck_prdy_clprc") or "0"
-                            opn_prc = float(opn_prc_str)
-                            prdy_clprc = float(prdy_clprc_str)
+                            # 등락률
+                            flu_rt_str = item.get("flu_rt") or item.get("prdy_ctrt") or "0"
+                            flu_rt = float(flu_rt_str)
 
                         except (ValueError, TypeError):
                             trading_value = 0.0
                             sign = "3"
-                            opn_prc = 0.0
-                            prdy_clprc = 0.0
+                            flu_rt = 0.0
 
                         parsed_stock = {
                             "code": code,
                             "name": name,
                             "trading_value": trading_value,
                             "sign": str(sign),
-                            "opn_prc": opn_prc,
-                            "prdy_clprc": prdy_clprc
+                            "flu_rt": flu_rt
                         }
                         raw_market.append(parsed_stock)
 
@@ -160,7 +155,7 @@ class UniverseManager:
             self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
             raise e
 
-        # 1. 노이즈 및 조건(시가 갭 상승, 상/하한가) 필터링
+        # 1. 노이즈 및 현재 강세 기준(상태, 등락률) 필터링
         filtered_universe = []
         for stock in raw_market:
             if not isinstance(stock, dict):
