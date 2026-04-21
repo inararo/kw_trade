@@ -36,11 +36,23 @@ class AsyncInfluxDBClient:
     async def write_tick(self, data: Dict[str, Any]):
         """틱 데이터를 포인트로 변환하여 큐에 적재"""
         try:
+            import dateutil.parser
+            from datetime import datetime, timezone
+
+            ts = data.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    ts = dateutil.parser.parse(ts)
+                except Exception:
+                    ts = datetime.now(timezone.utc)
+            elif ts is None:
+                ts = datetime.now(timezone.utc)
+
             point = Point("tick_data") \
-                .tag("symbol", data.get("symbol")) \
-                .field("price", float(data.get("price", 0))) \
-                .field("volume", float(data.get("volume", 0))) \
-                .time(data.get("timestamp")) # timestamp가 유효한 datetime/ns 형식이라고 가정
+                .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                .field("price", float(data.get("price", 0.0))) \
+                .field("volume", float(data.get("volume", 0.0))) \
+                .time(ts)
 
             self.batch_queue.append(point)
 
@@ -53,23 +65,42 @@ class AsyncInfluxDBClient:
     async def fetch_recent_data(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
         """
         학습용 데이터를 제공하기 위해 InfluxDB에서 특정 종목의 최근 데이터를 가져옵니다.
-        본 프로젝트에서는 API 대신 Mock List를 반환하여 학습 파이프라인 구조를 증명합니다.
         """
-        self.logger.info(f"InfluxDB: [{symbol}] 학습용 과거 데이터 {limit}건 조회 (Mock)")
-        import asyncio
-        import random
-        await asyncio.sleep(0.5) # DB 조회 지연 모사
+        self.logger.info(f"InfluxDB: [{symbol}] 과거 데이터 {limit}건 조회 시도")
 
-        mock_data = []
-        base_price = 50000
-        for i in range(limit):
-            base_price += random.randint(-50, 50)
-            mock_data.append({
-                "timestamp": i,
-                "price": base_price,
-                "volume": random.randint(10, 500)
-            })
-        return mock_data
+        try:
+            query_api = self.client.query_api()
+            # Simple Flux query to get recent data
+            query = f'''
+                from(bucket: "{self.bucket}")
+                |> range(start: -30d)
+                |> filter(fn: (r) => r["_measurement"] == "historical_data" or r["_measurement"] == "tick_data")
+                |> filter(fn: (r) => r["symbol"] == "{symbol}")
+                |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+                |> sort(columns: ["_time"], desc: true)
+                |> limit(n: {limit})
+            '''
+
+            tables = await query_api.query(query, org=self.org)
+
+            results = []
+            for table in tables:
+                for record in table.records:
+                    results.append({
+                        "timestamp": record.get_time(),
+                        "price": float(record.values.get("price", 0.0)),
+                        "volume": float(record.values.get("volume", 0.0))
+                    })
+
+            if not results:
+                self.logger.warning(f"InfluxDB: [{symbol}] 조회된 데이터가 없습니다 (0건).")
+
+            # 역순 정렬을 원래 시간순(오름차순)으로 뒤집어서 반환
+            return list(reversed(results))
+
+        except Exception as e:
+            self.logger.error(f"InfluxDB 조회 실패: {str(e)}")
+            return []
 
     async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
         """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
@@ -77,24 +108,43 @@ class AsyncInfluxDBClient:
             return
 
         points = []
+        import dateutil.parser
+        from datetime import datetime, timezone
+
         for data in data_list:
             try:
+                # Parse timestamp safely
+                ts = data.get("timestamp")
+                if isinstance(ts, str):
+                    try:
+                        # Try to parse string timestamp (RFC3339 or basic)
+                        ts = dateutil.parser.parse(ts)
+                    except Exception:
+                        # Fallback if parsing fails
+                        ts = datetime.now(timezone.utc)
+                elif ts is None:
+                    ts = datetime.now(timezone.utc)
+
                 point = Point(measurement) \
-                    .tag("symbol", data.get("symbol", "UNKNOWN")) \
-                    .field("price", float(data.get("price", 0))) \
-                    .time(data.get("timestamp"))
+                    .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                    .field("price", float(data.get("price", 0.0))) \
+                    .field("volume", float(data.get("volume", 0.0))) \
+                    .time(ts)
                 points.append(point)
             except Exception as e:
-                self.logger.warning(f"Bulk Insert 포인트 변환 실패: {e}")
+                self.logger.warning(f"Bulk Insert 포인트 변환 실패 (Data: {data}): {e}")
 
         if points:
             try:
-                # InfluxDB의 write_api는 리스트를 받아 한 번에 전송 가능
-                # Sandbox 환경에서 InfluxDB가 구동되어 있지 않으므로 모의 로깅으로 처리
-                # await self.write_api.write(bucket=self.bucket, record=points)
-                self.logger.info(f"Bulk Insert (Mocked) 완료: InfluxDB에 {len(points)}건 적재 요청 성공.")
+                # Execute actual DB write
+                await self.write_api.write(bucket=self.bucket, record=points)
+                self.logger.info(f"Bulk Insert 완료: InfluxDB에 {len(points)}건 적재 요청 성공.")
             except Exception as e:
-                self.logger.error(f"Bulk Insert DB 전송 실패: {e}")
+                # Safely extract HTTP status and reason if available in InfluxDBError
+                status = getattr(e, 'response', None)
+                status_code = status.status if status else 'Unknown'
+                reason = status.reason if status else str(e)
+                self.logger.error(f"🚨 Bulk Insert DB 전송 실패! [Status: {status_code}] Reason: {reason}")
 
     async def _flush_batch(self):
         if not self.batch_queue:
@@ -107,7 +157,10 @@ class AsyncInfluxDBClient:
             await self.write_api.write(bucket=self.bucket, record=points_to_write)
             self.logger.debug(f"InfluxDB Batch Write 완료: {len(points_to_write)}건")
         except Exception as e:
-            self.logger.error(f"InfluxDB Write 실패: {e}")
+            status = getattr(e, 'response', None)
+            status_code = status.status if status else 'Unknown'
+            reason = status.reason if status else str(e)
+            self.logger.error(f"🚨 InfluxDB Batch Write 실패! [Status: {status_code}] Reason: {reason}")
             # 실패 시 다시 큐에 넣거나 로컬 파일 시스템에 Fallback 처리 가능
 
     async def ping(self) -> bool:
