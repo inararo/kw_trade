@@ -65,13 +65,24 @@ class QuantSystem:
         self.main_window = MainWindow(self.live_vm, self)
         self.shutdown_event = asyncio.Event()
 
+        # Boot sequence events
+        self.token_ready_event = asyncio.Event()
+        self.universe_ready_event = asyncio.Event()
+
         # Connect TokenManager signals to UI
         self.token_manager.signals.token_updated.connect(self._on_token_updated)
         self.token_manager.signals.token_error.connect(self._on_token_error)
 
+        # Connect Universe ready signal
+        self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
+
     def _on_token_updated(self, msg: str):
+        self.token_ready_event.set()
         if hasattr(self.main_window, 'statusBar'):
             self.main_window.statusBar().showMessage(f"[알림] {msg}", 5000)
+
+    def _on_universe_ready(self, symbols: list):
+        self.universe_ready_event.set()
 
     def _on_token_error(self, msg: str):
         if hasattr(self.main_window, 'statusBar'):
@@ -99,17 +110,47 @@ class QuantSystem:
 
     async def start(self):
         self.main_window.show()
+        print("시스템: 부팅 시퀀스를 시작합니다.")
 
-        # 백그라운드 태스크 시작
+        # Step 1: Token 발급 완료 대기
         self.token_task = asyncio.create_task(self.token_manager.start())
+        print("시스템: [Step 1] 토큰 발급 대기 중...")
+        try:
+            await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
+            print("시스템: [Step 1] 토큰 발급 완료.")
+        except asyncio.TimeoutError:
+            print("시스템: [Step 1] 토큰 발급 타임아웃! (인터넷 연결 및 앱 키를 확인하세요)")
+
+        # Step 2: Universe 생성 및 Scheduler 시작
+        print("시스템: [Step 2] 스케줄러 가동 및 유니버스 생성 대기...")
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
+
+        # 명시적으로 뷰모델의 유니버스 빌드 호출
+        self.asset_vm.build_universe()
+
+        try:
+            # 09:00 이전에는 빈 리스트라도 빠르게 리턴되므로 긴 대기가 필요 없음
+            await asyncio.wait_for(self.universe_ready_event.wait(), timeout=30.0)
+            print("시스템: [Step 2] 유니버스 확정 완료.")
+        except asyncio.TimeoutError:
+            print("시스템: [Step 2] 유니버스 생성 타임아웃! 기본 설정으로 진행합니다.")
+
+        # Step 3: DataCollector 시작 및 웹소켓 연결 대기
         self.influx_task = asyncio.create_task(self.influx_client.start())
+        print("시스템: [Step 3] DataCollector 가동 및 웹소켓 구독 대기...")
         self.collector_task = asyncio.create_task(self.data_collector.start())
 
-        # StrategyManager 가동 (모델 로드 및 개별 종목 루프 실행)
+        try:
+            if hasattr(self.data_collector, 'first_data_received_event'):
+                await asyncio.wait_for(self.data_collector.first_data_received_event.wait(), timeout=15.0)
+                print("시스템: [Step 3] 최초 웹소켓 틱 데이터 수신 확인 완료.")
+        except asyncio.TimeoutError:
+            print("시스템: [Step 3] 웹소켓 데이터 수신 타임아웃! (장이 닫혔거나 구독 실패일 수 있습니다)")
+
+        # Step 4: 최초 데이터 수신 확인 후 Agent/ViewModel 가동
+        print("시스템: [Step 4] Agent 루프(StrategyManager) 및 Watchdog 가동 시작.")
         self.strategy_manager.load_model("") # For now, no actual model weights (Dummy test run)
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
-
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 
         try:

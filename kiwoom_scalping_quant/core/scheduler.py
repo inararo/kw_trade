@@ -154,8 +154,11 @@ class MarketScheduler:
 
         # Execute actions based on the new state
         if new_state == MarketState.PREPARE:
-            self.logger.info("Market Prepare: Universe update and pre-connection logic here.")
-            # e.g., await self.universe_manager.build_top_n_universe(...)
+            self.logger.info("Market Prepare: Requesting dynamic universe generation...")
+            # Use the injected AssetDataViewModel if available to trigger the UI-bound universe logic
+            vm = getattr(self.config_manager, "_injected_asset_data_vm", None) if hasattr(self, 'config_manager') else None
+            if vm and hasattr(vm, 'build_universe'):
+                vm.build_universe()
 
         elif new_state == MarketState.TRADING:
             self.logger.info("Market Open: Activating trading agents.")

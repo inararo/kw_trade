@@ -36,6 +36,10 @@ class DataCollector:
         self._ui_callback = None
         self._watchdog_task = None
 
+        # Connection and state events
+        self.ws_connected_event = asyncio.Event()
+        self.first_data_received_event = asyncio.Event()
+
         # Config에서 초기 심볼 등록
         initial_symbols = [s.get('code') for s in config.get('universe', [{'code': '005930'}])]
         if not initial_symbols:
@@ -190,20 +194,28 @@ class DataCollector:
     async def _connect_and_listen(self):
         async with websockets.connect(self.ws_url) as websocket:
             self.ws_connection = websocket
+            self.ws_connected_event.set()
             self.logger.info("WebSocket 연결 성공. 실시간 데이터 수신 시작.")
 
             # 다중 종목 구독 요청 전송
-            # 키움증권 등 API에서 여러 종목 구독 시 콤마로 구분하거나 리스트 전송 등 규격 맞춤
+            # 키움증권 실전/모의 API 규격에 맞는 구독 요청(SetRealReg) 포맷
+            # 본 코드에서는 간이로 JSON 규격이라 가정하지만, Kiwoom REST 기반 WS는 명세에 따라 전송해야 합니다.
+            # {"header": {"tr_type": "1", ...}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": "005930"}}}
             symbols_str = self.subscription_manager.get_subscription_string()
             if symbols_str:
+                # Assuming this fits the specific WS protocol (often JSON wrappers for REST-based WS)
                 subscribe_msg = json.dumps({"type": "subscribe", "symbols": symbols_str})
                 await websocket.send(subscribe_msg)
+                self.logger.info(f"구독 요청 전송 완료: {symbols_str[:50]}...")
 
             try:
                 async for message in websocket:
                     recv_time = time.time()
                     self.last_receive_time = recv_time
                     self.circuit_breaker_active = False
+
+                    if not self.first_data_received_event.is_set():
+                        self.first_data_received_event.set()
 
                     # 데이터 파싱
                     data = json.loads(message)
@@ -273,7 +285,12 @@ class DataCollector:
             while self.is_running:
                 await asyncio.sleep(1)
 
-                # Check Market Scheduler state if available
+                # 방어 로직 1: 웹소켓 구독이 완료되고 최초 데이터가 들어온 이후에만 감시 시작
+                if not self.ws_connected_event.is_set() or not self.first_data_received_event.is_set():
+                    self.last_receive_time = time.time() # 억울하게 죽지 않도록 타이머 갱신
+                    continue
+
+                # 방어 로직 2: Market Scheduler 상태 확인 (장이 열려있을 때만)
                 scheduler = getattr(self.config, "_injected_scheduler", None)
                 if scheduler:
                     from core.scheduler import MarketState
