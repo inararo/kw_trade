@@ -131,12 +131,17 @@ class ScalpingTradingEnv(gym.Env):
         # 3. 행동 이후의 총자산 가치
         new_net_worth = self.balance + (self.holdings * current_price)
 
-        # 4. 자산 증감분을 리워드로 설정
-        step_reward = new_net_worth - prev_net_worth
+        # 4. 자산 증감분을 초기 자본금 대비 수익률(%)로 변환 및 스케일링
+        initial_balance = float(self.config.get('initial_balance', 10000000))
+        pct_change = (new_net_worth - prev_net_worth) / initial_balance
+        step_reward = pct_change * 100.0
 
-        # 5. 시간 패널티 (Hold 방지)
+        # 극단적인 값이 나오지 않도록 클리핑 (예: -10 ~ 10 사이)
+        step_reward = float(np.clip(step_reward, -10.0, 10.0))
+
+        # 5. 시간 패널티 (Hold 방지) 스케일링된 보상에 맞게 미세 조정
         if action == 0 and self.holdings == 0:
-            step_reward -= 0.1 # 무포지션 관망 시 미세한 패널티
+            step_reward -= 0.001 # 무포지션 관망 시 미세한 패널티
 
         self.reward_history.append(step_reward)
         if len(self.reward_history) > 10:
@@ -144,6 +149,9 @@ class ScalpingTradingEnv(gym.Env):
             sharpe_ratio = np.mean(returns) / (np.std(returns) + 1e-9)
             # Sharpe ratio based bonus/penalty
             step_reward += sharpe_ratio * 0.1
+
+        # 다시 한 번 클리핑 (샤프 지수 보너스 적용 후에도 안정성 유지)
+        step_reward = float(np.clip(step_reward, -10.0, 10.0))
 
         self.current_step += 1
         obs = self._get_observation()
