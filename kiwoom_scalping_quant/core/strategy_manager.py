@@ -176,9 +176,9 @@ class StrategyManager:
                 if target_qty > 0:
                     self.logger.error(f"StrategyManager: [{symbol}] 에이전트 결단 - {str_action} {target_qty}주")
                     self.last_action_times[symbol] = current_time
-                    # asyncio.create_task(
-                    #     self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
-                    # )
+                    asyncio.create_task(
+                        self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
+                    )
 
         except Exception as e:
             self.logger.error(f"StrategyManager: [{symbol}] 이벤트 처리 에러: {e}")
