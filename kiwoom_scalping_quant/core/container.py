@@ -40,7 +40,7 @@ class Container(containers.DeclarativeContainer):
     # DB Client (싱글톤)
     influx_client = providers.Singleton(
         AsyncInfluxDBClient,
-        config=config
+        config=config_manager
     )
 
     # Core 비즈니스 로직 (싱글톤)
@@ -65,7 +65,8 @@ class Container(containers.DeclarativeContainer):
         StrategyManager,
         config_manager=config_manager,
         data_collector=data_collector,
-        order_manager=order_manager
+        order_manager=order_manager,
+        risk_manager=risk_manager
     )
 
     token_manager = providers.Singleton(
@@ -106,7 +107,8 @@ class Container(containers.DeclarativeContainer):
         config_manager=config_manager,
         historical_fetcher=historical_fetcher,
         influx_client=influx_client,
-        universe_manager=universe_manager
+        universe_manager=universe_manager,
+        token_manager=token_manager
     )
 
     settings_view_model = providers.Factory(

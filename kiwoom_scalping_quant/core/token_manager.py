@@ -80,8 +80,16 @@ class TokenManager:
                         expires_in = int(data.get("expires_in", 86400))
                         self.expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-                        self.logger.info(f"Token successfully refreshed. Expires at {self.expires_at}")
-                        self.logger.error(f"JYJ 111 access_token : {self.access_token}")
+                        token_val = data.get("token", "")
+                        expires = data.get("expires_dt", "")
+                        t_type = data.get("token_type", "")
+                        r_code = data.get("return_code", "")
+                        r_msg = data.get("return_msg", "")
+
+                        # f-string을 사용하면 None이나 숫자 데이터도 안전하게 문자열로 합쳐집니다.
+                        token_info = f"{token_val}, {expires}, {t_type}, {r_code}, {r_msg}"
+                        print(f"JYJ  token_info: {token_info}")
+                        self.logger.error(f"Token successfully refreshed. Expires at {self.expires_at}, access_token : {self.access_token}")
 
                         # Update globally
                         self.config_manager.update_settings({"KIWOOM_ACCESS_TOKEN": self.access_token})

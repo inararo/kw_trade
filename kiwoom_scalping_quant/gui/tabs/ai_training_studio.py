@@ -31,6 +31,12 @@ class AITrainingStudioTab(QWidget):
         self.spin_lr.setValue(0.00030)
         form_layout.addRow("학습률:", self.spin_lr)
 
+        self.spin_max_records = QSpinBox()
+        self.spin_max_records.setRange(1000, 1000000)
+        self.spin_max_records.setValue(10000)
+        self.spin_max_records.setSingleStep(1000)
+        form_layout.addRow("데이터 로드 건수 (종목당):", self.spin_max_records)
+
         self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
         self.btn_start.clicked.connect(self._on_start_clicked)
@@ -81,13 +87,14 @@ class AITrainingStudioTab(QWidget):
     def _on_start_clicked(self):
         timesteps = self.spin_steps.value()
         lr = self.spin_lr.value()
+        max_records = self.spin_max_records.value()
 
         self._step_data.clear()
         self._reward_data.clear()
         self.reward_curve.setData([], [])
         self.log_list.clear()
 
-        self.view_model.start_training(timesteps, lr)
+        self.view_model.start_training(timesteps, lr, max_records)
 
     def _on_stop_clicked(self):
         self.view_model.stop_training()

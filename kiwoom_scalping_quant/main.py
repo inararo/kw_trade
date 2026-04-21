@@ -121,19 +121,20 @@ class QuantSystem:
         except asyncio.TimeoutError:
             print("시스템: [Step 1] 토큰 발급 타임아웃! (인터넷 연결 및 앱 키를 확인하세요)")
 
-        # Step 2: Universe 생성 및 Scheduler 시작
-        print("시스템: [Step 2] 스케줄러 가동 및 유니버스 생성 대기...")
+        # Step 2: Universe 및 Scheduler 시작
+        print("시스템: [Step 2] 스케줄러 가동 및 기존 유니버스 로드...")
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
 
-        # 명시적으로 뷰모델의 유니버스 빌드 호출
-        self.asset_vm.build_universe()
+        # [버그 수정] 부팅 시마다 유니버스를 강제로 다시 생성하지 않고, 기존에 저장된 종목을 로드합니다.
+        # 장중에 유니버스를 갱신하고 싶다면 '종목 관리' 탭에서 수동으로 실행해야 합니다.
+        self.asset_vm.load_symbols()
 
         try:
-            # 09:00 이전에는 빈 리스트라도 빠르게 리턴되므로 긴 대기가 필요 없음
-            await asyncio.wait_for(self.universe_ready_event.wait(), timeout=30.0)
-            print("시스템: [Step 2] 유니버스 확정 완료.")
+            # 유니버스 로드가 완료될 때까지 잠시 대기
+            await asyncio.wait_for(self.universe_ready_event.wait(), timeout=10.0)
+            print(f"시스템: [Step 2] 유니버스 로드 완료 (총 {len(self.asset_vm.config_manager.get_symbols())}개 종목).")
         except asyncio.TimeoutError:
-            print("시스템: [Step 2] 유니버스 생성 타임아웃! 기본 설정으로 진행합니다.")
+            print("시스템: [Step 2] 유니버스 로드 타임아웃! 기본 설정으로 진행합니다.")
 
         # Step 3: DataCollector 시작 및 웹소켓 연결 대기
         self.influx_task = asyncio.create_task(self.influx_client.start())
@@ -226,16 +227,9 @@ class QuantSystem:
         print("시스템: 모든 정리가 완료되었습니다.")
         self.shutdown_event.set()
 
-        # 주의: 여기서 QApplication.quit()를 호출하기보다
-        # main()의 루프가 끝난 직후 호출하는 것이 더 안전할 수 있습니다.
-        # 일단 현재 구조를 유지한다면:
-        from PyQt6.QtWidgets import QApplication
-        QApplication.instance().quit()
-
 def main():
     app = QApplication(sys.argv)
 
-    # qasync 0.24.0 호환성을 위한 PyQt6.QApplication.exec_ 패치 (에러 방지용)
     if not hasattr(app, "exec_"):
         app.exec_ = app.exec
 
@@ -244,21 +238,45 @@ def main():
 
     system = QuantSystem()
 
-    with loop:
+    try:
+        # 1. 메인 루프 실행
+        loop.run_until_complete(system.start())
+    except KeyboardInterrupt:
+        print("\n시스템: 사용자에 의해 강제 종료되었습니다 (KeyboardInterrupt).")
         try:
-            loop.run_until_complete(system.start())
-        except KeyboardInterrupt:
-            print("\n시스템: 사용자에 의해 강제 종료되었습니다 (KeyboardInterrupt).")
-            # 강제 종료 시에도 안전 종료 루틴 시도
-            try:
-                loop.run_until_complete(system.stop())
-            except Exception as stop_e:
-                print(f"시스템: 강제 종료 중 에러 발생: {stop_e}")
-        except RuntimeError as e:
-            if "Event loop stopped before Future completed" in str(e):
-                print("시스템: 비동기 루프가 정상적으로 종료되었습니다.")
-            else:
-                raise e
+            loop.run_until_complete(system.stop())
+        except Exception as stop_e:
+            print(f"시스템: 강제 종료 중 에러 발생: {stop_e}")
+    except RuntimeError as e:
+        if "Event loop stopped before Future completed" in str(e):
+            print("시스템: 비동기 루프가 정상적으로 종료되었습니다.")
+        else:
+            raise e
+    finally:
+        # 2. 종료 후 잔여 태스크 정리 및 I/O 캐시 플러시를 위한 짧은 유예
+        print("시스템: 프로세스 최종 종료 준비 중...")
+        try:
+            if loop.is_running():
+                # 현재 정리를 수행 중인 태스크는 제외하고 나머지 취소
+                current_task = asyncio.current_task(loop)
+                pending = [t for t in asyncio.all_tasks(loop) if t is not current_task]
+                
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    
+                    # 취소된 태스크들이 정리될 기회를 주되, 최대 0.5초만 대기
+                    loop.run_until_complete(asyncio.wait(pending, timeout=0.5))
+            
+            # 루프 정지 및 닫기
+            if not loop.is_closed():
+                loop.stop()
+                loop.close()
+        except Exception as cleanup_e:
+            print(f"시스템: 정리 작업 중 예외 발생 (무시됨): {cleanup_e}")
+        
+        print("시스템: 프로그램이 완전히 종료되었습니다.")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

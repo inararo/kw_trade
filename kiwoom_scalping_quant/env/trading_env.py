@@ -1,6 +1,8 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import random
+import logging
 
 class ScalpingTradingEnv(gym.Env):
     """
@@ -11,6 +13,7 @@ class ScalpingTradingEnv(gym.Env):
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config = config
+        self.logger = logging.getLogger("ScalpingTradingEnv")
 
         # [Price, Volume, OIR, Volatility, Aggressiveness]
         self.single_feature_dim = 5
@@ -29,11 +32,22 @@ class ScalpingTradingEnv(gym.Env):
         self.current_step = 0
         self.reward_history = []
 
-        # Historical / Backtest 모드에서 사용할 정적 데이터 (리스트 또는 DataFrame)
+        # Historical / Backtest 모드에서 사용할 데이터
+        self.historical_data_dict = config.get("historical_data_dict", None)
         self.historical_data = config.get("historical_data", None)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        
+        # 다중 종목 샘플링 모드 체크
+        if self.historical_data_dict:
+            available_symbols = list(self.historical_data_dict.keys())
+            if available_symbols:
+                selected_sym = random.choice(available_symbols)
+                self.historical_data = self.historical_data_dict[selected_sym]
+                self.config['symbol'] = selected_sym
+                self.logger.info(f"에피소드 초기화: 랜덤 종목 선택 => {selected_sym} (데이터 {len(self.historical_data)}건)")
+
         self.balance = self.config.get('initial_balance', 10000000)
         self.holdings = 0
         self.current_step = 0

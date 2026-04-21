@@ -6,13 +6,22 @@ from influxdb_client import Point
 
 class AsyncInfluxDBClient:
     """비동기 배치 처리를 지원하는 InfluxDB 클라이언트"""
-    def __init__(self, config: Dict[str, Any]):
-        self.url = config.get("influx_url", "http://localhost:8086")
-        self.token = config.get("influx_token", "YOUR_TOKEN")
-        self.org = config.get("influx_org", "YOUR_ORG")
-        self.bucket = config.get("influx_bucket", "kiwoom_data")
+    def __init__(self, config: Any):
+        self.url = config.get("INFLUX_URL", "http://localhost:8086")
+        self.token = config.get("INFLUX_TOKEN", "YOUR_TOKEN")
+        self.org = config.get("INFLUX_ORG", "my-trade")
+        self.bucket = config.get("influx_bucket", "stock_data")
+        self.logger = logging.getLogger("AsyncInfluxDBClient")
+        
+        # 설정 로드 확인을 위한 로그 추가
+        self.logger.info(f"InfluxDB 클라이언트 초기화: URL={self.url}, ORG={self.org}, BUCKET={self.bucket}")
+        if self.token == "YOUR_TOKEN" or not self.token:
+            self.logger.warning("⚠️ InfluxDB 토큰이 기본값(YOUR_TOKEN)이거나 비어있습니다. .env 파일을 확인하세요.")
 
-        self.client = InfluxDBClientAsync(url=self.url, token=self.token, org=self.org)
+        # 타임아웃 설정을 60초로 연장 (기본값은 보통 10~30초)
+        from aiohttp import ClientTimeout
+        timeout = ClientTimeout(total=60)
+        self.client = InfluxDBClientAsync(url=self.url, token=self.token, org=self.org, timeout=timeout)
         self.write_api = self.client.write_api()
 
         self.batch_queue = []
@@ -50,6 +59,9 @@ class AsyncInfluxDBClient:
 
             point = Point("tick_data") \
                 .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                .field("open", float(data.get("open", 0.0))) \
+                .field("high", float(data.get("high", 0.0))) \
+                .field("low", float(data.get("low", 0.0))) \
                 .field("price", float(data.get("price", 0.0))) \
                 .field("volume", float(data.get("volume", 0.0))) \
                 .time(ts)
@@ -62,11 +74,32 @@ class AsyncInfluxDBClient:
         except Exception as e:
             self.logger.error(f"Point 변환 오류: {e}")
 
+    async def get_last_timestamp(self, symbol: str) -> str:
+        """특정 종목의 가장 최신 데이터 타임스탬프를 가져옵니다. (증분 수집용)"""
+        try:
+            query_api = self.client.query_api()
+            query = f'''
+                from(bucket: "{self.bucket}")
+                |> range(start: -1y)
+                |> filter(fn: (r) => r["_measurement"] == "historical_data" or r["_measurement"] == "tick_data")
+                |> filter(fn: (r) => r["symbol"] == "{symbol}")
+                |> last()
+            '''
+            tables = await query_api.query(query, org=self.org)
+            for table in tables:
+                for record in table.records:
+                    # _time 필드를 ISO 형식 문자열로 변환
+                    return record.get_time().isoformat().replace("+00:00", "").replace("Z", "").split(".")[0]
+            return None
+        except Exception as e:
+            self.logger.error(f"InfluxDB 마지막 타임스탬프 조회 실패: {e}")
+            return None
+
     async def fetch_recent_data(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
         """
         학습용 데이터를 제공하기 위해 InfluxDB에서 특정 종목의 최근 데이터를 가져옵니다.
         """
-        self.logger.info(f"InfluxDB: [{symbol}] 과거 데이터 {limit}건 조회 시도")
+        self.logger.error(f"InfluxDB: [{symbol}] 과거 데이터 {limit}건 조회 시도")
 
         try:
             query_api = self.client.query_api()
@@ -88,24 +121,28 @@ class AsyncInfluxDBClient:
                 for record in table.records:
                     results.append({
                         "timestamp": record.get_time(),
+                        "open": float(record.values.get("open", 0.0)),
+                        "high": float(record.values.get("high", 0.0)),
+                        "low": float(record.values.get("low", 0.0)),
                         "price": float(record.values.get("price", 0.0)),
                         "volume": float(record.values.get("volume", 0.0))
                     })
 
             if not results:
-                self.logger.warning(f"InfluxDB: [{symbol}] 조회된 데이터가 없습니다 (0건).")
+                self.logger.error(f"InfluxDB: [{symbol}] 조회된 데이터가 없습니다 (0건).")
 
             # 역순 정렬을 원래 시간순(오름차순)으로 뒤집어서 반환
             return list(reversed(results))
 
         except Exception as e:
-            self.logger.error(f"InfluxDB 조회 실패: {str(e)}")
+            self.logger.error(f"   [에러] InfluxDB [{symbol}] 조회 실패: {type(e).__name__} - {str(e)}")
+            # 상세한 디버깅을 위해 재발생시키거나 빈 리스트 반환
             return []
 
-    async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data") -> bool:
-        """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다. (성공 여부 반환)"""
+    async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
+        """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
         if not data_list:
-            return False
+            return
 
         points = []
         import dateutil.parser
@@ -127,6 +164,9 @@ class AsyncInfluxDBClient:
 
                 point = Point(measurement) \
                     .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                    .field("open", float(data.get("open", 0.0))) \
+                    .field("high", float(data.get("high", 0.0))) \
+                    .field("low", float(data.get("low", 0.0))) \
                     .field("price", float(data.get("price", 0.0))) \
                     .field("volume", float(data.get("volume", 0.0))) \
                     .time(ts)
@@ -139,15 +179,12 @@ class AsyncInfluxDBClient:
                 # Execute actual DB write
                 await self.write_api.write(bucket=self.bucket, record=points)
                 self.logger.info(f"Bulk Insert 완료: InfluxDB에 {len(points)}건 적재 요청 성공.")
-                return True
             except Exception as e:
                 # Safely extract HTTP status and reason if available in InfluxDBError
                 status = getattr(e, 'response', None)
                 status_code = status.status if status else 'Unknown'
                 reason = status.reason if status else str(e)
                 self.logger.error(f"🚨 Bulk Insert DB 전송 실패! [Status: {status_code}] Reason: {reason}")
-                return False
-        return False
 
     async def _flush_batch(self):
         if not self.batch_queue:
@@ -172,6 +209,25 @@ class AsyncInfluxDBClient:
             return await self.client.ping()
         except Exception as e:
             self.logger.error(f"InfluxDB Ping 실패: {e}")
+            return False
+
+    async def delete_data(self, measurement: str, symbol: str = None):
+        """특정 측정 항목 또는 종목의 데이터를 삭제합니다."""
+        try:
+            delete_api = self.client.delete_api()
+            start = "1970-01-01T00:00:00Z"
+            import datetime
+            stop = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            
+            predicate = f'_measurement="{measurement}"'
+            if symbol:
+                predicate += f' AND symbol="{symbol}"'
+            
+            await delete_api.delete(start, stop, predicate, bucket=self.bucket, org=self.org)
+            self.logger.info(f"InfluxDB 데이터 삭제 완료: measurement={measurement}, symbol={symbol}")
+            return True
+        except Exception as e:
+            self.logger.error(f"InfluxDB 데이터 삭제 실패: {e}")
             return False
 
     async def close(self):

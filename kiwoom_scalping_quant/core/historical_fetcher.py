@@ -66,63 +66,174 @@ class HistoricalFetcher:
                                     symbol: str,
                                     start_date: str,
                                     access_token: str,
-                                    progress_callback: Optional[Callable[[int, str], None]] = None) -> List[Dict[str, Any]]:
+                                    progress_callback: Optional[Callable[[int, str], None]] = None,
+                                    stop_timestamp: str = None) -> List[Dict[str, Any]]:
         """
-        특정 종목의 과거 데이터를 연속 조회합니다. (Pagination & Resume)
+        특정 종목의 과거 데이터를 키움 REST API (ka10080) 명세에 맞춰 수집합니다.
         """
         all_data = []
+        next_key = ""
+        cont_yn = "N"
 
-        # 1. Resume Check
+        # 1. Resume Check (마지막 수집 시점보다 과거 데이터를 더 받고 싶을 때 사용)
         last_fetched = self._load_checkpoint(symbol)
-        if last_fetched and last_fetched > start_date:
-            self.logger.info(f"[{symbol}] 체크포인트 발견. {last_fetched} 이후 데이터만 수집합니다.")
-            target_start_date = last_fetched
-        else:
-            target_start_date = start_date
+        
+        # 증분 수집을 위해 target_start_date는 항상 start_date(오늘 등)를 기준으로 하되
+        # 과거에 어디까지 받았었는지는 stop_timestamp로 판단합니다.
+        target_start_date = start_date
 
-        # 가상의 TR 반복 호출 세팅
-        next_token = ""
-        total_pages = 20 # 1년치 분봉의 가상 페이지 수
+        endpoint = f"{self.base_url}/api/dostk/chart"
+        total_pages = 100  # 수집 페이지 제한
         current_page = 0
 
-        headers = {
-            'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
-            "Authorization": f"Bearer {access_token}",
-            "api-id": "OPT10080" # 주식분봉차트조회요청
-        }
+        # 2. 시도할 종목코드 형식 목록 생성 (SOR 데이터 수집 최적화)
+        symbol_only = symbol.split("_")[0] if "_" in symbol else symbol
+        if symbol.endswith("_AL"):
+            formats_to_try = [f"SOR:{symbol}", symbol, f"SOR:{symbol_only}", f"KRX:{symbol_only}"]
+        elif symbol.endswith("_NX"):
+            formats_to_try = [f"NXT:{symbol}", symbol, f"NXT:{symbol_only}", f"KRX:{symbol_only}"]
+        else:
+            formats_to_try = [f"KRX:{symbol}", symbol]
 
+        final_data = []
+        
         async with aiohttp.ClientSession() as session:
-            while current_page < total_pages:
-                # 2. 강제 딜레이 큐 대기
-                await self._throttle()
+            for formatted_symbol in formats_to_try:
+                all_data = []
+                next_key = ""
+                cont_yn = "N"
+                current_page = 0
+                
+                self.logger.error(f"[{symbol}] 수집 시도 (Format: {formatted_symbol}, API-ID: ka10080)")
 
-                params = {"symbol": symbol, "start_date": target_start_date, "next": next_token}
-                url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-item"
+                while current_page < total_pages:
+                    # 3. Throttling 방지
+                    await self._throttle()
 
-                if current_page == 0:
-                    self.logger.info(f"[{symbol}] 과거 데이터 조회 시작 (Target URL: {url})")
+                    headers = {
+                        'Content-Type': 'application/json;charset=UTF-8',
+                        "authorization": f"Bearer {access_token}",
+                        "api-id": "ka10080",
+                        "cont-yn": cont_yn,
+                        "next-key": next_key
+                    }
 
-                # Mock API 호출 (서버 과부하 회피를 위한 시간 추가)
-                await asyncio.sleep(0.5)
+                    # 입력 파라미터 (명세 준수 + qry_tp 추가)
+                    base_dt_param = target_start_date.replace("-", "")[:8]
+                    params = {
+                        "stk_cd": formatted_symbol,
+                        "tic_scope": "1",
+                        "upd_stkpc_tp": "1",
+                        "base_dt": base_dt_param,
+                        "qry_tp": "0"
+                    }
 
-                # 수집된 가상 데이터 (역순 수집 가정)
-                current_date = f"2023-{12 - (current_page // 3):02d}-01"
-                fake_batch = [{"timestamp": current_date, "symbol": symbol, "price": 50000 + current_page * 10}]
-                all_data.extend(fake_batch)
+                    try:
+                        async with session.post(endpoint, headers=headers, json=params, timeout=15) as response:
+                            resp_headers = response.headers
+                            cont_yn = resp_headers.get("cont-yn", "N")
+                            next_key = resp_headers.get("next-key", "")
+                            
+                            if response.status != 200:
+                                break
 
-                current_page += 1
-                progress = int((current_page / total_pages) * 100)
+                            data = await response.json()
+                            
+                            if data.get("return_code") == 3 or "Token이 유효하지 않습니다" in data.get("return_msg", ""):
+                                return Failure("TOKEN_EXPIRED")
 
-                if progress_callback:
-                    progress_callback(progress, f"[{symbol}] {current_page}/{total_pages} 페이지 수집 중...")
+                            # 리스트 추출
+                            items = data.get("stk_min_pole_chart_qry")
+                            if items is None: items = data.get("output2")
+                            if items is None: items = data.get("grid")
+                            if items is None: items = data.get("output")
+                            
+                            if not items or not isinstance(items, list):
+                                break
 
-                # 3. 매 N페이지마다 상태 저장 (정전 및 API 제한 대비)
-                if current_page % 5 == 0:
-                    self._save_checkpoint(symbol, current_date)
+                            batch_data = []
+                            last_timestamp_in_batch = ""
+                            valid_item_found = False
+                            
+                            stop_reached = False
+                            for item in items:
+                                # 유효성 검사: 핵심 필드가 모두 빈 값인지 확인
+                                raw_time = item.get("cntr_tm") or item.get("stck_cntg_hour") or ""
+                                cur_prc = item.get("cur_prc") or item.get("stck_prpr") or ""
+                                
+                                if not raw_time or not cur_prc:
+                                    continue # 빈 데이터 스킵
+                                
+                                valid_item_found = True
+                                
+                                # 시간 포맷팅
+                                if len(raw_time) >= 14:
+                                    formatted_ts = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]} {raw_time[8:10]}:{raw_time[10:12]}:{raw_time[12:14]}"
+                                elif len(raw_time) == 12: 
+                                    formatted_ts = f"20{raw_time[:2]}-{raw_time[2:4]}-{raw_time[4:6]} {raw_time[6:8]}:{raw_time[8:10]}:{raw_time[10:12]}"
+                                else:
+                                    formatted_ts = raw_time
 
-                # next_token 갱신 로직 (data.get("next_token"))
-                # if not next_token: break
+                                # 증분 수집 중단 체크: 이미 DB에 있는 시점에 도달함
+                                if stop_timestamp and formatted_ts <= stop_timestamp:
+                                    self.logger.error(f"[{symbol}] 증분 수집 중단 시점 도달: {formatted_ts} <= {stop_timestamp}")
+                                    stop_reached = True
+                                    break
 
-        # 수집 완료 후 최신 상태로 체크포인트 갱신
-        self._save_checkpoint(symbol, "COMPLETED")
-        return all_data
+                                last_timestamp_in_batch = formatted_ts
+
+                                try:
+                                    def _to_float(v): 
+                                        if v is None or v == "": return 0.0
+                                        return float(str(v).lstrip('+-'))
+                                    
+                                    o = _to_float(item.get("open_pric") or item.get("stck_oprc"))
+                                    h = _to_float(item.get("high_pric") or item.get("stck_hgpr"))
+                                    l = _to_float(item.get("low_pric") or item.get("stck_lwpr"))
+                                    c = _to_float(cur_prc)
+                                    v = _to_float(item.get("trde_qty") or item.get("cntg_vol"))
+                                except (ValueError, TypeError):
+                                    continue
+
+                                batch_data.append({
+                                    "timestamp": formatted_ts,
+                                    "symbol": symbol,
+                                    "open": o,
+                                    "high": h,
+                                    "low": l,
+                                    "price": c,
+                                    "volume": v
+                                })
+
+                            if not valid_item_found and current_page == 0:
+                                # 첫 페이지인데 유효한 데이터가 하나도 없으면 이 형식은 실패로 간주
+                                break
+
+                            all_data.extend(batch_data)
+                            current_page += 1
+
+                            if progress_callback:
+                                progress_callback(int((current_page / total_pages) * 100), 
+                                                f"[{symbol}] {current_page}페이지 수집됨 ({len(batch_data)}건)")
+
+                            if cont_yn == "N" or not next_key or stop_reached:
+                                break
+
+                    except Exception as e:
+                        self.logger.error(f"[{symbol}] 형식 {formatted_symbol} 시도 중 오류: {e}")
+                        break
+                
+                if all_data:
+                    final_data = all_data
+                    self.logger.error(f"[{symbol}] 유효한 데이터 수집 성공 (형식: {formatted_symbol}, 건수: {len(all_data)})")
+                    break
+                else:
+                    self.logger.error(f"[{symbol}] 형식 {formatted_symbol} 결과가 유효하지 않음. 다음 형식 시도...")
+
+        if final_data:
+            self.logger.error(f"[{symbol}] 최종 수집 완료: 총 {len(final_data)}건")
+            self._save_checkpoint(symbol, "COMPLETED")
+            return final_data
+        
+        self.logger.error(f"[{symbol}] 모든 가능한 형식으로 시도했으나 유효한 데이터를 찾지 못했습니다.")
+        return []

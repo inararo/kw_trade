@@ -32,9 +32,10 @@ class DataCollector:
         self.latency_logs = deque(maxlen=1000)
         self.circuit_breaker_active = False
 
+        self.on_state_updated_callbacks = []
+
         self.logger = logging.getLogger("DataCollector")
         self._ui_callback = None
-        self._tick_callbacks = []
         self._watchdog_task = None
 
         # Connection and state events
@@ -51,11 +52,6 @@ class DataCollector:
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
-
-    def register_tick_callback(self, callback):
-        """새로운 틱 처리 완료 후 호출될 콜백 등록 (e.g. StrategyManager 추론용)"""
-        if callback not in self._tick_callbacks:
-            self._tick_callbacks.append(callback)
 
     def subscribe_symbol(self, symbol: str):
         """새로운 종목을 구독하고 버퍼를 동적 할당합니다."""
@@ -268,6 +264,13 @@ class DataCollector:
             normalized_state = self.normalizers[symbol].update_and_normalize(raw_state)
             self.state_buffers[symbol].append(normalized_state)
 
+            # 신규: 이벤트 드리븐 구조를 위한 콜백 호출 (StrategyManager 등이 구독)
+            for callback in self.on_state_updated_callbacks:
+                if asyncio.iscoroutinefunction(callback):
+                    asyncio.create_task(callback(symbol))
+                else:
+                    callback(symbol)
+
             # 실거래에서도 UI가 업데이트될 수 있도록 Mock과 비슷한 형태로 데이터 구성 후 콜백
             ui_data = {
                 "symbol": symbol,
@@ -278,12 +281,6 @@ class DataCollector:
             }
             if self._ui_callback:
                 self._ui_callback(ui_data)
-
-            for cb in self._tick_callbacks:
-                if asyncio.iscoroutinefunction(cb):
-                    asyncio.create_task(cb(symbol))
-                else:
-                    cb(symbol)
 
         self._aggregate_bars(symbol, data)
 

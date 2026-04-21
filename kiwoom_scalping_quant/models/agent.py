@@ -1,4 +1,5 @@
 import os
+import datetime
 import numpy as np
 from typing import Dict, Any, Optional
 from sb3_contrib import MaskablePPO
@@ -86,8 +87,9 @@ class TradingAgentWrapper:
 
         self.model.learn(total_timesteps=total_timesteps, callback=all_callbacks)
 
-        # 학습 완료 후 최종 가중치 저장
-        final_path = os.path.join(log_dir, "final_model")
+        # 학습 완료 후 최종 가중치 저장 (버전 관리을 위해 타임스탬프 부여)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        final_path = os.path.join(log_dir, f"model_{timestamp}")
         self.model.save(final_path)
 
     def load_weights(self, path: str):

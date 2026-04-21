@@ -31,7 +31,14 @@ class ConfigManager:
             else:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
-                    self._config_cache = data if data else {"symbols": []}
+                    if not data:
+                        data = {"symbols": []}
+                    
+                    # 'universe' 키에 데이터가 있고 'symbols'가 비어있을 경우 마이그레이션 지원
+                    if not data.get("symbols") and data.get("universe"):
+                        data["symbols"] = data.get("universe")
+                    
+                    self._config_cache = data
 
             # 2. Load .env
             dotenv.load_dotenv(self.env_path)
@@ -86,8 +93,11 @@ class ConfigManager:
         return self.save_config()
 
     def get_symbols(self) -> List[Dict[str, str]]:
-        """저장된 종목 리스트 반환 [{'code': '005930', 'name': '삼성전자'}]"""
-        return self._config_cache.get("symbols", [])
+        """저장된 종목 리스트 반환 (symbols를 우선하며 universe를 폴백으로 사용)"""
+        symbols = self._config_cache.get("symbols", [])
+        if not symbols:
+            symbols = self._config_cache.get("universe", [])
+        return symbols
 
     def add_symbol(self, code: str, name: str) -> Result[bool, Exception]:
         symbols = self.get_symbols()

@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import glob
 from PyQt6.QtCore import QObject, pyqtSignal
 from typing import Dict, Any, List
 from returns.result import Success, Failure
@@ -188,12 +190,13 @@ class AssetDataViewModel(QObject):
     fetch_completed = pyqtSignal(str)
     fetch_failed = pyqtSignal(str)
 
-    def __init__(self, config_manager, historical_fetcher, influx_client, universe_manager):
+    def __init__(self, config_manager, historical_fetcher, influx_client, universe_manager, token_manager):
         super().__init__()
         self.config_manager = config_manager
         self.historical_fetcher = historical_fetcher
         self.influx_client = influx_client
         self.universe_manager = universe_manager
+        self.token_manager = token_manager
         self.logger = logging.getLogger("AssetDataViewModel")
 
     def build_universe(self):
@@ -215,11 +218,7 @@ class AssetDataViewModel(QObject):
             today_str = datetime.datetime.now().strftime("%Y%m%d")
             self.sig_status_updated.emit(f"[POST-MARKET COLLECTION] 유니버스 갱신 완료. {today_str} 데이터 수집 시작...")
             # 2. Fetch and Store (uses the newly updated config symbols)
-            symbols = [s.get("code") for s in self.config_manager.get_symbols()]
-            if not symbols:
-                self.sig_status_updated.emit("[POST-MARKET COLLECTION] 수집할 종목이 없습니다.")
-                return
-            await self._fetch_and_store(symbols, today_str, is_auto=True)
+            await self._start_bulk_historical_fetch_task(today_str, is_auto=True)
         else:
             self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
 
@@ -257,6 +256,17 @@ class AssetDataViewModel(QObject):
         for stock in top_stocks:
             if isinstance(stock, dict) and "code" in stock and "name" in stock:
                 new_symbols.append({"code": stock["code"], "name": stock["name"]})
+
+        # [버그 수정] 장외 시간이거나 API 응답이 없어 리스트가 비어있을 경우 덮어쓰지 않음
+        if not new_symbols:
+            existing_symbols = self.config_manager.get_symbols()
+            if existing_symbols:
+                msg = "현재 장외 시간이거나 API 수신 데이터가 없습니다. 기존 유니버스 리스트를 유지합니다."
+                self.sig_status_updated.emit(msg)
+                if not is_auto:
+                    self.fetch_completed.emit(msg)
+                self.logger.info(msg)
+                return True
 
         self.config_manager.set_symbols(new_symbols)
 
@@ -303,23 +313,38 @@ class AssetDataViewModel(QObject):
         asyncio.create_task(self._fetch_and_store([symbol], start_date))
 
     def start_bulk_historical_fetch(self, start_date: str, is_auto: bool = False):
-        """Config에 등록된 모든 종목(Universe)에 대한 일괄 수집"""
+        """UI에서 호출하는 래퍼 (Non-blocking)"""
+        asyncio.create_task(self._start_bulk_historical_fetch_task(start_date, is_auto))
+
+    async def _start_bulk_historical_fetch_task(self, start_date: str, is_auto: bool = False):
+        """Config에 등록된 모든 종목(Universe)에 대한 실제 일괄 수집 태스크"""
         symbols = [s.get("code") for s in self.config_manager.get_symbols()]
         if not symbols:
             self.fetch_failed.emit("수집할 종목이 없습니다.")
             return
-        asyncio.create_task(self._fetch_and_store(symbols, start_date, is_auto))
+        await self._fetch_and_store(symbols, start_date, is_auto)
 
     async def _fetch_and_store(self, symbols: List[str], start_date: str, is_auto: bool = False):
         total_symbols = len(symbols)
         total_data_collected = 0
 
-        access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
+        # 토큰 유효성 확인 및 갱신
+        access_token = self.token_manager.get_token()
         if not access_token:
-            self.fetch_failed.emit("API 접근 토큰이 없습니다. 설정에서 발급해 주세요.")
+            self.sig_status_updated.emit("API 토큰 갱신 중...")
+            await self.token_manager.refresh_token()
+            access_token = self.token_manager.get_token()
+
+        if not access_token:
+            self.fetch_failed.emit("API 접근 토큰을 가져오지 못했습니다. 설정을 확인해 주세요.")
             return
 
         for idx, symbol in enumerate(symbols):
+            # DB에서 마지막 수집 시점 조회 (증분 수집용)
+            last_ts = await self.influx_client.get_last_timestamp(symbol)
+            if last_ts:
+                self.logger.error(f"[{symbol}] DB 체크포인트 발견: {last_ts}. 이후 데이터만 증분 수집합니다.")
+
             def update_progress(pct: int, msg: str):
                 base_pct = (idx / total_symbols) * 100
                 current_pct = base_pct + (pct / total_symbols)
@@ -327,14 +352,29 @@ class AssetDataViewModel(QObject):
                 self.sig_status_updated.emit(msg)
 
             self.sig_progress_updated.emit(int((idx / total_symbols) * 100))
-            self.sig_status_updated.emit(f"[{symbol}] 수집 시작 ({idx+1}/{total_symbols})...")
+            self.sig_status_updated.emit(f"[{symbol}] 수집 시도 ({idx+1}/{total_symbols})...")
 
-            fetch_result = await self.historical_fetcher.fetch_historical_data(symbol, start_date, access_token, update_progress)
+            fetch_result = await self.historical_fetcher.fetch_historical_data(
+                symbol, start_date, access_token, update_progress, stop_timestamp=last_ts
+            )
+
+            # 토큰 만료 시 재시도 로직
+            if isinstance(fetch_result, IOFailure):
+                failure_val = str(fetch_result.failure()._inner_value if hasattr(fetch_result.failure(), '_inner_value') else fetch_result.failure())
+                if failure_val == "TOKEN_EXPIRED":
+                    self.logger.error(f"[{symbol}] 토큰 만료 감지됨. 토큰을 갱신하고 재시도합니다.")
+                    self.sig_status_updated.emit(f"[{symbol}] 토큰 갱신 및 재시도 중...")
+                    await self.token_manager.refresh_token()
+                    access_token = self.token_manager.get_token()
+                    # 1회 재시도 (마지막 TS 유지)
+                    fetch_result = await self.historical_fetcher.fetch_historical_data(
+                        symbol, start_date, access_token, update_progress, stop_timestamp=last_ts
+                    )
 
             if isinstance(fetch_result, IOFailure):
                 err_msg = str(fetch_result.failure()._inner_value if hasattr(fetch_result.failure(), '_inner_value') else fetch_result.failure())
-                self.symbol_update_failed.emit(f"[{symbol}] 수집 실패: {err_msg}")
-                continue # 한 종목이 실패해도 다음 종목으로 계속 진행
+                self.symbol_update_failed.emit(f"[{symbol}] 수집 최종 실패: {err_msg}")
+                continue
 
             try:
                 data_list = fetch_result.unwrap()._inner_value
@@ -344,21 +384,26 @@ class AssetDataViewModel(QObject):
                 data_list = []
 
             fetch_count = len(data_list)
-            self.logger.error(f"[{symbol}] 수집 완료: {fetch_count}건의 데이터를 불러왔습니다.")
-            total_data_collected += fetch_count
+            if fetch_count == 0:
+                self.logger.warning(f"[{symbol}] 수집된 데이터가 0건입니다. 스킵합니다.")
+                continue
 
+            self.logger.info(f"[{symbol}] 수집 완료: {fetch_count}건. InfluxDB 갱신 시작...")
+            
             self.sig_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100))
-            self.sig_status_updated.emit(f"[{symbol}] InfluxDB Bulk Insert 진행 중...")
+            self.sig_status_updated.emit(f"[{symbol}] 기존 데이터 정리 및 적재 중...")
+
             try:
-                success = await self.influx_client.bulk_insert(data_list)
-                if success:
-                    self.logger.info(f"[{symbol}] InfluxDB 저장 성공: {fetch_count}건 적재 완료.")
-                else:
-                    self.logger.error(f"[{symbol}] InfluxDB 저장 실패. (데이터 적재 실패)")
-                    self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러 발생 (인증 또는 파싱 에러)")
+                # 데이터가 성공적으로 수집된 경우에만 해당 종목의 기존 데이터 삭제 (정밀 수집 반영)
+                await self.influx_client.delete_data("historical_data", symbol)
+                await self.influx_client.delete_data("tick_data", symbol)
+                
+                await self.influx_client.bulk_insert(data_list)
+                self.logger.info(f"[{symbol}] InfluxDB 갱신 성공: {fetch_count}건 적재 완료.")
+                total_data_collected += fetch_count
             except Exception as e:
-                self.logger.error(f"[{symbol}] DB 저장 중 시스템 에러 발생: {e}")
-                self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 시스템 에러: {e}")
+                self.logger.error(f"[{symbol}] DB 처리 중 에러 발생: {e}")
+                self.symbol_update_failed.emit(f"[{symbol}] DB 처리 에러: {e}")
 
         self.sig_progress_updated.emit(100)
 
@@ -393,26 +438,56 @@ class AITrainingViewModel(QObject):
         self.influx_client = influx_client
         self.worker = None
 
-    def start_training(self, total_timesteps: int, learning_rate: float):
+    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
             return
 
-        asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate))
+        asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records))
 
-    async def _prepare_and_start_training(self, timesteps: int, lr: float):
-        self.sig_training_log.emit("1. InfluxDB에서 과거 학습 데이터 조회 중...")
-        # 임시로 유니버스의 첫 번째 종목 사용
+    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int):
+        self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
+        # [안정성 강화] 동시 조회 개수를 3개로 제한
+        sem = asyncio.Semaphore(3)
+        
+        async def fetch_with_semaphore(symbol_code, limit):
+            async with sem:
+                return await self.influx_client.fetch_recent_data(symbol_code, limit)
+        
         symbols = self.config_manager.get_symbols()
-        target_sym = symbols[0].get("code", "005930") if symbols else "005930"
+        if not symbols:
+            self.sig_error.emit("유니버스가 비어있습니다. 종목을 먼저 추가해주세요.")
+            return
 
-        # 1. 데이터 조회
+        # 1. 모든 종목의 데이터 비동기 병렬 조회
+        historical_data_dict = {}
+        fetch_tasks = []
+        for s in symbols:
+            code = s.get("code")
+            fetch_tasks.append(fetch_with_semaphore(code, max_records))
+
         try:
-            historical_data = await self.influx_client.fetch_recent_data(target_sym, 1000)
-            self.sig_training_log.emit(f"   => {len(historical_data)} 건 조회 완료.")
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            
+            for s, res in zip(symbols, results):
+                code = s.get("code")
+                # [버그 수정] Exception뿐만 아니라 CancelledError 등 모든 예외(BaseException)를 체크
+                if isinstance(res, BaseException):
+                    self.sig_training_log.emit(f"   [경고] {code} 데이터 로드 실패: {type(res).__name__}")
+                elif res:
+                    historical_data_dict[code] = res
+                else:
+                    self.sig_training_log.emit(f"   [주의] {code} 데이터가 DB에 없습니다.")
+
+            self.sig_training_log.emit(f"   => 총 {len(historical_data_dict)}개 종목의 데이터 로드 완료.")
+            
+            if not historical_data_dict:
+                self.sig_error.emit("학습 가능한 데이터가 어느 종목에서도 발견되지 않았습니다.")
+                return
+
         except Exception as e:
-            self.sig_error.emit(f"데이터 조회 실패: {e}")
+            self.sig_error.emit(f"데이터 조회 준비 작업 중 에러: {e}")
             return
 
         # 2. Env 생성 및 Agent 주입
@@ -420,16 +495,35 @@ class AITrainingViewModel(QObject):
         from models.agent import TradingAgentWrapper
         from gui.training_worker import TrainingWorker, TrainingSignals
 
-        self.sig_training_log.emit("2. RL Environment 생성 및 Agent 초기화...")
+        self.sig_training_log.emit("2. RL Environment 생성 및 Agent 초기화 (다중 종목 모드)...")
         env_config = {
-            "symbol": target_sym,
-            "historical_data": historical_data
+            "historical_data_dict": historical_data_dict,
+            "initial_balance": 10000000
         }
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
         # 설정 업데이트 (LR 반영 등)
         agent_config = {"seq_len": 10, "learning_rate": lr}
         agent = TradingAgentWrapper(env, agent_config)
+
+        # 3. 최신 모델 가중치 자동 로드 (연속 학습 지원)
+        save_dir = agent_config.get("model_save_dir", "./saved_models/")
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+
+        # model_YYYYMMDD_HHMM.zip 패턴의 파일 리스트 확보
+        model_files = glob.glob(os.path.join(save_dir, "model_*.zip"))
+        if model_files:
+            # 파일명을 기준으로 정렬하여 가장 최신(문자열 순서상 뒤) 파일을 선택
+            latest_model_zip = sorted(model_files)[-1]
+            load_path = latest_model_zip.replace(".zip", "")
+            try:
+                agent.load_weights(load_path)
+                self.sig_training_log.emit(f"   => 발견된 최신 모델({os.path.basename(latest_model_zip)})의 지식을 계승하여 이어서 학습합니다.")
+            except Exception as e:
+                self.sig_training_log.emit(f"   => [주의] 모델 로드 실패 (기존 뇌 초기화): {e}")
+        else:
+            self.sig_training_log.emit("   => 기존 학습 모델이 없습니다. 백지상태에서 학습을 시작합니다.")
 
         # 3. Worker 생성 및 실행
         self.sig_training_log.emit("3. QThread 학습 워커 실행...")
@@ -465,6 +559,7 @@ class SettingsViewModel(QObject):
         super().__init__()
         self.config_manager = config_manager
         self.influx_client = influx_client
+        self.logger = logging.getLogger("SettingsViewModel")
 
     def load_settings(self):
         """ConfigManager를 통해 통합 설정을 로드하고 UI로 Emit합니다."""
@@ -560,11 +655,47 @@ class SettingsViewModel(QObject):
             self.connection_test_completed.emit(False, f"Kiwoom API 연결 에러: {e}")
             return
 
-        # 2. InfluxDB 핑 테스트
-        db_url = updates.get("INFLUX_URL", "http://localhost:8086")
-        db_msg = "InfluxDB: Ping 테스트 통과"
+        # ---------------------------------------------------------
+        # 2. InfluxDB 연결 테스트 추가 (키움 성공 시 실행)
+        # ---------------------------------------------------------
+        influx_url = updates.get("INFLUX_URL", "http://localhost:8086")
+        influx_token = updates.get("INFLUX_TOKEN", "")
+        influx_org = updates.get("INFLUX_ORG", "")
+        influx_bucket = self.config_manager.get("influx_bucket", "")
 
-        self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{db_msg}")
+        self.logger.error(f"influx_url: {influx_url}, influx_org: {influx_org}, influx_bucket: {influx_bucket}, influx_token: {influx_token}")
+
+        if not influx_token:
+            self.connection_test_completed.emit(False, f"{kiwoom_msg}\n[경고] InfluxDB 토큰이 비어있습니다.")
+            return
+
+        try:
+            from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
+
+            async with InfluxDBClientAsync(url=influx_url, token=influx_token, org=influx_org) as client:
+                # 서버 생존 확인 (Ping)
+                is_alive = await client.ping()
+                if not is_alive:
+                    raise ConnectionError("InfluxDB 서버 응답 없음 (Ping 실패)")
+
+                # 데이터 쓰기 권한 테스트 (가장 확실한 방법)
+                write_api = client.write_api()
+                test_point = {"measurement": "test", "tags": {"type": "ping"}, "fields": {"val": 1.0}}
+                await write_api.write(bucket=influx_bucket, record=test_point)
+
+                influx_msg = "InfluxDB: 연결 및 쓰기 성공"
+
+                # 최종 결과 합산 전송
+                final_msg = f"{kiwoom_msg}\n{influx_msg}"
+                self.connection_test_completed.emit(True, final_msg)
+
+        except Exception as e:
+            # 키움은 성공했지만 InfluxDB가 실패한 경우
+            error_msg = f"{kiwoom_msg}\nInfluxDB 연결 에러: {e}"
+            self.connection_test_completed.emit(False, error_msg)
+
+        self.logger.error(f"influx_msg: {influx_msg}")
+        self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{influx_msg}")
 
     def check_db_status(self):
         """메뉴 액션: DB 상태 점검"""

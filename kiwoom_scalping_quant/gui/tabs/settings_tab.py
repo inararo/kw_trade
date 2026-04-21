@@ -216,7 +216,13 @@ class SettingsTab(QWidget):
 
         # Config
         self.input_account.setText(config.get("account_number", ""))
-        self.combo_mode.setCurrentText(config.get("trading_mode", "모의투자"))
+
+        # Determine internal kiwoom mode, fallback to string if exists
+        k_conf = config.get("kiwoom", {})
+        t_mode = k_conf.get("trading_mode", config.get("trading_mode", "virtual"))
+        ui_mode = "실전투자" if t_mode == "real" else "모의투자"
+        self.combo_mode.setCurrentText(ui_mode)
+
         self.input_db_bucket.setText(config.get("influx_bucket", "kiwoom_data"))
         self.spin_stop_loss.setValue(config.get("stop_loss_pct", -2.0))
         self.spin_max_position.setValue(config.get("max_position_pct", 50.0))

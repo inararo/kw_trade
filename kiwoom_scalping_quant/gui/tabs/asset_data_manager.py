@@ -52,7 +52,7 @@ class AssetDataManagerTab(QWidget):
         data_layout.addWidget(QLabel("대상 종목: 표에서 선택"))
 
         data_layout.addWidget(QLabel("수집 시작일:"))
-        self.date_start = QDateEdit(QDate.currentDate().addDays(-30))
+        self.date_start = QDateEdit(QDate.currentDate())
         self.date_start.setCalendarPopup(True)
         data_layout.addWidget(self.date_start)
 
