@@ -113,23 +113,36 @@ class ScalpingTradingEnv(gym.Env):
 
     def step(self, action):
         current_price = self._get_current_price()
-        step_reward = 0.0
         slippage = self.config.get('slippage', 0.0005)
 
+        # 1. 행동 이전의 총자산 가치 (현금 잔고 + 보유 주식 가치)
+        prev_net_worth = self.balance + (self.holdings * current_price)
+
+        # 2. 액션 수행 (수수료/슬리피지 적용)
         if action == 1: # Buy
             cost = current_price * (1 + slippage)
             self.balance -= cost
             self.holdings += 1
-
         elif action == 2: # Sell
             revenue = current_price * (1 - slippage)
             self.balance += revenue
             self.holdings -= 1
 
+        # 3. 행동 이후의 총자산 가치
+        new_net_worth = self.balance + (self.holdings * current_price)
+
+        # 4. 자산 증감분을 리워드로 설정
+        step_reward = new_net_worth - prev_net_worth
+
+        # 5. 시간 패널티 (Hold 방지)
+        if action == 0 and self.holdings == 0:
+            step_reward -= 0.1 # 무포지션 관망 시 미세한 패널티
+
         self.reward_history.append(step_reward)
         if len(self.reward_history) > 10:
             returns = np.array(self.reward_history)
             sharpe_ratio = np.mean(returns) / (np.std(returns) + 1e-9)
+            # Sharpe ratio based bonus/penalty
             step_reward += sharpe_ratio * 0.1
 
         self.current_step += 1
