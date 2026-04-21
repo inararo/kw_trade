@@ -215,7 +215,11 @@ class AssetDataViewModel(QObject):
             today_str = datetime.datetime.now().strftime("%Y%m%d")
             self.sig_status_updated.emit(f"[POST-MARKET COLLECTION] 유니버스 갱신 완료. {today_str} 데이터 수집 시작...")
             # 2. Fetch and Store (uses the newly updated config symbols)
-            await self.start_bulk_historical_fetch(today_str, is_auto=True)
+            symbols = [s.get("code") for s in self.config_manager.get_symbols()]
+            if not symbols:
+                self.sig_status_updated.emit("[POST-MARKET COLLECTION] 수집할 종목이 없습니다.")
+                return
+            await self._fetch_and_store(symbols, today_str, is_auto=True)
         else:
             self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
 
@@ -346,11 +350,15 @@ class AssetDataViewModel(QObject):
             self.sig_progress_updated.emit(int(((idx + 0.9) / total_symbols) * 100))
             self.sig_status_updated.emit(f"[{symbol}] InfluxDB Bulk Insert 진행 중...")
             try:
-                await self.influx_client.bulk_insert(data_list)
-                self.logger.error(f"[{symbol}] InfluxDB 저장 성공: {fetch_count}건 적재 완료.")
+                success = await self.influx_client.bulk_insert(data_list)
+                if success:
+                    self.logger.info(f"[{symbol}] InfluxDB 저장 성공: {fetch_count}건 적재 완료.")
+                else:
+                    self.logger.error(f"[{symbol}] InfluxDB 저장 실패. (데이터 적재 실패)")
+                    self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러 발생 (인증 또는 파싱 에러)")
             except Exception as e:
-                self.logger.error(f"[{symbol}] DB 저장 중 에러 발생: {e}")
-                self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 에러: {e}")
+                self.logger.error(f"[{symbol}] DB 저장 중 시스템 에러 발생: {e}")
+                self.symbol_update_failed.emit(f"[{symbol}] DB 저장 중 시스템 에러: {e}")
 
         self.sig_progress_updated.emit(100)
 

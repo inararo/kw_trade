@@ -102,10 +102,10 @@ class AsyncInfluxDBClient:
             self.logger.error(f"InfluxDB 조회 실패: {str(e)}")
             return []
 
-    async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
-        """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
+    async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data") -> bool:
+        """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다. (성공 여부 반환)"""
         if not data_list:
-            return
+            return False
 
         points = []
         import dateutil.parser
@@ -139,12 +139,15 @@ class AsyncInfluxDBClient:
                 # Execute actual DB write
                 await self.write_api.write(bucket=self.bucket, record=points)
                 self.logger.info(f"Bulk Insert 완료: InfluxDB에 {len(points)}건 적재 요청 성공.")
+                return True
             except Exception as e:
                 # Safely extract HTTP status and reason if available in InfluxDBError
                 status = getattr(e, 'response', None)
                 status_code = status.status if status else 'Unknown'
                 reason = status.reason if status else str(e)
                 self.logger.error(f"🚨 Bulk Insert DB 전송 실패! [Status: {status_code}] Reason: {reason}")
+                return False
+        return False
 
     async def _flush_batch(self):
         if not self.batch_queue:

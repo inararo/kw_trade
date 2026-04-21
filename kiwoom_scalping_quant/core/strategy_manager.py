@@ -31,6 +31,8 @@ class StrategyManager:
         self._tasks: Dict[str, asyncio.Task] = {}
         self._swap_lock = asyncio.Lock()
 
+        self.action_locks: Dict[str, float] = {} # 쿨다운 관리용 Dictionary
+
     def load_model(self, model_path: str):
         """
         초기 통합 모델 생성 및 가중치 로드
@@ -62,19 +64,18 @@ class StrategyManager:
     async def start(self):
         """오케스트레이션 루프 시작"""
         if not self.shared_agent:
-            self.logger.warning("Agent가 로드되지 않았습니다. 매매 루프를 시작할 수 없습니다.")
+            self.logger.warning("Agent가 로드되지 않았습니다. 매매 루프 무효.")
             return
 
         self.is_running = True
-        self.logger.info(f"StrategyManager: 멀티 종목({len(self.symbols)}개) 오케스트레이션 시작.")
+        self.logger.info(f"StrategyManager: 멀티 종목({len(self.symbols)}개) 이벤트 드리븐 오케스트레이션 시작.")
 
-        # 각 종목별로 비동기 무한 루프 태스크(마이크로스레드) 생성
-        for sym in self.symbols:
-            task = asyncio.create_task(self._run_symbol_loop(sym))
-            self._tasks[sym] = task
+        # Event-driven callback 연결
+        if hasattr(self.data_collector, 'register_tick_callback'):
+            self.data_collector.register_tick_callback(self._on_tick_received)
+        else:
+            self.logger.error("DataCollector에 register_tick_callback이 없습니다!")
 
-        # 무한 루프로 유지 (동적 스왑으로 인해 task 목록이 변하므로 gather는 부적합할 수 있으나,
-        # 일단 메인 루프를 살려두기 위해 gather 방식을 수정)
         while self.is_running:
             await asyncio.sleep(1)
 
@@ -100,7 +101,7 @@ class StrategyManager:
                     self.logger.info(f"StrategyManager: [{sym}] 유니버스 퇴출 및 구독 해제.")
                     self.symbols.remove(sym)
 
-                    # Task 취소
+                    # Task 취소 (더 이상 사용하지 않지만 하위 호환성 유지)
                     if sym in self._tasks:
                         self._tasks[sym].cancel()
                         del self._tasks[sym]
@@ -108,6 +109,9 @@ class StrategyManager:
                     # Env 제거
                     if sym in self.envs:
                         del self.envs[sym]
+
+                    if sym in self.action_locks:
+                        del self.action_locks[sym]
 
                     # WebSocket 구독 해제 (DataCollector)
                     if hasattr(self.data_collector, 'unsubscribe_symbol'):
@@ -138,9 +142,6 @@ class StrategyManager:
                         if asyncio.iscoroutine(result):
                             await result
 
-                    # Task 시작
-                    self._tasks[sym] = asyncio.create_task(self._run_symbol_loop(sym))
-
                     # UI Log Emission
                     vm = getattr(self.config_manager, "_injected_live_vm", None)
                     if vm:
@@ -151,65 +152,84 @@ class StrategyManager:
             self.config_manager.set_symbols(updated_dicts)
 
 
-    async def _run_symbol_loop(self, symbol: str):
-        """특정 종목에 대한 독립적인 추론 및 주문 집행 루프"""
+    async def _on_tick_received(self, symbol: str):
+        """이벤트 드리븐 구조: 새로운 틱 데이터가 수신되었을 때만 Agent가 1회 추론 및 결단"""
+        if not self.is_running or symbol not in self.symbols:
+            return
+
         env = self.envs.get(symbol)
         if not env:
             return
 
-        # 루프 주기 제어용
-        poll_interval = 1.0 # 1초마다 상태 확인 및 액션 추론
+        # 1. 쿨다운 및 락 체크 (중복 주문 방지)
+        # 매수 주문 후 최소 5초간 대기하거나 미체결 주문이 남아있으면 판단 보류
+        import time
+        if time.time() - self.action_locks.get(symbol, 0) < 5.0:
+            return
 
-        while self.is_running:
-            try:
-                # Scheduler state protection
-                from core.scheduler import MarketState
-                scheduler = getattr(self.config_manager, "_injected_scheduler", None)
-                if scheduler and scheduler.current_state in [MarketState.LIQUIDATING, MarketState.STOPPED, MarketState.IDLE, MarketState.PREPARE]:
-                    # No new AI logic executed outside TRADING
-                    await asyncio.sleep(poll_interval)
-                    continue
+        if self.order_manager.has_unexecuted_orders(symbol):
+            return
 
-                # 1. State 조회 (DataCollector에서 해당 종목의 정규화된 롤링 버퍼 획득)
-                seq_len = self.shared_agent.seq_len
-                obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
+        try:
+            # Scheduler state protection
+            from core.scheduler import MarketState
+            scheduler = getattr(self.config_manager, "_injected_scheduler", None)
+            if scheduler and scheduler.current_state in [MarketState.LIQUIDATING, MarketState.STOPPED, MarketState.IDLE, MarketState.PREPARE]:
+                # No new AI logic executed outside TRADING
+                return
 
-                # 2. Action Mask 계산 (미체결 주문 여부, 잔고 등)
-                action_masks = env.action_masks()
+            # 2. State 조회 (DataCollector에서 해당 종목의 정규화된 롤링 버퍼 획득)
+            seq_len = self.shared_agent.seq_len
+            obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
 
-                # 3. Model Inference (추론)
-                # numpy 배열 차원 맞춤 (1, seq_len * feature_dim)
-                obs_batch = np.expand_dims(obs, axis=0)
-                action = self.shared_agent.predict(obs_batch, action_masks=action_masks)
+            # 3. Action Mask 계산
+            action_masks = env.action_masks()
 
-                # SB3가 1D 배열을 반환할 수 있으므로 언패킹
-                if isinstance(action, np.ndarray):
-                    action = int(action[0])
+            # 4. Model Inference (추론)
+            obs_batch = np.expand_dims(obs, axis=0)
+            action = self.shared_agent.predict(obs_batch, action_masks=action_masks)
 
-                # 4. Action 집행
-                if action in [1, 2]: # 1: Buy, 2: Sell
-                    str_action = "BUY" if action == 1 else "SELL"
+            if isinstance(action, np.ndarray):
+                action = int(action[0])
 
-                    # 수량 로직 (일단 임시로 10주 또는 보유량 전량)
-                    target_qty = 10 if action == 1 else self.order_manager.holdings.get(symbol, 0)
+            # 5. Action 집행 로직 (0: Hold, 1: Buy, 2: Sell)
+            if action in [1, 2]:
+                str_action = "BUY" if action == 1 else "SELL"
+                current_price = self.data_collector.get_latest_price(symbol)
 
-                    if target_qty > 0:
-                        self.logger.info(f"StrategyManager: [{symbol}] 에이전트 결단 - {str_action} {target_qty}주")
-                        # execute_smart_order는 Cancel & Replace 기능이 있으므로 asyncio.create_task로 분리 실행 (비동기 병렬)
-                        asyncio.create_task(
-                            self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
-                        )
+                if current_price <= 0:
+                    return
 
-                await asyncio.sleep(poll_interval)
+                # 동적 주문 수량 계산 로직
+                if action == 1:
+                    max_invest = float(self.config_manager.get('max_invest_per_symbol', 1000000))
+                    target_qty = int(max_invest // current_price)
 
-            except asyncio.CancelledError:
-                self.logger.info(f"StrategyManager: [{symbol}] 루프 중지됨.")
-                break
-            except Exception as e:
-                # 오류 격리(Isolation): 한 종목의 오류가 다른 종목에 영향을 미치지 않도록 함
-                self.logger.error(f"StrategyManager: [{symbol}] 매매 루프 중 에러 발생: {e}")
-                # 에러 시에도 루프 폭주를 막기 위해 대기
-                await asyncio.sleep(poll_interval)
+                    # 🚨 [치명적 예외 처리] 가격이 최대 한도보다 비싸서 0주가 되는 경우
+                    if target_qty <= 0:
+                        msg = f"[SYSTEM] {symbol} 매수 신호 발생했으나, 1주 가격({current_price:,.0f}원)이 설정된 최대 한도({max_invest:,.0f}원)를 초과하여 매수를 생략합니다."
+                        self.logger.warning(msg)
+
+                        vm = getattr(self.config_manager, "_injected_live_vm", None)
+                        if vm:
+                            vm.sig_log_appended.emit(msg)
+
+                        # 쿨다운 갱신하여 0주 폭격 로그 방지
+                        self.action_locks[symbol] = time.time()
+                        return
+                else:
+                    target_qty = self.order_manager.holdings.get(symbol, 0)
+
+                if target_qty > 0:
+                    self.logger.info(f"StrategyManager: [{symbol}] 에이전트 결단 - {str_action} {target_qty}주 (현재가: {current_price:,.0f})")
+                    self.action_locks[symbol] = time.time() # 락(쿨다운) 적용
+
+                    asyncio.create_task(
+                        self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
+                    )
+
+        except Exception as e:
+            self.logger.error(f"StrategyManager: [{symbol}] 이벤트 드리븐 매매 중 에러 발생: {e}")
 
     async def stop(self):
         """모든 종목의 매매 루프 정지"""

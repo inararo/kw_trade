@@ -34,6 +34,7 @@ class DataCollector:
 
         self.logger = logging.getLogger("DataCollector")
         self._ui_callback = None
+        self._tick_callbacks = []
         self._watchdog_task = None
 
         # Connection and state events
@@ -50,6 +51,11 @@ class DataCollector:
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
+
+    def register_tick_callback(self, callback):
+        """새로운 틱 처리 완료 후 호출될 콜백 등록 (e.g. StrategyManager 추론용)"""
+        if callback not in self._tick_callbacks:
+            self._tick_callbacks.append(callback)
 
     def subscribe_symbol(self, symbol: str):
         """새로운 종목을 구독하고 버퍼를 동적 할당합니다."""
@@ -272,6 +278,12 @@ class DataCollector:
             }
             if self._ui_callback:
                 self._ui_callback(ui_data)
+
+            for cb in self._tick_callbacks:
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(symbol))
+                else:
+                    cb(symbol)
 
         self._aggregate_bars(symbol, data)
 
