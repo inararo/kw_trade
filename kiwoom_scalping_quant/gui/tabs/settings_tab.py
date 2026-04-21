@@ -100,6 +100,10 @@ class SettingsTab(QWidget):
         self.spin_max_open_positions.setRange(1, 100)
         risk_form.addRow("최대 동시 보유 종목 수:", self.spin_max_open_positions)
 
+        self.input_protected_symbols = QLineEdit()
+        self.input_protected_symbols.setPlaceholderText("예: 005930, 000660")
+        risk_form.addRow("보호 종목 (Protected Symbols):", self.input_protected_symbols)
+
         risk_group.setLayout(risk_form)
         main_layout.addWidget(risk_group)
 
@@ -161,6 +165,9 @@ class SettingsTab(QWidget):
 
     def _get_current_data(self):
         """UI에 입력된 값을 통합된 딕셔너리로 반환"""
+        protected_symbols_raw = self.input_protected_symbols.text()
+        protected_symbols = [s.strip() for s in protected_symbols_raw.split(',')] if protected_symbols_raw.strip() else []
+
         return {
             "KIWOOM_APP_KEY": self.input_app_key.text(),
             "KIWOOM_APP_SECRET": self.input_app_secret.text(),
@@ -181,7 +188,8 @@ class SettingsTab(QWidget):
             "daily_stop_loss_limit": self.spin_daily_stop_loss_limit.value(),
             "max_open_positions": self.spin_max_open_positions.value(),
             "enable_cutoff": self.chk_enable_cutoff.isChecked(),
-            "cutoff_time": self.time_cutoff.time().toString("HH:mm")
+            "cutoff_time": self.time_cutoff.time().toString("HH:mm"),
+            "protected_symbols": protected_symbols
         }
 
     # --- UI Action Handlers ---
@@ -220,6 +228,9 @@ class SettingsTab(QWidget):
         self.spin_max_invest_per_symbol.setValue(float(config.get("max_invest_per_symbol", 5000000)))
         self.spin_daily_stop_loss_limit.setValue(float(config.get("daily_stop_loss_limit", -500000)))
         self.spin_max_open_positions.setValue(int(config.get("max_open_positions", 3)))
+
+        protected_symbols = config.get("protected_symbols", [])
+        self.input_protected_symbols.setText(", ".join(protected_symbols))
 
         self.chk_enable_cutoff.setChecked(config.get("enable_cutoff", False))
         cutoff_str = config.get("cutoff_time", "13:00")

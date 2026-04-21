@@ -128,13 +128,42 @@ class LiveDashboardViewModel(QObject):
     async def _execute_panic_sell(self):
         try:
             await self.order_manager.cancel_all_orders()
-            # 잔고 확인 및 전량 시장가 매도 로직 (Mock)
-            holdings = getattr(self.order_manager, 'holdings', 0)
-            if holdings > 0:
-                await self.order_manager.send_order("SELL", "005930", 0, holdings)
-                self.sig_log_appended.emit(f"[시스템] 잔고 {holdings}주 전량 시장가 매도 주문 전송 완료.")
-            else:
-                self.sig_log_appended.emit("[시스템] 보유 잔고가 없습니다. 주문 취소만 완료되었습니다.")
+
+            holdings_dict = getattr(self.order_manager, 'holdings', {})
+            bot_holdings = getattr(self.order_manager, 'bot_holdings', {})
+            protected_symbols = self.config_manager.get("protected_symbols", [])
+
+            if not isinstance(holdings_dict, dict):
+                # Fallback for old mock structure, though it should be dict now
+                self.sig_log_appended.emit("[시스템] 보유 잔고 데이터 형식이 올바르지 않습니다.")
+                return
+
+            sell_orders_placed = 0
+            for symbol, qty in holdings_dict.items():
+                if qty <= 0:
+                    continue
+
+                # 1. 보호 종목 필터
+                if symbol in protected_symbols:
+                    self.sig_log_appended.emit(f"[보호 종목] {symbol}은 청산 대상에서 제외됩니다.")
+                    continue
+
+                # 2. 봇(Agent) 매수 종목 필터 (수동 매수 종목 제외)
+                bot_qty = bot_holdings.get(symbol, 0)
+                if bot_qty <= 0:
+                    self.sig_log_appended.emit(f"[수동 매수 종목] {symbol}은 봇이 매수한 이력이 없어 청산하지 않습니다.")
+                    continue
+
+                # 봇이 보유한 수량 한도 내에서만 청산 (전체 수량 중 봇 수량)
+                target_qty = min(qty, bot_qty)
+
+                await self.order_manager.send_order("SELL", symbol, 0, target_qty)
+                self.sig_log_appended.emit(f"[시스템] 잔고 {target_qty}주(종목:{symbol}) 전량 시장가 매도 주문 전송 완료.")
+                sell_orders_placed += 1
+
+            if sell_orders_placed == 0:
+                self.sig_log_appended.emit("[시스템] 청산 가능한 봇 보유 잔고가 없습니다. 주문 취소만 완료되었습니다.")
+
         except Exception as e:
             self.sig_error_occurred.emit(f"Panic Sell 에러: {e}")
 

@@ -174,12 +174,28 @@ class MarketScheduler:
         elif new_state == MarketState.LIQUIDATING:
             self.logger.warning("Market Closing Soon: Liquidating positions (Panic Sell).")
             if self.order_manager:
-                # Trigger panic sell for all holdings
+                # 보호 종목 리스트 가져오기 (Scheduler에는 config_manager 의존성이 직접 주입되지 않으므로, None 체크 필요)
+                # 만약 config_manager가 없다면 직접 order_manager 등에서 가져와야 하지만,
+                # 현재는 order_manager.bot_holdings를 우선 활용하고 환경 변수 fallback을 씁니다.
+                import os
+
+                # We can inject or grab protected_symbols, but it's simpler to just check bot_holdings
+                bot_holdings = getattr(self.order_manager, 'bot_holdings', {})
+
+                # Trigger panic sell for bot holdings
                 for symbol, qty in self.order_manager.holdings.items():
-                    if qty > 0:
-                        self.logger.info(f"Liquidating {qty} shares of {symbol}")
-                        # Execute market sell (03)
-                        await self.order_manager.send_order("SELL", symbol, price=0, qty=qty, order_type="03")
+                    if qty <= 0:
+                        continue
+
+                    bot_qty = bot_holdings.get(symbol, 0)
+                    if bot_qty <= 0:
+                        self.logger.info(f"수동 매수 종목 청산 제외 (LIQUIDATING): {symbol}")
+                        continue
+
+                    target_qty = min(qty, bot_qty)
+                    self.logger.info(f"Liquidating {target_qty} shares of {symbol} (Bot managed)")
+                    # Execute market sell (03)
+                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty, order_type="03")
 
         elif new_state == MarketState.STOPPED:
             self.logger.info("Market Closed: Flushing data and disconnecting.")
@@ -194,10 +210,20 @@ class MarketScheduler:
             if self.order_manager:
                 # Cancel all and market sell immediately
                 await self.order_manager.cancel_all_orders()
+
+                bot_holdings = getattr(self.order_manager, 'bot_holdings', {})
                 for symbol, qty in self.order_manager.holdings.items():
-                    if qty > 0:
-                        self.logger.critical(f"Emergency Liquidating {qty} shares of {symbol}")
-                        await self.order_manager.send_order("SELL", symbol, price=0, qty=qty, order_type="03")
+                    if qty <= 0:
+                        continue
+
+                    bot_qty = bot_holdings.get(symbol, 0)
+                    if bot_qty <= 0:
+                        self.logger.info(f"수동 매수 종목 강제 청산 제외 (STOPPED_FOR_DAY): {symbol}")
+                        continue
+
+                    target_qty = min(qty, bot_qty)
+                    self.logger.critical(f"Emergency Liquidating {target_qty} shares of {symbol}")
+                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty, order_type="03")
 
         elif new_state == MarketState.POST_MARKET:
             self.logger.info("Post-Market: Starting end-of-day data collection for final top 20 universe.")

@@ -34,6 +34,9 @@ class OrderManager:
         self.holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
         self.avg_entry_prices = {sym: 0.0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
 
+        # 봇(Agent) 전용 매수/보유 수량 트래킹 (수동 매수 종목과 구분 위함)
+        self.bot_holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
+
         # Safety Guard Risk Manager
         self.risk_manager = None # Will be injected
 
@@ -225,6 +228,9 @@ class OrderManager:
                 self.holdings[symbol] = 0
                 self.avg_entry_prices[symbol] = 0.0
 
+            if symbol not in self.bot_holdings:
+                self.bot_holdings[symbol] = 0
+
             if order['type'] == 'BUY':
                 # 평균 단가 갱신 (단순 이동 평균 형태)
                 current_qty = self.holdings[symbol]
@@ -232,8 +238,15 @@ class OrderManager:
                 self.holdings[symbol] += exec_qty
                 self.avg_entry_prices[symbol] = total_value / self.holdings[symbol]
 
+                # 봇이 진입한 수량 추가
+                self.bot_holdings[symbol] += exec_qty
+
             elif order['type'] == 'SELL':
                 self.holdings[symbol] -= exec_qty
+
+                # 봇이 청산한 수량 감소 (0 미만으로 떨어지지 않게 방어)
+                self.bot_holdings[symbol] = max(0, self.bot_holdings[symbol] - exec_qty)
+
                 # 체결가 기반으로 daily_realized_pnl 업데이트
                 realized_profit = (exec_price - self.avg_entry_prices[symbol]) * exec_qty
                 self.daily_realized_pnl += realized_profit
