@@ -206,8 +206,10 @@ class DataCollector:
                 self._initial_symbols = latest_symbols
                 self.logger.info(f"동기화: 최신 유니버스 {len(latest_symbols)}개 종목으로 구독 리스트를 갱신했습니다.")
 
-        # 초기 종목 구독 (비동기 처리)
-        self.logger.info(f"초기 종목 {len(self._initial_symbols)}개에 대해 순차적 구독을 시작합니다.")
+        # [안정화/복구] 초기 종목 구독 및 버퍼 초기화 (필수)
+        # subscribe_symbol은 버퍼를 생성하고 관리자에 등록합니다.
+        # 실제 웹소켓 전송은 내부의 if self.ws_connection 조건에 의해 연결 시점에만 수행됩니다.
+        self.logger.info(f"초기 종목 {len(self._initial_symbols)}개에 대해 수집 준비 및 구독을 시도합니다.")
         for sym in self._initial_symbols:
             await self.subscribe_symbol(sym)
 
@@ -240,6 +242,11 @@ class DataCollector:
         async with websockets.connect(self.ws_url, extra_headers=headers) as websocket:
             self.ws_connection = websocket
             self.ws_connected_event.set()
+            
+            # [안정화] 연결 성공 시 Circuit Breaker 해제 및 타이머 초기화 (무한 재연결 방지)
+            self.circuit_breaker_active = False
+            self.last_receive_time = time.time()
+            
             self.logger.error("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
 
             # [Step 1] 웹소켓 로그인 인증 요청
@@ -478,8 +485,9 @@ class DataCollector:
                     self.last_receive_time = time.time()
                     continue
 
-                if idle_time > 5.0 and not self.circuit_breaker_active:
-                    self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동.")
+                # [수정] 5.0초는 너무 짧아 30.0초로 연장 (장외 시간/저변동성 대응)
+                if idle_time > 30.0 and not self.circuit_breaker_active:
+                    self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동 (재연결 시도).")
                     self.circuit_breaker_active = True
 
                     if self.ws_connection:

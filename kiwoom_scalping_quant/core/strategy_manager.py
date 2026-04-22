@@ -188,11 +188,14 @@ class StrategyManager:
 
             vm = getattr(self.config_manager, "_injected_live_vm", None)
             if vm:
-                # 1. 요약 정보 업데이트 (대시보드 테이블용)
-                if symbol not in vm.symbols_summary:
-                    vm.symbols_summary[symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
+                # [버그 수정] UI 테이블 매칭을 위해 종목 코드 정규화 (005930_AL -> 005930)
+                display_symbol = symbol.split('_')[0]
                 
-                vm.symbols_summary[symbol]["ai_signal"] = signal_text
+                # 1. 요약 정보 업데이트 (대시보드 테이블용)
+                if display_symbol not in vm.symbols_summary:
+                    vm.symbols_summary[display_symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
+                
+                vm.symbols_summary[display_symbol]["ai_signal"] = signal_text
                 vm.sig_symbols_summary_updated.emit(vm.symbols_summary)
 
                 # 2. 상세 시각화 업데이트 (선택된 종목이거나 선택이 없을 때)
