@@ -22,9 +22,11 @@ class AssetDataManagerTab(QWidget):
         asset_group = QGroupBox("종목 리스트 관리")
         asset_layout = QVBoxLayout()
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["선택", "종목코드", "종목명", "현재가", "등락률", "거래량"])
         self.table.horizontalHeader().setStretchLastSection(True)
+        # 선택 열 너비 조정
+        self.table.setColumnWidth(0, 40)
         
         # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
         self.table.setStyleSheet("""
@@ -38,12 +40,20 @@ class AssetDataManagerTab(QWidget):
         asset_layout.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
+        self.btn_select_all = QPushButton("전체 선택")
+        self.btn_select_all.clicked.connect(self._on_btn_select_all_clicked)
+        
+        self.btn_deselect_all = QPushButton("전체 해제")
+        self.btn_deselect_all.clicked.connect(self._on_btn_deselect_all_clicked)
+
         self.btn_add = QPushButton("종목 추가")
         self.btn_add.clicked.connect(self._on_btn_add_clicked)
 
         self.btn_remove = QPushButton("선택 삭제")
         self.btn_remove.clicked.connect(self._on_btn_remove_clicked)
 
+        btn_layout.addWidget(self.btn_select_all)
+        btn_layout.addWidget(self.btn_deselect_all)
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_remove)
         asset_layout.addLayout(btn_layout)
@@ -125,13 +135,37 @@ class AssetDataManagerTab(QWidget):
                 self.view_model.add_symbol(code, name)
 
     def _on_btn_remove_clicked(self):
-        current_row = self.table.currentRow()
-        if current_row >= 0:
-            code_item = self.table.item(current_row, 0)
-            if code_item:
-                self.view_model.remove_symbol(code_item.text())
+        checked_codes = []
+        for r in range(self.table.rowCount()):
+            chk_item = self.table.item(r, 0)
+            if chk_item and chk_item.checkState() == Qt.CheckState.Checked:
+                checked_codes.append(self.table.item(r, 1).text())
+
+        if not checked_codes:
+            # 체크박스 선택이 없으면 현재 선택된 행이라도 삭제 시도 (하위 호환)
+            current_row = self.table.currentRow()
+            if current_row >= 0:
+                checked_codes.append(self.table.item(current_row, 1).text())
+
+        if checked_codes:
+            reply = QMessageBox.question(self, "삭제 확인", f"선택한 {len(checked_codes)}개 종목을 정말 삭제하시겠습니까?", 
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if reply == QMessageBox.StandardButton.Yes:
+                self.view_model.remove_symbols(checked_codes)
         else:
-            QMessageBox.warning(self, "경고", "삭제할 종목을 표에서 선택해주세요.")
+            QMessageBox.warning(self, "경고", "삭제할 종목의 체크박스를 선택해주세요.")
+
+    def _on_btn_select_all_clicked(self):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Checked)
+
+    def _on_btn_deselect_all_clicked(self):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item:
+                item.setCheckState(Qt.CheckState.Unchecked)
 
     def _on_btn_auto_universe_clicked(self):
         top_n = self.spin_top_n.value()
@@ -140,16 +174,25 @@ class AssetDataManagerTab(QWidget):
             self.view_model.build_universe(top_n=top_n)
 
     def _on_btn_collect_clicked(self):
-        current_row = self.table.currentRow()
-        if current_row < 0:
-            QMessageBox.warning(self, "경고", "먼저 표에서 수집할 종목을 선택해주세요.")
+        checked_symbols = []
+        for r in range(self.table.rowCount()):
+            chk_item = self.table.item(r, 0)
+            if chk_item and chk_item.checkState() == Qt.CheckState.Checked:
+                checked_symbols.append(self.table.item(r, 1).text())
+
+        if not checked_symbols:
+            current_row = self.table.currentRow()
+            if current_row >= 0:
+                checked_symbols.append(self.table.item(current_row, 1).text())
+
+        if not checked_symbols:
+            QMessageBox.warning(self, "경고", "먼저 수집할 종목의 체크박스를 선택해주세요.")
             return
 
-        symbol = self.table.item(current_row, 0).text()
         self.btn_collect.setEnabled(False)
         self.btn_collect_all.setEnabled(False)
         start_date = self.date_start.date().toString("yyyyMMdd")
-        self.view_model.start_historical_fetch(symbol, start_date)
+        self.view_model.start_historical_fetch(checked_symbols, start_date)
 
     def _on_btn_collect_all_clicked(self):
         if self.table.rowCount() == 0:
@@ -167,8 +210,14 @@ class AssetDataManagerTab(QWidget):
         self.table.setRowCount(0)
         for row, sym in enumerate(symbols):
             self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(str(sym.get("code", ""))))
-            self.table.setItem(row, 1, QTableWidgetItem(str(sym.get("name", ""))))
+            
+            # 선택 체크박스
+            chk_item = QTableWidgetItem()
+            chk_item.setCheckState(Qt.CheckState.Unchecked)
+            self.table.setItem(row, 0, chk_item)
+
+            self.table.setItem(row, 1, QTableWidgetItem(str(sym.get("code", ""))))
+            self.table.setItem(row, 2, QTableWidgetItem(str(sym.get("name", ""))))
             
             # 현재가 표시 및 색상 적용
             price = sym.get("price", 0.0)
@@ -185,13 +234,13 @@ class AssetDataManagerTab(QWidget):
                 price_item.setForeground(Qt.GlobalColor.blue)
                 rt_item.setForeground(Qt.GlobalColor.blue)
                 
-            self.table.setItem(row, 2, price_item)
-            self.table.setItem(row, 3, rt_item)
+            self.table.setItem(row, 3, price_item)
+            self.table.setItem(row, 4, rt_item)
             
             # 거래량 표시 (천 단위 콤마)
             volume = sym.get("volume", 0)
             vol_item = QTableWidgetItem(f"{int(volume):,}")
-            self.table.setItem(row, 4, vol_item)
+            self.table.setItem(row, 5, vol_item)
 
     @pyqtSlot(str)
     def on_success(self, msg: str):

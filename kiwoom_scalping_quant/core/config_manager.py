@@ -109,14 +109,23 @@ class ConfigManager:
         return self.save_config()
 
     def remove_symbol(self, code: str) -> Result[bool, Exception]:
-        symbols = self.get_symbols()
-        filtered = [s for s in symbols if s.get('code') != code]
+        """단일 종목 삭제"""
+        return self.remove_symbols([code])
 
-        if len(symbols) == len(filtered):
-            return Failure(ValueError(f"Symbol {code} not found."))
+    def remove_symbols(self, codes: List[str]) -> Result[bool, Exception]:
+        """다중 종목 일괄 삭제"""
+        try:
+            symbols = self.get_symbols()
+            code_set = set(codes)
+            filtered = [s for s in symbols if s.get('code') not in code_set]
 
-        self._config_cache["symbols"] = filtered
-        return self.save_config()
+            if len(symbols) == len(filtered):
+                return Failure(ValueError(f"지정한 종목들을 찾을 수 없습니다: {codes}"))
+
+            self._config_cache["symbols"] = filtered
+            return self.save_config()
+        except Exception as e:
+            return Failure(e)
 
     def set_symbols(self, new_symbols: List[Dict[str, str]]) -> Result[bool, Exception]:
         """새로운 종목 리스트로 전체를 덮어씁니다 (Bulk update)."""

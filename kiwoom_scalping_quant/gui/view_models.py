@@ -326,16 +326,22 @@ class AssetDataViewModel(QObject):
             self.symbol_update_failed.emit(str(result.failure()))
 
     def remove_symbol(self, code: str):
-        result = self.config_manager.remove_symbol(code)
+        self.remove_symbols([code])
+
+    def remove_symbols(self, codes: List[str]):
+        """다중 종목 삭제 처리"""
+        result = self.config_manager.remove_symbols(codes)
         if isinstance(result, Success):
-            self.symbol_update_success.emit(f"종목 삭제 완료: {code}")
+            self.symbol_update_success.emit(f"종목 삭제 완료: {len(codes)}개 항목")
             self.load_symbols()
         else:
             self.symbol_update_failed.emit(str(result.failure()))
 
-    def start_historical_fetch(self, symbol: str, start_date: str):
-        """특정 종목에 대한 수집"""
-        asyncio.create_task(self._fetch_and_store([symbol], start_date))
+    def start_historical_fetch(self, symbols: Any, start_date: str):
+        """특정 종목(들)에 대한 수집 시작"""
+        if isinstance(symbols, str):
+            symbols = [symbols]
+        asyncio.create_task(self._fetch_and_store(symbols, start_date))
 
     def start_bulk_historical_fetch(self, start_date: str, is_auto: bool = False):
         """UI에서 호출하는 래퍼 (Non-blocking)"""
