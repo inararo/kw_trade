@@ -238,11 +238,15 @@ class QuantSystem:
         print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
         if hasattr(self, 'influx_client'):
             try:
-                await asyncio.wait_for(self.influx_client.close(), timeout=2.0)
+                await asyncio.wait_for(self.influx_client.close(), timeout=3.0)
             except:
                 pass
 
-        # 7. 종료 이벤트 세트 (main 함수의 loop가 이를 인지하고 탈출하도록 함)
+        # [안정화] 7. Windows IOCP 잔여 처리 유예
+        # 소켓이 닫힌 후 프로액터가 완료 이벤트를 인지할 수 있는 최소 1틱의 시간을 제공
+        await asyncio.sleep(0.2)
+
+        # 8. 종료 이벤트 세트 (main 함수의 loop가 이를 인지하고 탈출하도록 함)
         print("시스템: 모든 정리가 완료되었습니다.")
         self.shutdown_event.set()
 
@@ -258,43 +262,42 @@ def main():
     system = QuantSystem()
 
     try:
-        # 1. 메인 루프 실행
+        # 1. Main Loop Execution
         loop.run_until_complete(system.start())
     except KeyboardInterrupt:
-        print("\n시스템: 사용자에 의해 강제 종료되었습니다 (KeyboardInterrupt).")
+        print("\nSystem: Force stopped by user (KeyboardInterrupt).")
         try:
             loop.run_until_complete(system.stop())
         except Exception as stop_e:
-            print(f"시스템: 강제 종료 중 에러 발생: {stop_e}")
+            print(f"System: Error during stop: {stop_e}")
     except RuntimeError as e:
         if "Event loop stopped before Future completed" in str(e):
-            print("시스템: 비동기 루프가 정상적으로 종료되었습니다.")
+            print("System: Async loop finished normally.")
         else:
             raise e
     finally:
-        # 2. 종료 후 잔여 태스크 정리 및 I/O 캐시 플러시를 위한 짧은 유예
-        print("시스템: 프로세스 최종 종료 준비 중...")
+        # 2. Final cleanup and grace period
+        print("System: Performing final cleanup sequence...")
         try:
-            if loop.is_running():
-                # 현재 정리를 수행 중인 태스크는 제외하고 나머지 취소
-                current_task = asyncio.current_task(loop)
-                pending = [t for t in asyncio.all_tasks(loop) if t is not current_task]
-                
-                if pending:
-                    for task in pending:
-                        task.cancel()
-                    
-                    # 취소된 태스크들이 정리될 기회를 주되, 최대 0.5초만 대기
-                    loop.run_until_complete(asyncio.wait(pending, timeout=0.5))
+            # Cancel all remaining tasks before closing loop
+            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            if tasks:
+                for task in tasks:
+                    task.cancel()
+                # Give tasks a chance to finalize (0.5s)
+                loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
             
-            # 루프 정지 및 닫기
+            # Final delay for Proactor (IOCP) handles
+            loop.run_until_complete(asyncio.sleep(0.1))
+            
             if not loop.is_closed():
                 loop.stop()
                 loop.close()
+                print("System: Async loop closed safely.")
         except Exception as cleanup_e:
-            print(f"시스템: 정리 작업 중 예외 발생 (무시됨): {cleanup_e}")
+            print(f"System: Cleanup error (ignored): {cleanup_e}")
         
-        print("시스템: 프로그램이 완전히 종료되었습니다.")
+        print("System: Program fully terminated.")
         sys.exit(0)
 
 if __name__ == "__main__":

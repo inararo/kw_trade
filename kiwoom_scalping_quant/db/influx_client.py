@@ -231,12 +231,29 @@ class AsyncInfluxDBClient:
             return False
 
     async def close(self):
+        """Safely closes the client and flushes remaining data."""
         self.is_running = False
+        
+        # 1. Stop periodic flush task
         if self._flush_task and not self._flush_task.done():
             self._flush_task.cancel()
             try:
-                await self._flush_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._flush_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-        await self._flush_batch()
-        await self.client.close()
+        
+        # 2. Force flush remaining data
+        if self.batch_queue:
+            try:
+                self.logger.info(f"InfluxDB: Attempting to flush remaining {len(self.batch_queue)} points before closing...")
+                await asyncio.wait_for(self._flush_batch(), timeout=2.0)
+            except Exception as e:
+                self.logger.error(f"InfluxDB: Final flush failed: {e}")
+
+        # 3. Close HTTP session and client
+        try:
+            # [Windows Stability] Apply timeout during session close
+            await asyncio.wait_for(self.client.close(), timeout=2.0)
+            self.logger.info("InfluxDB: Client closed successfully.")
+        except Exception as e:
+            self.logger.warning(f"InfluxDB: Exception during client close (ignored): {e}")

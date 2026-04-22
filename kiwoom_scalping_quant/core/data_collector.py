@@ -50,6 +50,9 @@ class DataCollector:
 
         # 마지막 유효 현재가 저장용 (호가 패킷 등에 현재가가 없을 때 사용)
         self.last_prices = {}
+        
+        # [안정화] 관리되지 않는 비동기 태스크 추적용 (종료 시 정리)
+        self._pending_tasks = set()
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
@@ -266,19 +269,19 @@ class DataCollector:
                     login_success = True
                 else:
                     self.logger.error(
-                        f"LOGIN 인증 실패: {login_res.get('return_msg')} "
+                        f"LOGIN Auth Failed: {login_res.get('return_msg')} "
                         f"(Code: {login_res.get('return_code')}) "
-                        f"\u2192 토큰 갱신 요청 후 재연결 대기"
+                        f"-> Requesting token refresh and waiting for reconnect"
                     )
-                    # [토큰 인증 실패] 지정된 config.token_manager를 통해 토큰 갱신 시도
+                    # [Token Auth Failure] Refresh token via config.token_manager
                     token_mgr = getattr(self.config, '_token_manager', None) or getattr(self.config, 'token_manager', None)
                     if token_mgr and hasattr(token_mgr, 'refresh_token'):
-                        self.logger.error("LOGIN 실패: 토큰 갱신을 시도합니다...")
+                        self.logger.error("LOGIN Failed: Attempting to refresh token...")
                         await token_mgr.refresh_token()
-                        await asyncio.sleep(3.0)  # 서버 처리 대기
+                        await asyncio.sleep(3.0)  # Wait for server processing
                     else:
-                        await asyncio.sleep(10.0)  # token_manager 없으면 10초 대기
-                    return  # 웹소켓 컨텍스트 종료 → 자동 재연결 루프로
+                        await asyncio.sleep(10.0)  # Wait 10s if no manager
+                    return  # Terminate ws context -> Auto reconnection loop
             except Exception as e:
                 self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
                 return
@@ -418,7 +421,9 @@ class DataCollector:
                     # 5. 이벤트 콜백 실행 (StrategyManager 등 알림)
                     for callback in self.on_state_updated_callbacks:
                         if asyncio.iscoroutinefunction(callback):
-                            asyncio.create_task(callback(target_symbol, normalized_state))
+                            task = asyncio.create_task(callback(target_symbol, normalized_state))
+                            self._pending_tasks.add(task)
+                            task.add_done_callback(self._pending_tasks.discard)
                         else:
                             callback(target_symbol, normalized_state)
                 
@@ -514,20 +519,35 @@ class DataCollector:
             self.logger.info("Watchdog 태스크가 취소되어 안전하게 종료됩니다.")
 
     async def stop(self):
-        """데이터 수집기를 안전하게 종료합니다."""
+        """Safely stops the data collector."""
         self.is_running = False
+        
+        # 1. Stop Watchdog
         if self._watchdog_task and not self._watchdog_task.done():
             self._watchdog_task.cancel()
             try:
-                await self._watchdog_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(self._watchdog_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
 
+        # 2. Cancel all pending callback tasks
+        if self._pending_tasks:
+            self.logger.info(f"DataCollector: Cancelling {len(self._pending_tasks)} pending tasks...")
+            for task in list(self._pending_tasks):
+                task.cancel()
+            
+            try:
+                await asyncio.wait_for(asyncio.gather(*self._pending_tasks, return_exceptions=True), timeout=2.0)
+            except asyncio.TimeoutError:
+                self.logger.warning("DataCollector: Task cancellation timeout")
+            self._pending_tasks.clear()
+
+        # 3. Close Websocket
         if self.ws_connection:
             try:
-                await self.ws_connection.close()
+                # [Windows Stability] Wait briefly after setting stop flag to let recv loop exit naturally
+                await asyncio.wait_for(self.ws_connection.close(), timeout=2.0)
             except Exception as e:
-                self.logger.warning(f"웹소켓 강제 종료 중 예외 발생 (무시됨): {e}")
+                self.logger.warning(f"WS force close exception (ignored): {e}")
 
-        # 만약 파케이(Parquet) 파일로 Flush 하는 로직이 필요하다면 여기서 수행
-        self.logger.info("DataCollector: 모든 연결 종료. 메모리 버퍼 안전 저장 (Flush) 완료.")
+        self.logger.info("DataCollector: All connections closed and resources cleaned up.")
