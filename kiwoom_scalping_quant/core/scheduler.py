@@ -176,6 +176,12 @@ class MarketScheduler:
 
         elif new_state == MarketState.LIQUIDATING:
             self.logger.warning("Market Closing Soon: Liquidating positions (Panic Sell).")
+            if self.telegram_bot:
+                asyncio.create_task(self.telegram_bot.notify_critical(
+                    "장 마감 임박 (Panic Sell)", 
+                    "정규장 종료가 임박하여 AI 관리 종목의 전량 청산을 시작합니다."
+                ))
+
             if self.order_manager:
                 # 보호 종목 리스트 가져오기 (Scheduler에는 config_manager 의존성이 직접 주입되지 않으므로, None 체크 필요)
                 # 만약 config_manager가 없다면 직접 order_manager 등에서 가져와야 하지만,
@@ -204,12 +210,18 @@ class MarketScheduler:
             self.logger.info("Market Closed: Flushing data and disconnecting.")
             if self.data_collector:
                 await self.data_collector.stop()
+            
             if self.telegram_bot:
-                # Send daily summary
-                pass
+                await self.telegram_bot.notify_app_stop()
 
         elif new_state == MarketState.STOPPED_FOR_DAY:
             self.logger.critical("🚨 Market Stopped For Day: Emergency Liquidation Triggered.")
+            if self.telegram_bot:
+                asyncio.create_task(self.telegram_bot.notify_critical(
+                    "당일 거래 강제 중단",
+                    "심각한 리스크가 감지되어 당일 모든 거래를 중단하고 포지션을 긴급 청산합니다."
+                ))
+            
             if self.order_manager:
                 # Cancel all and market sell immediately
                 await self.order_manager.cancel_all_orders()

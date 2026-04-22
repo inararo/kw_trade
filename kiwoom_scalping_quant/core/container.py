@@ -10,6 +10,7 @@ from core.strategy_manager import StrategyManager
 from core.token_manager import TokenManager
 from core.scheduler import MarketScheduler
 from core.risk_manager import RiskManager
+from core.telegram_notifier import TelegramNotifier
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 
@@ -43,6 +44,12 @@ class Container(containers.DeclarativeContainer):
         config=config_manager
     )
 
+    # 텔레그램 알림 서비스 (싱글톤)
+    telegram_notifier = providers.Singleton(
+        TelegramNotifier,
+        config_manager=config_manager
+    )
+
     # Core 비즈니스 로직 (싱글톤)
     data_collector = providers.Singleton(
         DataCollector,
@@ -52,7 +59,8 @@ class Container(containers.DeclarativeContainer):
     order_manager = providers.Singleton(
         OrderManager,
         config=config_manager,
-        auth_manager=None # 추후 AuthManager provider 주입 가능
+        auth_manager=None, # 추후 AuthManager provider 주입 가능
+        telegram_notifier=telegram_notifier
     )
 
     risk_manager = providers.Singleton(
@@ -79,20 +87,7 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         universe_manager=universe_manager,
-        telegram_bot=None
-    )
-
-    token_manager = providers.Singleton(
-        TokenManager,
-        config_manager=config_manager
-    )
-
-    market_scheduler = providers.Singleton(
-        MarketScheduler,
-        data_collector=data_collector,
-        order_manager=order_manager,
-        universe_manager=universe_manager,
-        telegram_bot=None
+        telegram_bot=telegram_notifier
     )
 
     # Presentation Layer - ViewModels (팩토리 혹은 싱글톤으로 관리)

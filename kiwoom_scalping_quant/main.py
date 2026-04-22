@@ -101,27 +101,23 @@ class QuantSystem:
 
     def _on_stop_loss_hit(self, loss_amount: float):
         # Notify UI and trigger Scheduler panic
-        msg = f"🚨 [CRITICAL] 당일 최대 손실 도달 ({loss_amount:,.0f}원): 거래 강제 종료"
-        self.live_vm.sig_log_appended.emit(msg)
+        msg_title = "당일 최대 손실 도달"
+        msg_content = f"현재 손실액 ₩{loss_amount:,.0f}이 설정된 한도를 초과했습니다. 거래를 강제 종료하고 모든 포지션을 청산합니다."
+        
+        self.live_vm.sig_log_appended.emit(f"🚨 [CRITICAL] {msg_title}: {msg_content}")
         self.market_scheduler.trigger_daily_stop_loss()
 
-        # Send telegram bot message
-        import requests
-        tg_token = self.container.config_manager().get("TELEGRAM_BOT_TOKEN")
-        chat_id = self.container.config_manager().get("telegram_chat_id")
-
-        if tg_token and chat_id:
-            try:
-                url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-                payload = {"chat_id": chat_id, "text": msg}
-                # Fire and forget request
-                requests.post(url, json=payload, timeout=2.0)
-            except Exception as e:
-                print(f"시스템: 텔레그램 발송 실패: {e}")
+        # Send telegram bot message via centralized notifier
+        notifier = self.container.telegram_notifier()
+        asyncio.create_task(notifier.notify_critical(msg_title, msg_content))
 
     async def start(self):
         self.main_window.show()
         print("시스템: 부팅 시퀀스를 시작합니다.")
+        
+        # 텔레그램 부팅 알림 전송
+        notifier = self.container.telegram_notifier()
+        await notifier.notify_app_start()
 
         # Step 1: Token 발급 완료 대기
         self.token_task = asyncio.create_task(self.token_manager.start())
@@ -151,7 +147,11 @@ class QuantSystem:
         try:
             # 유니버스 로드가 완료될 때까지 잠시 대기
             await asyncio.wait_for(self.universe_ready_event.wait(), timeout=10.0)
-            print(f"시스템: [Step 2] 유니버스 준비 완료 (총 {len(self.asset_vm.config_manager.get_symbols())}개 종목).")
+            universe_len = len(self.asset_vm.config_manager.get_symbols())
+            print(f"시스템: [Step 2] 유니버스 준비 완료 (총 {universe_len}개 종목).")
+            
+            # 텔레그램 준비 완료 알림 전송
+            await notifier.notify_app_ready(universe_len)
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 유니버스 로드 타임아웃! 기본 설정으로 진행합니다.")
 

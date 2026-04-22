@@ -17,12 +17,11 @@ kiwoom:
     real: wss://api.kiwoom.com:10000/api/dostk/websocket
     virtual: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
 log_level: DEBUG
-max_buffer_size: 10000
-max_invest_per_symbol: 100000.0
-max_open_positions: 5
+max_buffer_size: 100000
+max_invest_per_symbol: 300000.0
+max_open_positions: 4
 max_position_pct: 50.0
 protected_symbols:
-- 011930
 - '323410'
 seq_len: 10
 signal_only_mode: true

@@ -19,9 +19,10 @@ class OrderState:
     FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
-    def __init__(self, config: Dict[str, Any], auth_manager=None):
+    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None):
         self.config = config
         self.auth_manager = auth_manager
+        self.notifier = telegram_notifier
         self.logger = logging.getLogger("OrderManager")
         self.signals = OrderSignals()
 
@@ -267,6 +268,28 @@ class OrderManager:
                 order['status'] = OrderState.PARTIAL
                 self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
                 self.handle_partial_fill(order)
+
+            # 텔레그램 알림 발송 (체결 시)
+            if self.notifier:
+                # 종목명 찾기 (universe 설정에서)
+                symbol_name = symbol
+                universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
+                for s in universe:
+                    if s.get('code') == symbol:
+                        symbol_name = s.get('name', symbol)
+                        break
+                
+                # 실현 손익은 SELL일 때만 의미가 있음 (위 로직에서 realized_profit 계산됨)
+                pnl = (exec_price - self.avg_entry_prices[symbol]) * exec_qty if order['type'] == 'SELL' else 0
+                
+                asyncio.create_task(self.notifier.notify_trade(
+                    action=order['type'],
+                    symbol=symbol,
+                    name=symbol_name,
+                    price=exec_price,
+                    qty=exec_qty,
+                    pnl=pnl
+                ))
 
         elif msg_type == '취소확인':
             order['status'] = OrderState.CANCELLED
