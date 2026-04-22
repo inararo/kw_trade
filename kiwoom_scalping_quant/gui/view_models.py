@@ -772,54 +772,48 @@ class BacktestViewModel(QObject):
     def set_model_path(self, path: str):
         self.model_path = path
 
-    def start_backtest(self, start_date: str, end_date: str):
+    def start_backtest(self, start_date: str, end_date: str, symbol: str):
         if not self.model_path:
             self.sig_bt_error.emit("학습된 모델 파일(.zip)을 먼저 선택해주세요.")
             return
 
-        asyncio.create_task(self._run_backtest_task(start_date, end_date))
+        asyncio.create_task(self._run_backtest_task(start_date, end_date, symbol))
 
-    async def _run_backtest_task(self, start_date: str, end_date: str):
+    async def _run_backtest_task(self, start_date: str, end_date: str, symbol: str):
         try:
-            # 1. 대상 종목 및 데이터 로드 (Mock)
-            symbols = self.config_manager.get_symbols()
-            target_sym = symbols[0].get("code", "005930") if symbols else "005930"
+            # 1. 대상 종목 및 데이터 로드 (실제 DB 연동)
+            data_list = await self.influx_client.fetch_data_by_range(symbol, start_date, end_date)
+            
+            if not data_list:
+                self.sig_bt_error.emit(f"[{symbol}] 해당 기간({start_date}~{end_date})의 데이터가 DB에 없습니다. 먼저 데이터를 수집해주세요.")
+                return
 
-            # TODO: 실제로는 InfluxDB에서 start_date ~ end_date 데이터를 가져와야 함.
-            # 여기서는 테스트용 더미 DataFrame 생성
             import pandas as pd
-            import numpy as np
-
-            total_steps = 1000
-            # 랜덤 워크로 가격 생성
-            prices = [1000.0]
-            for _ in range(total_steps - 1):
-                prices.append(prices[-1] * (1 + np.random.normal(0, 0.005)))
-
-            df = pd.DataFrame({"step": range(total_steps), "price": prices})
+            df = pd.DataFrame(data_list)
+            df['step'] = range(len(df))
 
             # 2. Env 생성 및 Agent 주입
             from env.trading_env import ScalpingTradingEnv
             from models.agent import TradingAgentWrapper
 
-            env = ScalpingTradingEnv(self.data_collector, self.order_manager, {"symbol": target_sym, "initial_balance": 10000000})
-
-            # Backtest 환경에 맞춰 가격 함수 몽키 패치 (차트 시각화를 위해)
-            def mock_get_price():
-                step = env.current_step
-                if step < len(df):
-                    return df.iloc[step]['price']
-                return df.iloc[-1]['price']
-            env._get_current_price = mock_get_price
+            # historical_data를 직접 주입하고 모드를 backtest로 설정하여 전체 구간 테스트
+            env_config = {
+                "symbol": symbol,
+                "initial_balance": 10000000,
+                "historical_data": data_list,
+                "mode": "backtest"
+            }
+            env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
             agent_config = {"seq_len": 10}
             agent = TradingAgentWrapper(env, agent_config)
 
-            # 모델 로드 (에러 처리는 생략하고 더미로 진행하거나 실제 로드 수행)
+            # 모델 로드
             try:
                 agent.load_weights(self.model_path)
             except FileNotFoundError:
-                print(f"Warning: Could not load {self.model_path}. Using untrained weights.")
+                self.sig_bt_error.emit(f"모델 파일을 찾을 수 없습니다: {self.model_path}")
+                return
 
             # 3. 백테스트 실행
             from core.backtester import KPICalculator
@@ -832,8 +826,6 @@ class BacktestViewModel(QObject):
             # 4. 결과 처리 및 UI 전송
             kpi = KPICalculator.calculate(trades_df, 10000000)
 
-            # 원본 가격 차트 데이터와 매매 기록을 합쳐서 전송할 수 있음
-            # 여기서는 trades_df에 모든 스텝이 기록되도록 엔진을 수정했음
             self.sig_bt_chart_data.emit(trades_df)
             self.sig_bt_finished.emit(kpi)
 

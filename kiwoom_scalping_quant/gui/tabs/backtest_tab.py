@@ -19,6 +19,13 @@ class BacktestStudioTab(QWidget):
         ctrl_group = QGroupBox("백테스트 설정")
         ctrl_layout = QHBoxLayout()
 
+        ctrl_layout.addWidget(QLabel("종목 선택:"))
+        self.combo_symbol = pg.ComboBox() # pyqtgraph's ComboBox is fine, or QComboBox
+        from PyQt6.QtWidgets import QComboBox
+        self.combo_symbol = QComboBox()
+        self._populate_symbols()
+        ctrl_layout.addWidget(self.combo_symbol)
+
         ctrl_layout.addWidget(QLabel("시작일:"))
         self.date_start = QDateEdit(QDate.currentDate().addMonths(-1))
         self.date_start.setCalendarPopup(True)
@@ -109,13 +116,32 @@ class BacktestStudioTab(QWidget):
     def _on_start_backtest(self):
         start_dt = self.date_start.date().toString("yyyyMMdd")
         end_dt = self.date_end.date().toString("yyyyMMdd")
+        symbol = self.combo_symbol.currentData() # code
+        
+        if not symbol:
+            QMessageBox.warning(self, "경고", "테스트할 종목을 선택해주세요.")
+            return
+
         self.btn_start.setEnabled(False)
         self.price_curve.setData([], [])
         self.buy_scatter.setData([])
         self.sell_scatter.setData([])
         self.lbl_progress.setText("진행률: 시작...")
 
-        self.view_model.start_backtest(start_dt, end_dt)
+        self.view_model.start_backtest(start_dt, end_dt, symbol)
+
+    @pyqtSlot()
+    @pyqtSlot(list)
+    def _populate_symbols(self, symbols=None):
+        """종목 선택 콤보박스 아이템 갱신"""
+        self.combo_symbol.clear()
+        if symbols is None:
+            symbols = self.view_model.config_manager.get_symbols()
+            
+        for s in symbols:
+            name = s.get("name", "Unknown")
+            code = s.get("code", "")
+            self.combo_symbol.addItem(f"{name} ({code})", code)
 
     @pyqtSlot(int, int, float)
     def on_bt_progress(self, step: int, total: int, pnl: float):

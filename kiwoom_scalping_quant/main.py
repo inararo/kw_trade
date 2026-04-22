@@ -167,18 +167,27 @@ class QuantSystem:
         except asyncio.TimeoutError:
             print("시스템: [Step 3] 웹소켓 데이터 수신 타임아웃! (장이 닫혔거나 구독 실패일 수 있습니다)")
 
-        # Step 4: saved_models/ 에서 최신 학습 모델을 자동 탐색하여 로드
+        # Step 4: saved_models/ 에서 베스트 모델 혹은 최신 학습 모델을 자동 탐색하여 로드
         print("시스템: [Step 4] Agent 루프(StrategyManager) 및 Watchdog 가동 시작.")
         import glob as _glob
         _save_dir = "./saved_models/"
-        _model_files = sorted(_glob.glob(f"{_save_dir}model_*.zip"))
-        if _model_files:
-            _latest = _model_files[-1].replace(".zip", "")
-            print(f"시스템: [Step 4] 학습된 모델 발견 → 로드: {_model_files[-1]}")
-            self.strategy_manager.load_model(_latest)
+        
+        # 1순위: best_model.zip 확인
+        _best_model_path = os.path.join(_save_dir, "best_model.zip")
+        if os.path.exists(_best_model_path):
+            _load_path = _best_model_path.replace(".zip", "")
+            print(f"시스템: [Step 4] 최고 성능(Best) 모델 발견 → 로드: {_best_model_path}")
+            self.strategy_manager.load_model(_load_path)
         else:
-            print("시스템: [Step 4] 저장된 모델이 없습니다. 랜덤 초기 가중치로 실행합니다. (AI 학습 스튜디오에서 학습을 먼저 실행하세요)")
-            self.strategy_manager.load_model("")
+            # 2순위: 최신 날짜 모델 탐색
+            _model_files = sorted(_glob.glob(f"{_save_dir}model_*.zip"))
+            if _model_files:
+                _latest = _model_files[-1].replace(".zip", "")
+                print(f"시스템: [Step 4] 학습된 모델 발견 → 로드: {_model_files[-1]}")
+                self.strategy_manager.load_model(_latest)
+            else:
+                print("시스템: [Step 4] 저장된 모델이 없습니다. 랜덤 초기 가중치로 실행합니다. (AI 학습 스튜디오에서 학습을 먼저 실행하세요)")
+                self.strategy_manager.load_model("")
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 

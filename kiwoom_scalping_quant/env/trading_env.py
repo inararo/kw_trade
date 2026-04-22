@@ -53,14 +53,19 @@ class ScalpingTradingEnv(gym.Env):
         self.balance = self.config.get('initial_balance', 10000000)
         self.holdings = 0
         
-        # [기능 개선] 랜덤 시작점 로직 도입
+        # [기능 개선] 랜덤 시작점 로직 도입 (백테스트 모드일 경우 0부터 시작)
         if self.historical_data is not None:
             data_len = len(self.historical_data)
-            # 종료 지점이 최소한 max_steps를 확보할 수 있도록 최대 시작 가능한 인덱스 계산
-            max_start_idx = max(0, data_len - self.max_steps - 1)
-            self.current_step = random.randint(0, max_start_idx)
-            self.end_step = min(data_len - 1, self.current_step + self.max_steps)
-            self.logger.info(f"에피소드 시작: 랜덤 시작점 {self.current_step} / 종료점 {self.end_step} (총 {self.max_steps} 스텝 예정)")
+            if self.config.get("mode") == "backtest":
+                self.current_step = 0
+                self.end_step = data_len - 1
+            else:
+                # 학습 시에는 다양성을 위해 랜덤 시작점 사용
+                max_start_idx = max(0, data_len - self.max_steps - 1)
+                self.current_step = random.randint(0, max_start_idx)
+                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            
+            self.logger.info(f"에피소드 시작: 모드={self.config.get('mode', 'train')} / 시작점 {self.current_step} / 종료점 {self.end_step}")
         else:
             self.current_step = 0
             self.end_step = 0

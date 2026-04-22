@@ -22,7 +22,7 @@ class AITrainingStudioTab(QWidget):
 
         self.spin_steps = QSpinBox()
         self.spin_steps.setRange(1000, 1000000)
-        self.spin_steps.setValue(10000)
+        self.spin_steps.setValue(100000)
         form_layout.addRow("총 스텝 수:", self.spin_steps)
 
         self.spin_lr = QDoubleSpinBox()
@@ -33,7 +33,7 @@ class AITrainingStudioTab(QWidget):
 
         self.spin_max_records = QSpinBox()
         self.spin_max_records.setRange(1000, 1000000)
-        self.spin_max_records.setValue(10000)
+        self.spin_max_records.setValue(100000)
         self.spin_max_records.setSingleStep(1000)
         form_layout.addRow("데이터 로드 건수 (종목당):", self.spin_max_records)
 

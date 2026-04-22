@@ -149,6 +149,53 @@ class AsyncInfluxDBClient:
             self.logger.error(f"   [에러] InfluxDB [{symbol}] 조회 실패: {type(e).__name__} - {str(e)}")
             return []
 
+    async def fetch_data_by_range(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        특정 기간(시작일~종료일)의 데이터를 InfluxDB에서 조회합니다.
+        start_date, end_date: "YYYYMMDD" 형식 문자열
+        """
+        clean_symbol = symbol.split('_')[0].strip()
+        
+        try:
+            # 날짜 포맷팅 (YYYYMMDD -> RFC3339)
+            import datetime
+            s_dt = datetime.datetime.strptime(start_date, "%Y%m%d")
+            e_dt = datetime.datetime.strptime(end_date, "%Y%m%d").replace(hour=23, minute=59, second=59)
+            
+            start_iso = s_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            stop_iso = e_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            self.logger.info(f"InfluxDB: [{symbol}] 기간 조회 ({start_iso} ~ {stop_iso})")
+
+            query_api = self.client.query_api()
+            query = f'''
+                from(bucket: "{self.bucket}")
+                |> range(start: {start_iso}, stop: {stop_iso})
+                |> filter(fn: (r) => r["_measurement"] == "historical_data" or r["_measurement"] == "tick_data")
+                |> filter(fn: (r) => r["symbol"] == "{symbol}" or r["symbol"] == "{clean_symbol}")
+                |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+                |> sort(columns: ["_time"], desc: false)
+            '''
+
+            tables = await query_api.query(query, org=self.org)
+            results = []
+            for table in tables:
+                for record in table.records:
+                    results.append({
+                        "timestamp": record.get_time(),
+                        "open": float(record.values.get("open", 0.0)),
+                        "high": float(record.values.get("high", 0.0)),
+                        "low": float(record.values.get("low", 0.0)),
+                        "price": float(record.values.get("price", 0.0)),
+                        "volume": float(record.values.get("volume", 0.0))
+                    })
+            
+            return results
+
+        except Exception as e:
+            self.logger.error(f"InfluxDB [{symbol}] 범위 조회 실패: {e}")
+            return []
+
     async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
         """과거 데이터(리스트/데이터프레임 등)를 InfluxDB에 한 번에 Bulk Insert 합니다."""
         if not data_list:
