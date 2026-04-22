@@ -149,8 +149,15 @@ class StrategyManager:
 
             # 2. 추론 수행
             seq_len = self.shared_agent.seq_len
+            
+            # [버그 수정] 실제 쌓인 데이터가 seq_len에 도달했는지 먼저 확인
+            # 기존의 np.all(obs == 0) 체크는 패딩된 non-zero 배열을 통과시키는 허점이 있었음
+            actual_buffer = self.data_collector.state_buffers.get(symbol, [])
+            if len(actual_buffer) < seq_len:
+                return  # 데이터 충분히 쌓이지 않으면 추론하지 않음
+            
             obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
-            if np.all(obs == 0): return # 데이터 부족
+            if np.all(obs == 0): return  # 이중 방어
 
             action_masks = env.action_masks()
             obs_batch = np.expand_dims(obs, axis=0)
@@ -159,6 +166,13 @@ class StrategyManager:
             result = self.shared_agent.predict(obs_batch, action_masks=action_masks, return_probs=True)
             action, probs = result
             if isinstance(action, np.ndarray): action = int(action[0])
+
+            # [버그 수정] 확률 분포가 거의 동일한 경우(학습 초기/랜덤 상태)는 Hold로 강제
+            # 가장 높은 확률이 임계값(예: 50%) 이상일 때만 액션을 신뢰함
+            MIN_ACTION_CONFIDENCE = 0.50
+            max_prob = max(probs)
+            if max_prob < MIN_ACTION_CONFIDENCE:
+                action = 0  # 신뢰도 부족 → Hold 강제
 
             # AI 신뢰도 UI 업데이트 (0: Hold, 1: Buy, 2: Sell)
             confidence_dict = {

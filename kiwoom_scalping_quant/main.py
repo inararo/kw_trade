@@ -125,9 +125,9 @@ class QuantSystem:
         print("시스템: [Step 2] 스케줄러 가동 및 기존 유니버스 로드...")
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
 
-        # [버그 수정] 부팅 시마다 유니버스를 강제로 다시 생성하지 않고, 기존에 저장된 종목을 로드합니다.
-        # 장중에 유니버스를 갱신하고 싶다면 '종목 관리' 탭에서 수동으로 실행해야 합니다.
-        self.asset_vm.load_symbols()
+        # [버그 수정/기능 개선] 부팅 시마다 현재가와 투자 한도를 대조하여 필터링하고 새로운 종목으로 채웁니다.
+        # 기존의 단순 로딩(load_symbols) 대신 자동 갱신(build_universe) 태스크를 비동기로 실행합니다.
+        asyncio.create_task(self.asset_vm._build_universe_task(is_auto=True))
 
         try:
             # 유니버스 로드가 완료될 때까지 잠시 대기

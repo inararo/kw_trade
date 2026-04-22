@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import glob
-from PyQt6.QtCore import QObject, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt
 from typing import Dict, Any, List
 from returns.result import Success, Failure
 from returns.io import IOSuccess, IOFailure
@@ -21,6 +21,9 @@ class LiveDashboardViewModel(QObject):
 
     # 멀티 종목 요약 정보 (Symbol -> Dict of stats)
     sig_symbols_summary_updated = pyqtSignal(dict)
+
+    # 스레드 브릿지: 백그라운드 -> 메인 스레드 (내부용)
+    _sig_raw_data = pyqtSignal(object)
 
     # Risk Limits and Alerts
     sig_risk_metrics_updated = pyqtSignal(float, float) # current PnL, available invest limit
@@ -42,6 +45,7 @@ class LiveDashboardViewModel(QObject):
             self.order_manager.signals.signal_only_log.connect(self.append_log)
 
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
+        # qasync 환경: asyncio와 Qt가 동일 스레드이므로 직접 호출이 안전함
         self.data_collector.set_ui_callback(self._on_data_received)
 
     def append_log(self, msg: str):
@@ -50,38 +54,37 @@ class LiveDashboardViewModel(QObject):
     def set_selected_symbol(self, symbol: str):
         self.selected_symbol = symbol
 
+    @pyqtSlot(object)
     def _on_data_received(self, data: dict):
-        """DataCollector에서 새로운 데이터가 수집되었을 때 호출되는 콜백"""
+        """DataCollector에서 호출되는 UI 업데이트 콜백 (qasync: 동일 스레드)"""
         try:
-            symbol = data.get("symbol")
-            if not symbol: return
+            raw_symbol = data.get("symbol", "")
+            if not raw_symbol:
+                return
+            symbol = raw_symbol.split('_')[0].strip()
 
-            # 통합 요약 데이터 업데이트
             if symbol not in self.symbols_summary:
-                self.symbols_summary[symbol] = {}
+                self.symbols_summary[symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
 
             if "price" in data:
                 self.symbols_summary[symbol]["price"] = data["price"]
-            if "ai_confidence" in data:
-                # 신뢰도 중 가장 높은 액션을 상태로 기록
-                best_action = max(data["ai_confidence"], key=data["ai_confidence"].get)
-                self.symbols_summary[symbol]["ai_signal"] = "Buy" if best_action == "Buy" else "Sell" if best_action == "Sell" else "Hold"
+            if "price" in data:
+                self.symbols_summary[symbol]["price"] = data["price"]
 
             self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)
 
-            # 전체 요약 시그널 발송
             self.sig_symbols_summary_updated.emit(self.symbols_summary)
 
-            # 선택된 종목인 경우에만 차트/호가창 등 상세 업데이트
             if symbol == self.selected_symbol or not self.selected_symbol:
                 if "price" in data:
                     self.sig_price_updated.emit(float(data["price"]))
                 if "orderbook" in data:
                     self.sig_orderbook_updated.emit(dict(data["orderbook"]))
-                if "ai_confidence" in data:
-                    self.sig_ai_confidence_updated.emit(dict(data["ai_confidence"]))
+
         except Exception as e:
-            self.sig_error_occurred.emit(f"데이터 파싱 오류: {e}")
+            import traceback
+            self.sig_log_appended.emit(f"[UI 오류] {e} | {traceback.format_exc()[-300:]}")
+
 
     async def start_polling(self):
         """실전 매매/백테스트 모드에서의 일반 폴링 (mock 사용 시 제외)"""
@@ -266,6 +269,7 @@ class AssetDataViewModel(QObject):
                 if not is_auto:
                     self.fetch_completed.emit(msg)
                 self.logger.info(msg)
+                self.load_symbols() # 부팅 시퀀스 Event Set을 위해 호출 필수
                 return True
 
         self.config_manager.set_symbols(new_symbols)

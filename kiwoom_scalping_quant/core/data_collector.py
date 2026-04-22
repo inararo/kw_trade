@@ -199,7 +199,15 @@ class DataCollector:
     async def start(self):
         self.is_running = True
         
+        # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스를 다시 읽어옵니다.
+        if hasattr(self.config, 'get_symbols'):
+            latest_symbols = [s.get('code') for s in self.config.get_symbols()]
+            if latest_symbols:
+                self._initial_symbols = latest_symbols
+                self.logger.info(f"동기화: 최신 유니버스 {len(latest_symbols)}개 종목으로 구독 리스트를 갱신했습니다.")
+
         # 초기 종목 구독 (비동기 처리)
+        self.logger.info(f"초기 종목 {len(self._initial_symbols)}개에 대해 순차적 구독을 시작합니다.")
         for sym in self._initial_symbols:
             await self.subscribe_symbol(sym)
 
@@ -271,7 +279,7 @@ class DataCollector:
 
                     # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
                     root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
-                    self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
+                    # self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
                     self.circuit_breaker_active = False
 
                     if not self.first_data_received_event.is_set():

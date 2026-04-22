@@ -124,20 +124,36 @@ class UniverseManager:
                                 break
 
                     self.logger.error(f"API 수신 데이터 확인: 총 {len(items)}개의 종목 수신됨.")
+                    if items:
+                        self.logger.error(f"[DEBUG] ITEM KEYS: {list(items[0].keys())}")
 
                     for item in items:
                         # 제공된 명세(stk_cd, stk_nm, trde_amt)를 최우선으로 적용합니다.
                         code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
                         name = item.get("stk_nm") or item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
 
-                        # Handle string representation of trading value
+                        # Handle string representation of numerical values
                         try:
-                            # 명세상 '거래금액'은 trde_amt 필드입니다.
-                            tval_str = item.get("trde_amt") or item.get("acml_tr_pbmn") or item.get("trading_value") or "0"
-                            trading_value = float(tval_str)
+                            # 현재가 파싱 후보군 자동 탐색 (사용자 로그에서 cur_prc 확인됨)
+                            price_candidates = ["cur_prc", "stck_prpr", "stk_prpr", "prpr", "curr_pric", "stk_prc", "stck_prc", "curr"]
+                            price_val = "0"
+                            for cand in price_candidates:
+                                if item.get(cand):
+                                    price_val = item.get(cand)
+                                    break
+                            
+                            current_price = abs(float(str(price_val).replace(',', '')))
 
-                            # 추가 필터링용 데이터 추출 (명세에 따라 키명이 다를 수 있으므로 Fallback 포함)
-                            # 전일 대비 기호 (1: 상한, 2: 상승, 3: 보합, 4: 하한, 5: 하락 등)
+                            # 거래금액 후보군 (trde_amt, acml_tr_pbmn 등)
+                            tval_candidates = ["trde_amt", "acml_tr_pbmn", "trading_value", "trde_amt_val"]
+                            tval_str = "0"
+                            for cand in tval_candidates:
+                                if item.get(cand):
+                                    tval_str = item.get(cand)
+                                    break
+                            trading_value = float(str(tval_str).replace(',', ''))
+
+                            # 추가 필터링용 데이터 추출
                             sign = item.get("pred_pre_sig") or item.get("prdy_vrss_sign") or "3"
 
                             # 등락률
@@ -145,6 +161,7 @@ class UniverseManager:
                             flu_rt = float(flu_rt_str)
 
                         except (ValueError, TypeError):
+                            current_price = 0.0
                             trading_value = 0.0
                             sign = "3"
                             flu_rt = 0.0
@@ -152,6 +169,7 @@ class UniverseManager:
                         parsed_stock = {
                             "code": code,
                             "name": name,
+                            "price": current_price,
                             "trading_value": trading_value,
                             "sign": str(sign),
                             "flu_rt": flu_rt
@@ -165,7 +183,12 @@ class UniverseManager:
             self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
             raise e
 
-        # 1. 노이즈 및 현재 강세 기준(상태, 등락률) 필터링
+        # 투자 한도 설정 가져오기 (RiskManager와 동일한 설정 키 사용)
+        max_invest_limit = 5000000.0
+        if self.config_manager:
+            max_invest_limit = float(self.config_manager.get("max_invest_per_symbol", 5000000))
+
+        # 1. 노이즈 및 현재 강세 기준(상태, 등락률, 가격 한도) 필터링
         filtered_universe = []
         for stock in raw_market:
             if not isinstance(stock, dict):
@@ -177,6 +200,16 @@ class UniverseManager:
             # 기본 이름/종목코드 검증
             if not self._is_valid_scalping_symbol(name, code):
                 continue
+
+            # 투자 한도 초과 종목 제외 필터링 (1주 가격이 한도보다 비싸면 매수 불가하므로 제외)
+            price = stock.get("price", 0.0)
+            if price > 0 and price > max_invest_limit:
+                self.logger.info(f"필터링 제외: {name}({code}) - 투자 한도 초과 (현재가: {price:,.0f} / 한도: {max_invest_limit:,.0f})")
+                continue
+            
+            if price == 0:
+                # 가격 정보를 읽어오지 못했을 경우, 유니버스 소멸을 막기 위해 제외하지 않음
+                self.logger.debug(f"필터링 통과: {name}({code}) - 가격 데이터 부재(0원)로 필터 스킵")
 
             # 등락률 필터링: 1(상한가)나 4,5(하한가, 하락) 등 극단적 호가잠김 방지 (스캘핑 불가)
             sign = stock.get("sign", "3")
