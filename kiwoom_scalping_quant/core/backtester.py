@@ -42,7 +42,8 @@ class BacktestEngine:
 
         while not done and not truncated and self.is_running and step < total_steps:
             # 1. Action Masking 적용
-            action_masks = env.action_masks()
+            # Gymnasium v1.0 호환성: 래퍼 체인 내 속성 탐색을 위해 get_wrapper_attr 사용
+            action_masks = env.get_wrapper_attr('action_masks')()
 
             # 2. Agent 예측
             action = agent.predict(obs, action_masks=action_masks)

@@ -175,7 +175,8 @@ class StrategyManager:
                 return
 
             # --- 추론 실행 ---
-            action_masks = env.action_masks()
+            # Gymnasium v1.0 호환성: 래퍼 체인 내 속성 탐색을 위해 get_wrapper_attr 사용
+            action_masks = env.get_wrapper_attr('action_masks')()
             obs_batch = np.expand_dims(obs, axis=0)
             self.logger.error(f"[AI-INFER] [{clean_symbol}] 추론 시작 | masks={action_masks} | buf={buf_len}")
 

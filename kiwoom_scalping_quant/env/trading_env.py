@@ -30,6 +30,8 @@ class ScalpingTradingEnv(gym.Env):
         self.balance = config.get('initial_balance', 10000000)
         self.holdings = 0
         self.current_step = 0
+        self.max_steps = config.get('max_steps', 2000) # 한 에피소드당 최대 스텝 수
+        self.end_step = 0
         self.reward_history = []
 
         # Historical / Backtest 모드에서 사용할 데이터
@@ -50,7 +52,19 @@ class ScalpingTradingEnv(gym.Env):
 
         self.balance = self.config.get('initial_balance', 10000000)
         self.holdings = 0
-        self.current_step = 0
+        
+        # [기능 개선] 랜덤 시작점 로직 도입
+        if self.historical_data is not None:
+            data_len = len(self.historical_data)
+            # 종료 지점이 최소한 max_steps를 확보할 수 있도록 최대 시작 가능한 인덱스 계산
+            max_start_idx = max(0, data_len - self.max_steps - 1)
+            self.current_step = random.randint(0, max_start_idx)
+            self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            self.logger.info(f"에피소드 시작: 랜덤 시작점 {self.current_step} / 종료점 {self.end_step} (총 {self.max_steps} 스텝 예정)")
+        else:
+            self.current_step = 0
+            self.end_step = 0
+
         self.reward_history = []
 
         obs = self._get_observation()
@@ -168,7 +182,8 @@ class ScalpingTradingEnv(gym.Env):
         terminated = self.balance < 0
         truncated = False
 
-        if self.historical_data is not None and self.current_step >= len(self.historical_data) - 1:
+        # [기능 개선] 고정된 에피소드 길이(max_steps) 도달 시 종료
+        if self.historical_data is not None and self.current_step >= self.end_step:
             truncated = True
 
         return obs, step_reward, terminated, truncated, info
