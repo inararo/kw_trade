@@ -71,7 +71,7 @@ class UniverseManager:
             "authorization": f"Bearer {access_token}",
             'cont-yn': 'N',  # 연속조회여부
             'next-key': '',  # 연속조회키
-            "api-id": "ka10030" # 당일거래대금상위요청 (가상 TR)
+            "api-id": "ka10030" # 당일거래량상위요청 (Volume Top)
         }
 
         # 2. 요청 데이터
@@ -107,11 +107,21 @@ class UniverseManager:
 
                     data = await response.json()
 
-                    # Kiwoom API returns a list of items typically in "output" or "output1"
-                    # We will parse out standard keys
-                    items = data.get("tdy_trde_qty_upper", [])
+                    # Kiwoom API는 TR ID, "output", "output1" 등 다양한 키로 데이터가 올 수 있음
+                    items = data.get("ka10030", []) or data.get("ka10032", [])
+                    if not items and "output" in data:
+                        items = data["output"]
                     if not items and "output1" in data:
                         items = data["output1"]
+                    if not items and "tdy_trde_qty_upper" in data: # 기존 폴백
+                        items = data["tdy_trde_qty_upper"]
+                    
+                    # 만약 여전히 비어있다면 전체 키 중 리스트인 것을 찾아보는 최후의 수단
+                    if not items:
+                        for key, val in data.items():
+                            if isinstance(val, list) and len(val) > 0:
+                                items = val
+                                break
 
                     self.logger.error(f"API 수신 데이터 확인: 총 {len(items)}개의 종목 수신됨.")
 
@@ -183,7 +193,12 @@ class UniverseManager:
                 gap_ratio = ((opn_prc - prdy_clprc) / prdy_clprc) * 100
                 if gap_ratio < 2.0:
                     self.logger.debug(f"필터링 제외: {name}({code}) - 갭상승 미달 ({gap_ratio:.2f}%)")
+                    # Note: 장 초반에 데이터가 0개로 나오는 것을 방지하기 위해 필터링을 한시적으로 완화하거나 스킵할 수 있음
+                    # 현재는 유규한 필터링 정책을 유지하되, 데이터가 아예 없을 때만 통과시킴
                     continue
+            elif prdy_clprc == 0 or opn_prc == 0:
+                # 데이터가 아직 안 들어온 경우(09:00 직후)에는 일단 필터를 통과시켜 유니버스 0개를 방지함
+                self.logger.debug(f"필터링 통과: {name}({code}) - 가격 데이터 부재로 필터 스킵")
 
             filtered_universe.append(stock)
 

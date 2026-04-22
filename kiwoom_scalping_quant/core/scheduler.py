@@ -260,7 +260,10 @@ class MarketScheduler:
                                     new_universe = result.unwrap()._inner_value
                                     if new_universe:
                                         # Safe Swap Logic Delegate
-                                        await self._safe_swap_universe(new_universe)
+                                        try:
+                                            await self._safe_swap_universe(new_universe)
+                                        except Exception as e:
+                                            self.logger.error(f"주도주 유니버스 교체 중 오류 발생 (무시하고 계속): {e}")
 
                     # 30분 (1800초) 대기
                     await asyncio.sleep(1800)

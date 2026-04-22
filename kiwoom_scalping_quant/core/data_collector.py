@@ -314,7 +314,12 @@ class DataCollector:
 
                 idle_time = time.time() - self.last_receive_time
 
-                if idle_time > 3.0 and not self.circuit_breaker_active:
+                # 방어 로직 3: 구독 중인 종목이 아예 없으면 데이터가 안 오는 것이 정상이므로 건너뜀
+                if not self.subscription_manager.get_symbols():
+                    self.last_receive_time = time.time()
+                    continue
+
+                if idle_time > 5.0 and not self.circuit_breaker_active:
                     self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동.")
                     self.circuit_breaker_active = True
 
