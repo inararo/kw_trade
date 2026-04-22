@@ -221,6 +221,29 @@ class AssetDataViewModel(QObject):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
         asyncio.create_task(self._build_universe_task(top_n=top_n, is_auto=False))
 
+    def fetch_db_symbols(self):
+        """InfluxDB에 저장된 모든 고유 종목 리스트를 가져와서 유니버스로 설정"""
+        asyncio.create_task(self._fetch_db_symbols_task())
+
+    async def _fetch_db_symbols_task(self):
+        self.sig_status_updated.emit("InfluxDB에서 저장된 모든 종목 리스트 조회 중...")
+        symbols = await self.influx_client.get_all_symbols()
+        
+        if not symbols:
+            self.symbol_update_failed.emit("DB에서 저장된 종목 데이터를 찾을 수 없습니다.")
+            return
+
+        # DB에는 코드만 저장되어 있으므로 이름을 코드와 동일하게 설정 (추후 보완 가능)
+        new_symbols = [{"code": s, "name": s} for s in symbols]
+        
+        # Config 업데이트 및 저장 (set_symbols 내부에서 자동 저장됨)
+        self.config_manager.set_symbols(new_symbols)
+        
+        # UI 동기화
+        self.symbols_loaded.emit(new_symbols)
+        self.symbol_update_success.emit(f"DB로부터 {len(symbols)}개의 종목 리스트를 성공적으로 불러왔습니다.")
+        self.sig_status_updated.emit("대기 중")
+
     async def auto_collect_after_market(self):
         """
         장 종료 후 호출되는 스크립트.

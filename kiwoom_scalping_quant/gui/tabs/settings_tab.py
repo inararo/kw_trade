@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QMessageBox,
-    QTimeEdit, QCheckBox
+    QTimeEdit, QCheckBox, QScrollArea, QFrame
 )
 from PyQt6.QtCore import pyqtSlot, QTime
 
@@ -19,7 +19,20 @@ class SettingsTab(QWidget):
         self.view_model.load_settings()
 
     def _init_ui(self):
-        main_layout = QVBoxLayout(self)
+        # 최상위 레이아웃
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 스크롤 영역 생성
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        
+        # 실제 컨텐츠가 들어갈 위젯
+        content_widget = QWidget()
+        main_layout = QVBoxLayout(content_widget)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(10)
 
         # 1. Broker API Group (.env)
         broker_group = QGroupBox("브로커 API 연결")
@@ -155,6 +168,12 @@ class SettingsTab(QWidget):
         btn_layout.addWidget(self.btn_test)
         btn_layout.addWidget(self.btn_save)
         main_layout.addLayout(btn_layout)
+        
+        # 마지막 여백 확보
+        main_layout.addStretch()
+
+        scroll.setWidget(content_widget)
+        outer_layout.addWidget(scroll)
 
     def _connect_signals(self):
         from PyQt6.QtCore import Qt

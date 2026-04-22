@@ -268,6 +268,26 @@ class AsyncInfluxDBClient:
             self.logger.error(f"InfluxDB Ping 실패: {e}")
             return False
 
+    async def get_all_symbols(self) -> List[str]:
+        """조직 내 버킷의 모든 고유 심볼(Tag value)을 조회합니다."""
+        query = f'''
+            import "influxdata/influxdb/schema"
+            schema.tagValues(bucket: "{self.bucket}", tag: "symbol")
+        '''
+        try:
+            query_api = self.client.query_api()
+            tables = await query_api.query(query, org=self.org)
+            symbols = []
+            for table in tables:
+                for record in table.records:
+                    v = record.get_value()
+                    if v and v != "UNKNOWN":
+                        symbols.append(v)
+            return sorted(list(set(symbols)))
+        except Exception as e:
+            self.logger.error(f"InfluxDB 심볼 리스트 조회 실패: {e}")
+            return []
+
     async def delete_data(self, measurement: str, symbol: str = None):
         """특정 측정 항목 또는 종목의 데이터를 삭제합니다."""
         try:

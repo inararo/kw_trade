@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox, QSplitter, QSizePolicy
 from PyQt6.QtCore import QDate, pyqtSlot, Qt
 
 class AssetDataManagerTab(QWidget):
@@ -16,7 +16,9 @@ class AssetDataManagerTab(QWidget):
         self.view_model.load_symbols()
 
     def _init_ui(self):
-        main_layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
+        
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # 1. 좌측: 종목 리스트 관리
         asset_group = QGroupBox("종목 리스트 관리")
@@ -36,6 +38,10 @@ class AssetDataManagerTab(QWidget):
                 font-weight: bold;
             }
         """)
+        
+        # 테이블 사이즈 정책 조정 (하단 버튼이 밀리지 않도록)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
+        self.table.setMinimumHeight(200)
         
         asset_layout.addWidget(self.table)
 
@@ -82,8 +88,13 @@ class AssetDataManagerTab(QWidget):
         self.btn_auto_universe.clicked.connect(self._on_btn_auto_universe_clicked)
         asset_layout.addWidget(self.btn_auto_universe)
 
+        self.btn_fetch_db = QPushButton("DB 종목 가져오기 (기수집 데이터)")
+        self.btn_fetch_db.setStyleSheet("background-color: #388e3c; color: white;") # Greenish to distinguish
+        self.btn_fetch_db.clicked.connect(self._on_btn_fetch_db_clicked)
+        asset_layout.addWidget(self.btn_fetch_db)
+
         asset_group.setLayout(asset_layout)
-        main_layout.addWidget(asset_group, stretch=1)
+        main_splitter.addWidget(asset_group)
 
         # 2. 우측: 과거 데이터 수집기
         data_group = QGroupBox("과거 데이터 수집기")
@@ -114,7 +125,12 @@ class AssetDataManagerTab(QWidget):
 
         data_layout.addStretch()
         data_group.setLayout(data_layout)
-        main_layout.addWidget(data_group, stretch=1)
+        main_splitter.addWidget(data_group)
+        
+        layout.addWidget(main_splitter)
+        
+        # 스플리터 초기 비율 설정 (6:4)
+        main_splitter.setSizes([600, 400])
 
     def _connect_signals(self):
         self.view_model.symbols_loaded.connect(self.on_symbols_loaded)
@@ -172,6 +188,11 @@ class AssetDataManagerTab(QWidget):
         reply = QMessageBox.question(self, "확인", f"기존 종목 리스트가 삭제되고 주도주 Top {top_n}으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             self.view_model.build_universe(top_n=top_n)
+
+    def _on_btn_fetch_db_clicked(self):
+        reply = QMessageBox.question(self, "확인", "DB에 저장된 모든 종목을 가져와 현재 유니버스를 교체하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.view_model.fetch_db_symbols()
 
     def _on_btn_collect_clicked(self):
         checked_symbols = []

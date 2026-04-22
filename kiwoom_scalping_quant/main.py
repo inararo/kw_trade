@@ -270,6 +270,104 @@ class QuantSystem:
 
 def main():
     app = QApplication(sys.argv)
+    
+    # [프리미엄 다크 테마 적용]
+    app.setStyleSheet("""
+        QMainWindow, QWidget {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+            font-size: 10pt;
+        }
+        
+        QTabWidget::pane {
+            border: 1px solid #333;
+            background: #1a1a1a;
+        }
+        
+        QTabBar::tab {
+            background: #2b2b2b;
+            padding: 10px 20px;
+            margin-right: 2px;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+        }
+        
+        QTabBar::tab:selected {
+            background: #3d3d3d;
+            border-bottom: 2px solid #007acc;
+            font-weight: bold;
+        }
+        
+        QGroupBox {
+            border: 1px solid #333;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-weight: bold;
+            padding-top: 20px;
+        }
+        
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #007acc;
+        }
+        
+        QPushButton {
+            background-color: #333;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 8px 15px;
+            min-height: 25px;
+        }
+        
+        QPushButton:hover {
+            background-color: #444;
+            border-color: #007acc;
+        }
+        
+        QPushButton:pressed {
+            background-color: #222;
+        }
+        
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit, QTimeEdit {
+            background-color: #2b2b2b;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 5px;
+            selection-background-color: #007acc;
+        }
+        
+        QLineEdit:focus, QSpinBox:focus {
+            border: 1px solid #007acc;
+        }
+        
+        QTableWidget {
+            background-color: #1a1a1a;
+            border: 1px solid #333;
+            gridline-color: #2b2b2b;
+            selection-background-color: #004c80;
+        }
+        
+        QHeaderView::section {
+            background-color: #2b2b2b;
+            color: #aaa;
+            padding: 5px;
+            border: 0px;
+            border-bottom: 1px solid #333;
+        }
+        
+        QProgressBar {
+            border: 1px solid #333;
+            border-radius: 2px;
+            text-align: center;
+        }
+        
+        QProgressBar::chunk {
+            background-color: #007acc;
+        }
+    """)
 
     if not hasattr(app, "exec_"):
         app.exec_ = app.exec
