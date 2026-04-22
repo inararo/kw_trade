@@ -99,7 +99,24 @@ class TradingAgentWrapper:
         else:
             raise FileNotFoundError(f"Model weights not found at {path}")
 
-    def predict(self, state: np.ndarray, action_masks: Optional[np.ndarray] = None):
+    def predict(self, state: np.ndarray, action_masks: Optional[np.ndarray] = None, return_probs: bool = False):
         """실시간 틱 데이터에서 다음 행동 추론"""
         action, _states = self.model.predict(state, action_masks=action_masks, deterministic=True)
+        
+        if return_probs:
+            import torch
+            # obs를 텐서로 변환
+            obs_tensor, _ = self.model.policy.obs_to_tensor(state)
+            with torch.no_grad():
+                # 정책망으로부터 확률 분포 획득
+                # MaskablePPO의 경우 action_masks가 이미 apply_mask 등을 통해 반영된 분포를 반환함
+                distribution = self.model.policy.get_distribution(obs_tensor)
+                if hasattr(distribution, 'distribution') and hasattr(distribution.distribution, 'probs'):
+                    probs = distribution.distribution.probs
+                else:
+                    # 마스킹되지 않은 일반 분포일 경우
+                    probs = distribution.probs
+                
+            return action, probs.cpu().numpy()[0]
+
         return action

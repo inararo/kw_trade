@@ -80,7 +80,11 @@ class StrategyManager:
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
         """동적 유니버스 스캐너가 호출하는 Safe Swap Logic"""
         async with self._swap_lock:
-            new_symbols = [s.get("code") for s in new_universe if s.get("code")]
+            # 모든 신규 심볼에서 접미사(_AL) 제거하여 순수 코드로 변환
+            new_symbols = list(set([s.get("code").split('_')[0] for s in new_universe if s.get("code")]))
+            
+            # 기존 심볼들도 순수 코드로 변환하여 관리
+            self.symbols = [s.split('_')[0] for s in list(self.symbols)]
             current_symbols = list(self.symbols)
 
             # 1. 퇴출(Out) 로직
@@ -124,7 +128,7 @@ class StrategyManager:
             updated_dicts = [{"code": s, "name": f"Dynamic_{s}"} for s in self.symbols]
             self.config_manager.set_symbols(updated_dicts)
 
-    async def _on_tick_event(self, symbol: str):
+    async def _on_tick_event(self, symbol: str, normalized_state=None):
         """데이터 수신 시 호출되는 핵심 리스너 (Event-Driven)"""
         if not self.is_running:
             return
@@ -150,8 +154,36 @@ class StrategyManager:
 
             action_masks = env.action_masks()
             obs_batch = np.expand_dims(obs, axis=0)
-            action = self.shared_agent.predict(obs_batch, action_masks=action_masks)
+            
+            # 신뢰도(probs)와 함께 추론
+            result = self.shared_agent.predict(obs_batch, action_masks=action_masks, return_probs=True)
+            action, probs = result
             if isinstance(action, np.ndarray): action = int(action[0])
+
+            # AI 신뢰도 UI 업데이트 (0: Hold, 1: Buy, 2: Sell)
+            confidence_dict = {
+                "Hold": int(probs[0] * 100),
+                "Buy": int(probs[1] * 100),
+                "Sell": int(probs[2] * 100)
+            }
+            
+            # 결정된 신호 텍스트
+            signal_text = "Hold"
+            if action == 1: signal_text = "Buy"
+            elif action == 2: signal_text = "Sell"
+
+            vm = getattr(self.config_manager, "_injected_live_vm", None)
+            if vm:
+                # 1. 요약 정보 업데이트 (대시보드 테이블용)
+                if symbol not in vm.symbols_summary:
+                    vm.symbols_summary[symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
+                
+                vm.symbols_summary[symbol]["ai_signal"] = signal_text
+                vm.sig_symbols_summary_updated.emit(vm.symbols_summary)
+
+                # 2. 상세 시각화 업데이트 (선택된 종목이거나 선택이 없을 때)
+                if vm.selected_symbol == symbol or not vm.selected_symbol:
+                    vm.sig_ai_confidence_updated.emit(confidence_dict)
 
             # 3. Action 수행 (1: BUY, 2: SELL)
             if action in [1, 2]:

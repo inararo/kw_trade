@@ -121,24 +121,45 @@ class LiveDashboardTab(QWidget):
 
     @pyqtSlot(dict)
     def on_symbols_summary_updated(self, summary_dict: dict):
-        """테이블 갱신. UI 병목을 피하기 위해 최적화가 필요할 수 있으나 현재는 전체를 다시 그림"""
-        self.summary_table.setRowCount(len(summary_dict))
+        """테이블 갱신. 최적화를 위해 기존 행을 찾아 업데이트함"""
+        # 기존 맵 구성 (종목코드 -> row index)
+        symbol_to_row = {}
+        for r in range(self.summary_table.rowCount()):
+            item = self.summary_table.item(r, 0)
+            if item:
+                symbol_to_row[item.text()] = r
 
-        for row, (symbol, data) in enumerate(summary_dict.items()):
-            self.summary_table.setItem(row, 0, QTableWidgetItem(symbol))
+        # 데이터 업데이트
+        for symbol, data in summary_dict.items():
+            if symbol not in symbol_to_row:
+                # 새로운 종목인 경우 행 추가
+                row = self.summary_table.rowCount()
+                self.summary_table.insertRow(row)
+                self.summary_table.setItem(row, 0, QTableWidgetItem(symbol))
+                symbol_to_row[symbol] = row
+            
+            row = symbol_to_row[symbol]
+            
+            # 현재가 업데이트
+            price = data.get('price', 0)
+            price_str = f"{price:,.0f}"
+            if self.summary_table.item(row, 1) is None or self.summary_table.item(row, 1).text() != price_str:
+                self.summary_table.setItem(row, 1, QTableWidgetItem(price_str))
 
-            price_str = f"{data.get('price', 0):,.0f}"
-            self.summary_table.setItem(row, 1, QTableWidgetItem(price_str))
-
+            # AI 신호 업데이트
             ai_sig = data.get('ai_signal', '-')
-            item_sig = QTableWidgetItem(ai_sig)
-            if ai_sig == "Buy":
-                item_sig.setForeground(Qt.GlobalColor.red)
-            elif ai_sig == "Sell":
-                item_sig.setForeground(Qt.GlobalColor.blue)
-            self.summary_table.setItem(row, 2, item_sig)
+            if self.summary_table.item(row, 2) is None or self.summary_table.item(row, 2).text() != ai_sig:
+                item_sig = QTableWidgetItem(ai_sig)
+                if ai_sig == "Buy":
+                    item_sig.setForeground(Qt.GlobalColor.red)
+                elif ai_sig == "Sell":
+                    item_sig.setForeground(Qt.GlobalColor.blue)
+                self.summary_table.setItem(row, 2, item_sig)
 
-            self.summary_table.setItem(row, 3, QTableWidgetItem(str(data.get('holdings', 0))))
+            # 보유량 업데이트
+            holdings_str = str(data.get('holdings', 0))
+            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != holdings_str:
+                self.summary_table.setItem(row, 3, QTableWidgetItem(holdings_str))
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):

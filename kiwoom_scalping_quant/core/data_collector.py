@@ -1,6 +1,7 @@
 import asyncio
 import time
 import json
+import random
 import websockets
 from collections import deque
 import numpy as np
@@ -42,21 +43,24 @@ class DataCollector:
         self.ws_connected_event = asyncio.Event()
         self.first_data_received_event = asyncio.Event()
 
-        # Config에서 초기 심볼 등록
-        initial_symbols = [s.get('code') for s in config.get('universe', [{'code': '005930'}])]
-        if not initial_symbols:
-            initial_symbols = ['005930']
+        # Config에서 초기 심볼 등록 (start 시점에 구독하기 위해 저장만 함)
+        self._initial_symbols = [s.get('code') for s in config.get('universe', [{'code': '005930'}])]
+        if not self._initial_symbols:
+            self._initial_symbols = ['005930']
 
-        for sym in initial_symbols:
-            self.subscribe_symbol(sym)
+        # 마지막 유효 현재가 저장용 (호가 패킷 등에 현재가가 없을 때 사용)
+        self.last_prices = {}
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
 
-    def subscribe_symbol(self, symbol: str):
+    async def subscribe_symbol(self, symbol: str):
         """새로운 종목을 구독하고 버퍼를 동적 할당합니다."""
         if not self.subscription_manager.add_symbol(symbol):
             return False
+
+        # 종목 코드 정규화 (_AL 접미사 제거)
+        clean_symbol = symbol.split('_')[0].strip()
 
         if symbol not in self.feature_engineers:
             self.feature_engineers[symbol] = FeatureEngineer(max_ticks=100)
@@ -65,21 +69,39 @@ class DataCollector:
             self.tick_buffers[symbol] = deque(maxlen=self.max_buffer_size)
             self.min1_buffers[symbol] = deque(maxlen=self.max_buffer_size // 10)
 
-        # 백그라운드 웹소켓이 동작 중이면 실시간 구독 메시지 발송
         if self.is_running and self.ws_connection:
-            msg = json.dumps({"type": "subscribe", "symbols": symbol})
-            asyncio.create_task(self.ws_connection.send(msg))
+            # 키움 REST API 실전 규격 (type과 item 모두 배열 형식 필수)
+            msg = json.dumps({
+                "trnm": "REG",
+                "grp_no": "1",
+                "refresh": "1",
+                "data": [
+                    {"type": ["0B"], "item": [clean_symbol]}, # 0B: 주식체결
+                    {"type": ["0D"], "item": [clean_symbol]}  # 0D: 호가잔량
+                ]
+            })
+            await self.ws_connection.send(msg)
+            # 서버 부하 방지 지연
+            await asyncio.sleep(0.2)
 
         return True
 
-    def unsubscribe_symbol(self, symbol: str):
+    async def unsubscribe_symbol(self, symbol: str):
         """구독을 해제합니다."""
         self.subscription_manager.remove_symbol(symbol)
+        clean_symbol = symbol.split('_')[0]
 
         # 백그라운드 웹소켓이 동작 중이면 실시간 구독 해제 메시지 발송
         if self.is_running and self.ws_connection:
-            msg = json.dumps({"type": "unsubscribe", "symbols": symbol})
-            asyncio.create_task(self.ws_connection.send(msg))
+            msg = json.dumps({
+                "trnm": "UNREG",
+                "data": [
+                    {"type": ["0B"], "item": [clean_symbol]},
+                    {"type": ["0D"], "item": [clean_symbol]}
+                ]
+            })
+            await self.ws_connection.send(msg)
+            await asyncio.sleep(0.1)
 
     async def start_mock_stream(self):
         """장외 시간/주말 UI 테스트용 가상 데이터 생성기 (다중 종목)"""
@@ -176,6 +198,11 @@ class DataCollector:
 
     async def start(self):
         self.is_running = True
+        
+        # 초기 종목 구독 (비동기 처리)
+        for sym in self._initial_symbols:
+            await self.subscribe_symbol(sym)
+
         # Watchdog 태스크 시작
         self._watchdog_task = asyncio.create_task(self._watchdog())
 
@@ -184,43 +211,71 @@ class DataCollector:
                 try:
                     await self._connect_and_listen()
                 except asyncio.CancelledError:
-                    self.logger.info("DataCollector: 루프 취소 신호 수신, 수집 중지.")
+                    self.logger.info("DataCollector 루프 완전 취소됨.")
                     break
                 except Exception as e:
                     self.logger.error(f"WebSocket 연결 오류: {e}")
                     if self.is_running:
                         await asyncio.sleep(1) # 재연결 대기
-        except asyncio.CancelledError:
-            self.logger.info("DataCollector 루프 완전 취소됨.")
+        finally:
+            self.is_running = False
 
     async def _connect_and_listen(self):
-        async with websockets.connect(self.ws_url) as websocket:
+        # 인증 헤더 준비 (config 또는 환경변수에서 토큰 추출)
+        token = self.config.get("KIWOOM_ACCESS_TOKEN") or getattr(self.config, "get", lambda x: None)("KIWOOM_ACCESS_TOKEN")
+        
+        headers = {}
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+            self.logger.info("웹소켓 인증 헤더(Bearer Token)를 포함하여 연결합니다.")
+
+        async with websockets.connect(self.ws_url, extra_headers=headers) as websocket:
             self.ws_connection = websocket
             self.ws_connected_event.set()
-            self.logger.info("WebSocket 연결 성공. 실시간 데이터 수신 시작.")
+            self.logger.error("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
 
-            # 다중 종목 구독 요청 전송
-            # 키움증권 실전/모의 API 규격에 맞는 구독 요청(SetRealReg) 포맷
-            # 본 코드에서는 간이로 JSON 규격이라 가정하지만, Kiwoom REST 기반 WS는 명세에 따라 전송해야 합니다.
-            # {"header": {"tr_type": "1", ...}, "body": {"input": {"tr_id": "H0STCNT0", "tr_key": "005930"}}}
-            symbols_str = self.subscription_manager.get_subscription_string()
-            if symbols_str:
-                # Assuming this fits the specific WS protocol (often JSON wrappers for REST-based WS)
-                subscribe_msg = json.dumps({"type": "subscribe", "symbols": symbols_str})
-                await websocket.send(subscribe_msg)
-                self.logger.info(f"구독 요청 전송 완료: {symbols_str[:50]}...")
+            # [Step 1] 웹소켓 로그인 인증 요청
+            await websocket.send(json.dumps({
+                "trnm": "LOGIN",
+                "token": token
+            }))
+            self.logger.error("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
+            
+            # [Handshake] LOGIN 응답 수신 대기 (중요: 응답 확인 후 구독 진행)
+            try:
+                first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                login_res = json.loads(first_msg)
+                if login_res.get("return_code") == 0:
+                    self.logger.error(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
+                else:
+                    self.logger.error(f"LOGIN 인증 실패: {login_res.get('return_msg')} (Code: {login_res.get('return_code')})")
+                    # 실패 시에도 일단 진행 (서버마다 다를 수 있음)
+            except Exception as e:
+                self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
+
+            symbols = self.subscription_manager.get_symbols()
+            if symbols:
+                self.logger.error(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
+                # [Step 2] 개별 순차 구독 요청 (서버 거절 방지)
+                for sym in symbols:
+                    await self.subscribe_symbol(sym)
+                self.logger.error("초기 종목 구독 요청 완료.")
 
             try:
                 async for message in websocket:
                     recv_time = time.time()
                     self.last_receive_time = recv_time
+                    
+                    # 데이터 파싱
+                    data = json.loads(message)
+
+                    # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
+                    root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
+                    self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
                     self.circuit_breaker_active = False
 
                     if not self.first_data_received_event.is_set():
                         self.first_data_received_event.set()
-
-                    # 데이터 파싱
-                    data = json.loads(message)
 
                     # 지연 시간(Latency) 프로파일링
                     exchange_time = data.get('timestamp', recv_time)
@@ -235,54 +290,146 @@ class DataCollector:
                 self.logger.info("DataCollector: WebSocket 메시지 수신 루프가 취소되었습니다.")
                 raise
 
-    async def _process_tick(self, data):
-        """수신된 틱 데이터를 버퍼에 저장하고, 다중 타임프레임으로 집계 및 피처 추출"""
-        symbol = data.get("symbol")
-        if not symbol or symbol not in self.subscription_manager.get_symbols():
+    async def _process_tick(self, message_data):
+        """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
+        
+        # 1. 결과 응답(REG, LOGIN 등) 처리
+        if message_data.get("return_code") is not None:
+            self.logger.info(f"WS API RESPONSE: {message_data.get('return_msg')} (Code: {message_data.get('return_code')})")
             return
 
-        self.tick_buffers[symbol].append(data)
+        # 2. 실시간 데이터 프레임('data' 리스트) 처리
+        entries = message_data.get("data", [])
+        if not entries:
+            # 루트 레벨에 데이터가 있는 경우 (Fallback)
+            entries = [message_data]
 
-        # 실시간 데이터의 경우 구조에 맞게 파싱하여 feature_engineer 호출
-        if "orderbook" in data:
-            self.feature_engineers[symbol].update_orderbook(data["orderbook"])
+        for entry in entries:
+            # 종목 코드 추출 순서 보강 (trnm 필드 추가)
+            raw_code = entry.get("item") or entry.get("stk_cd") or entry.get("symbol") or entry.get("tr_key") or \
+                       message_data.get("item") or message_data.get("stk_cd") or message_data.get("tr_key") or \
+                       message_data.get("trnm") # trnm이 종목 코드인 경우 대응
+            
+            # values 내부에서도 코드 탐색 (일부 규격 대응)
+            values = entry.get("values", entry)
+            if not raw_code and isinstance(values, dict):
+                raw_code = values.get("item") or values.get("stk_cd") or values.get("tr_key") or values.get("stk_code")
 
-        # 기본 틱 정보 (Mock 데이터나 Kiwoom 실데이터에서 매핑 가정)
-        price = data.get("price", 0.0)
-        volume = data.get("volume", 0.0) # Kiwoom API에선 '체결량' 등 다른 키일 수 있음
+            # 리스트/딕셔너리로 들어오는 경우 정제
+            if isinstance(raw_code, list) and len(raw_code) > 0:
+                raw_code = raw_code[0]
+            elif isinstance(raw_code, dict):
+                raw_code = raw_code.get("code") or raw_code.get("item")
+            
+            # 타입 식별 (trnm이 '0B' 등인 경우와 종목 코드인 경우 구분)
+            msg_type = entry.get("type") or message_data.get("type") or message_data.get("tr_id")
+            if raw_code in ["0B", "0D", "REG", "LOGIN"]: # 코드 후보가 시스템 예약어면 무시
+                msg_type = raw_code
+                raw_code = None
+            
+            if not raw_code:
+                # 진단 로그: 심볼 추출 실패 시 데이터 구조 전체 출력 (디버깅용)
+                self.logger.error(f"심볼 코드 추출 실패! 데이터 샘플: {str(entry)[:300]}")
+                continue
+            
+            # 관리용 심볼 매핑 (005930_AL이더라도 005930와 완전 매칭 지원)
+            target_symbol = None
+            manager_symbols = list(self.subscription_manager.get_symbols())
+            for sym in manager_symbols:
+                clean_sym = sym.split('_')[0].strip()
+                if clean_sym == str(raw_code).strip():
+                    target_symbol = sym
+                    break
+            
+            if not target_symbol:
+                # 진단 로그: 매칭 실패 시 수신된 코드와 관리 중인 리스트를 100% 출력
+                self.logger.error(f"매칭 실패! 수신코드=[{raw_code}], 구독리스트={manager_symbols}")
+                continue
 
-        if price > 0:
-            features = self.feature_engineers[symbol].update_tick(price, volume)
-            raw_state = np.array([
-                price,
-                volume,
-                features["OIR"],
-                features["Volatility"],
-                features["Aggressiveness"]
-            ], dtype=np.float32)
+            # 3. FID 기반 정보 추출 (10: 현재가, 15: 체결량, 13: 누적거래량)
+            try:
+                # 키움 데이터는 부호(+/-)가 포함된 문자열이므로 abs(float()) 처리
+                raw_price = values.get("10") or values.get("curr_pric") or "0"
+                raw_vol = values.get("15") or values.get("cntg_vol") or "0"
+                
+                price = abs(float(str(raw_price).replace(',', '')))
+                volume = abs(float(str(raw_vol).replace(',', '')))
+                
+                # 4. 피처 엔진 및 버퍼 업데이트 (체결 데이터일 경우)
+                if price > 0:
+                    features = self.feature_engineers[target_symbol].update_tick(price, volume)
+                    
+                    # 실시간 상태 버퍼 업데이트 (AI 입력용)
+                    raw_state = np.array([
+                        price,
+                        volume,
+                        features["OIR"],
+                        features["Volatility"],
+                        features["Aggressiveness"]
+                    ], dtype=np.float32)
 
-            normalized_state = self.normalizers[symbol].update_and_normalize(raw_state)
-            self.state_buffers[symbol].append(normalized_state)
+                    normalized_state = self.normalizers[target_symbol].update_and_normalize(raw_state)
+                    self.state_buffers[target_symbol].append(normalized_state)
+                    
+                    # 마지막 유효 가격 업데이트
+                    self.last_prices[target_symbol] = price
 
-            # 신규: 이벤트 드리븐 구조를 위한 콜백 호출 (StrategyManager 등이 구독)
-            for callback in self.on_state_updated_callbacks:
-                if asyncio.iscoroutinefunction(callback):
-                    asyncio.create_task(callback(symbol))
-                else:
-                    callback(symbol)
+                    # 진단 로그: 1% 확률로 데이터 매칭 성공 출력
+                    if random.random() < 0.01:
+                        self.logger.info(f"데이터 매칭 성공! [{target_symbol}] 현재가: {price:,.0f} | 타입: {msg_type}")
 
-            # 실거래에서도 UI가 업데이트될 수 있도록 Mock과 비슷한 형태로 데이터 구성 후 콜백
-            ui_data = {
-                "symbol": symbol,
-                "price": price,
-                "orderbook": data.get("orderbook", {}),
-                # 실거래에서는 모델 추론을 통해 AI 신뢰도를 구해야 하나, DataCollector 층에서는 알 수 없으므로 제외
-                # (LiveDashboardViewModel이 이전 값을 기억하도록 설계)
-            }
-            if self._ui_callback:
-                self._ui_callback(ui_data)
+                    # 5. 이벤트 콜백 실행 (StrategyManager 등 알림)
+                    for callback in self.on_state_updated_callbacks:
+                        if asyncio.iscoroutinefunction(callback):
+                            asyncio.create_task(callback(target_symbol, normalized_state))
+                        else:
+                            callback(target_symbol, normalized_state)
+                
+                # 6. UI 업데이트 지원 (시세 또는 호가 정보가 있을 때)
+                if price > 0 or msg_type == "0D":
+                    orderbook = {}
+                    if msg_type == "0D":
+                        asks = []
+                        bids = []
+                        # Kiwoom 0D 필드: 매도(41~50 가격, 61~70 잔량), 매수(51~60 가격, 71~80 잔량)
+                        for i in range(1, 11):
+                            # 매도 호가 (Asks)
+                            ask_p = values.get(str(40 + i))
+                            ask_q = values.get(str(60 + i))
+                            if ask_p and ask_q:
+                                asks.append({
+                                    "price": abs(float(str(ask_p).replace(',', ''))),
+                                    "qty": abs(float(str(ask_q).replace(',', '')))
+                                })
+                            
+                            # 매수 호가 (Bids)
+                            bid_p = values.get(str(50 + i))
+                            bid_q = values.get(str(70 + i))
+                            if bid_p and bid_q:
+                                bids.append({
+                                    "price": abs(float(str(bid_p).replace(',', ''))),
+                                    "qty": abs(float(str(bid_q).replace(',', '')))
+                                })
+                        
+                        orderbook = {"asks": asks, "bids": bids}
 
-        self._aggregate_bars(symbol, data)
+                    # 0D(호가) 패킷에는 현재가가 없는 경우가 많으므로 유지 중인 마지막 가격 사용
+                    current_display_price = price
+                    if current_display_price <= 0 and target_symbol in self.last_prices:
+                        current_display_price = self.last_prices[target_symbol]
+
+                    ui_data = {
+                        "symbol": target_symbol,
+                        "price": current_display_price,
+                        "orderbook": orderbook,
+                    }
+
+                    if self._ui_callback:
+                        self._ui_callback(ui_data)
+
+            except (ValueError, TypeError, Exception) as e:
+                print(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {type(e).__name__}: {e}")
+                continue
 
     def _aggregate_bars(self, symbol, data):
         # 메모리 상에서 틱 데이터를 기반으로 1분/5분봉/60틱봉 등을 업데이트하는 로직
