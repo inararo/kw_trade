@@ -95,30 +95,24 @@ class ScalpingTradingEnv(gym.Env):
         }
 
     def action_masks(self):
-        masks = [True, False, False]
+        masks = [True, False, False]  # Hold만 기본 허용
 
         symbol = self.config.get('symbol')
 
-        # 격리(Isolation): 특정 종목의 미체결 주문만 확인
+        # 미체결 주문이 있으면 Hold만 허용
         if self.order_manager.has_unexecuted_orders(symbol=symbol):
             return masks
 
-        # 실거래 동기화
+        # [버그 수정] 실제 가격 조회 - 0이면 매매 불가
         current_price = self._get_current_price()
+        if current_price <= 0:
+            return masks  # 가격 정보 없음 → Hold 강제
 
-        # 실제 계좌 잔고를 조회할 수 없으므로 가상 잔고 또는 글로벌/종목 리스크 한도를 참조 가능
-        # If market state is LIQUIDATING, prevent BUY mask
-        can_buy = True
-        if hasattr(self.config, 'get'):
-            # The env doesn't have a direct reference to MarketScheduler, but we can assume an external check or a flag
-            # For now, we rely on MarketScheduler handling liquidation overrides itself
-            pass
-
-        # 백테스트나 시뮬레이션용 로직 (실전에서는 예수금 확인 로직 연동 필요)
-        if self.balance >= current_price and can_buy:
+        # BUY: 잔고가 현재가 이상일 때만 허용
+        if self.balance >= current_price:
             masks[1] = True
 
-        # 보유 수량은 실제 order_manager의 상태와 동기화
+        # SELL: 실제 보유 수량 기준
         actual_holdings = self.order_manager.holdings.get(symbol, self.holdings)
         if actual_holdings > 0:
             masks[2] = True
@@ -187,7 +181,11 @@ class ScalpingTradingEnv(gym.Env):
 
         symbol = self.config.get('symbol')
         if hasattr(self.data_collector, "get_latest_price"):
+            # [버그 수정] 순수 코드와 _AL 접미사 양쪽 모두 시도
             price = self.data_collector.get_latest_price(symbol)
             if price > 0:
                 return price
-        return 1000.0
+            price = self.data_collector.get_latest_price(symbol + "_AL")
+            if price > 0:
+                return price
+        return 0.0  # 가격 미확인 시 0 반환 (caller가 BUY 차단)

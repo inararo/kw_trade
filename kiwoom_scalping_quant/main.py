@@ -9,6 +9,13 @@ from qasync import QEventLoop
 from core.container import Container
 from gui.main_window import MainWindow
 
+# import logging
+#
+# logging.basicConfig(
+#     level=logging.DEBUG,
+#     format="%(asctime)s [%(levelname)s] %(message)s"
+# )
+
 class QuantSystem:
     def __init__(self):
         # 환경 변수 로드 (.env)
@@ -46,6 +53,9 @@ class QuantSystem:
 
         # Risk Manager injection loop closing
         self.order_manager.risk_manager = self.risk_manager
+
+        # [안정화] DataCollector에 TokenManager 참조 주입 → LOGIN 실패 시 토큰 자동 갱신 가능
+        self.data_collector.config._token_manager = self.token_manager
 
         # Connect Daily Stop-Loss Signal
         self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
@@ -148,9 +158,18 @@ class QuantSystem:
         except asyncio.TimeoutError:
             print("시스템: [Step 3] 웹소켓 데이터 수신 타임아웃! (장이 닫혔거나 구독 실패일 수 있습니다)")
 
-        # Step 4: 최초 데이터 수신 확인 후 Agent/ViewModel 가동
+        # Step 4: saved_models/ 에서 최신 학습 모델을 자동 탐색하여 로드
         print("시스템: [Step 4] Agent 루프(StrategyManager) 및 Watchdog 가동 시작.")
-        self.strategy_manager.load_model("") # For now, no actual model weights (Dummy test run)
+        import glob as _glob
+        _save_dir = "./saved_models/"
+        _model_files = sorted(_glob.glob(f"{_save_dir}model_*.zip"))
+        if _model_files:
+            _latest = _model_files[-1].replace(".zip", "")
+            print(f"시스템: [Step 4] 학습된 모델 발견 → 로드: {_model_files[-1]}")
+            self.strategy_manager.load_model(_latest)
+        else:
+            print("시스템: [Step 4] 저장된 모델이 없습니다. 랜덤 초기 가중치로 실행합니다. (AI 학습 스튜디오에서 학습을 먼저 실행하세요)")
+            self.strategy_manager.load_model("")
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 

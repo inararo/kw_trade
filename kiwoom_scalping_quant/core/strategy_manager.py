@@ -51,11 +51,13 @@ class StrategyManager:
             else:
                 self.logger.info("StrategyManager: Running with initialized untrained weights.")
 
-            # 종목별 독립 환경 구성
+            # [버그 수정] 종목별 독립 환경 구성 - envs 키를 순수 코드로 통일 (DataCollector 콜백과 매칭)
             for sym in self.symbols:
-                env_config = {"symbol": sym, "initial_balance": config_dict.get("initial_balance", 10000000)}
-                self.envs[sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
-                self.last_action_times[sym] = 0.0
+                clean_sym = sym.split('_')[0]  # "005930_AL" → "005930"
+                env_config = {"symbol": clean_sym, "initial_balance": config_dict.get("initial_balance", 10000000)}
+                self.envs[clean_sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+                self.last_action_times[clean_sym] = 0.0
+                self.logger.info(f"StrategyManager: [{clean_sym}] 환경 초기화 완료.")
 
         except Exception as e:
             self.logger.error(f"StrategyManager 초기화 중 에러: {e}")
@@ -134,45 +136,67 @@ class StrategyManager:
             return
 
         try:
-            # 1. 상태 및 쿨다운 체크
+            # [진단] symbol 정규화
+            clean_symbol = symbol.split('_')[0]
+
+            # --- GATE 1: MarketState 체크 ---
             from core.scheduler import MarketState
             scheduler = getattr(self.config_manager, "_injected_scheduler", None)
             if scheduler and scheduler.current_state != MarketState.TRADING:
+                if int(time.time()) % 30 == 0:  # 30초마다 1회 출력
+                    self.logger.error(f"[AI-GATE1] [{clean_symbol}] 장 외 시간 → 판단 차단 (MarketState={scheduler.current_state})")
                 return
 
+            # --- GATE 2: 쿨다운 체크 ---
             current_time = time.time()
-            if current_time - self.last_action_times.get(symbol, 0.0) < self.cooldown_seconds:
+            elapsed = current_time - self.last_action_times.get(clean_symbol, 0.0)
+            if elapsed < self.cooldown_seconds:
+                return  # 쿨다운은 정상 로직, 로그 불필요
+
+            # --- GATE 3: env 존재 여부 ---
+            env = self.envs.get(clean_symbol)
+            if env is None:
+                self.logger.error(f"[AI-GATE3] [{clean_symbol}] 환경(env) 미등록! envs={list(self.envs.keys())}")
                 return
 
-            env = self.envs.get(symbol)
-            if not env: return
-
-            # 2. 추론 수행
+            # --- GATE 4: 데이터 버퍼 충분 여부 ---
             seq_len = self.shared_agent.seq_len
-            
-            # [버그 수정] 실제 쌓인 데이터가 seq_len에 도달했는지 먼저 확인
-            # 기존의 np.all(obs == 0) 체크는 패딩된 non-zero 배열을 통과시키는 허점이 있었음
             actual_buffer = self.data_collector.state_buffers.get(symbol, [])
-            if len(actual_buffer) < seq_len:
-                return  # 데이터 충분히 쌓이지 않으면 추론하지 않음
-            
-            obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
-            if np.all(obs == 0): return  # 이중 방어
+            buf_len = len(actual_buffer)
+            if buf_len < seq_len:
+                if int(time.time()) % 10 == 0:  # 10초마다 1회 출력
+                    self.logger.error(f"[AI-GATE4] [{clean_symbol}] 버퍼 부족 ({buf_len}/{seq_len}) → 대기 중")
+                return
 
+            # --- GATE 5: 관측값 유효성 ---
+            obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
+            if np.all(obs == 0):
+                self.logger.error(f"[AI-GATE5] [{clean_symbol}] 관측값 전체 0 → 추론 불가")
+                return
+
+            # --- 추론 실행 ---
             action_masks = env.action_masks()
             obs_batch = np.expand_dims(obs, axis=0)
-            
-            # 신뢰도(probs)와 함께 추론
+            self.logger.error(f"[AI-INFER] [{clean_symbol}] 추론 시작 | masks={action_masks} | buf={buf_len}")
+
             result = self.shared_agent.predict(obs_batch, action_masks=action_masks, return_probs=True)
             action, probs = result
             if isinstance(action, np.ndarray): action = int(action[0])
 
-            # [버그 수정] 확률 분포가 거의 동일한 경우(학습 초기/랜덤 상태)는 Hold로 강제
-            # 가장 높은 확률이 임계값(예: 50%) 이상일 때만 액션을 신뢰함
+            # 확률 분포 확인
             MIN_ACTION_CONFIDENCE = 0.50
-            max_prob = max(probs)
+            max_prob = float(max(probs))
+            raw_action = action
             if max_prob < MIN_ACTION_CONFIDENCE:
                 action = 0  # 신뢰도 부족 → Hold 강제
+
+            action_names = {0: "Hold", 1: "Buy", 2: "Sell"}
+            self.logger.error(
+                f"[AI-RESULT] [{clean_symbol}] 원본={action_names.get(raw_action,'?')} "
+                f"| 최종={action_names.get(action,'?')} "
+                f"| Hold={probs[0]:.2f} Buy={probs[1]:.2f} Sell={probs[2]:.2f} "
+                f"| max_conf={max_prob:.2f}"
+            )
 
             # AI 신뢰도 UI 업데이트 (0: Hold, 1: Buy, 2: Sell)
             confidence_dict = {
@@ -180,53 +204,48 @@ class StrategyManager:
                 "Buy": int(probs[1] * 100),
                 "Sell": int(probs[2] * 100)
             }
-            
-            # 결정된 신호 텍스트
+
             signal_text = "Hold"
             if action == 1: signal_text = "Buy"
             elif action == 2: signal_text = "Sell"
 
             vm = getattr(self.config_manager, "_injected_live_vm", None)
             if vm:
-                # [버그 수정] UI 테이블 매칭을 위해 종목 코드 정규화 (005930_AL -> 005930)
-                display_symbol = symbol.split('_')[0]
-                
-                # 1. 요약 정보 업데이트 (대시보드 테이블용)
-                if display_symbol not in vm.symbols_summary:
-                    vm.symbols_summary[display_symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
-                
-                vm.symbols_summary[display_symbol]["ai_signal"] = signal_text
+                if clean_symbol not in vm.symbols_summary:
+                    vm.symbols_summary[clean_symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
+                vm.symbols_summary[clean_symbol]["ai_signal"] = signal_text
                 vm.sig_symbols_summary_updated.emit(vm.symbols_summary)
 
-                # 2. 상세 시각화 업데이트 (선택된 종목이거나 선택이 없을 때)
-                if vm.selected_symbol == symbol or not vm.selected_symbol:
+                if vm.selected_symbol == clean_symbol or not vm.selected_symbol:
                     vm.sig_ai_confidence_updated.emit(confidence_dict)
 
             # 3. Action 수행 (1: BUY, 2: SELL)
             if action in [1, 2]:
                 str_action = "BUY" if action == 1 else "SELL"
                 current_price = self.data_collector.get_latest_price(symbol)
-                if current_price <= 0: return
+                if current_price <= 0:
+                    self.logger.error(f"[AI-ORDER] [{clean_symbol}] {str_action} 신호이나 현재가 0 → 주문 생략")
+                    return
 
                 if action == 1: # BUY - 동적 수량 계산
                     max_invest = self.risk_manager.get_max_invest_per_symbol()
                     qty = int(max_invest // current_price)
-                    
+
                     if qty <= 0:
-                        msg = f"[SYSTEM] {symbol} 매수 신호 발생했으나, 1주 가격({current_price:,.0f}원)이 설정된 최대 한도({max_invest:,.0f}원)를 초과하여 매수를 생략합니다."
-                        self.logger.warning(msg)
+                        msg = f"[SYSTEM] {clean_symbol} 매수 신호 발생했으나, 1주 가격({current_price:,.0f}원)이 설정된 최대 한도({max_invest:,.0f}원)를 초과하여 매수를 생략합니다."
+                        self.logger.error(f"[AI-ORDER] [{clean_symbol}] {msg}")
                         vm = getattr(self.config_manager, "_injected_live_vm", None)
                         if vm: vm.sig_log_appended.emit(msg)
                         return
                     target_qty = qty
                 else: # SELL
-                    target_qty = self.order_manager.holdings.get(symbol, 0)
+                    target_qty = self.order_manager.holdings.get(clean_symbol, 0)
 
                 if target_qty > 0:
-                    self.logger.error(f"StrategyManager: [{symbol}] 에이전트 결단 - {str_action} {target_qty}주")
-                    self.last_action_times[symbol] = current_time
+                    self.logger.info(f"StrategyManager: [{clean_symbol}] 에이전트 결단 - {str_action} {target_qty}주")
+                    self.last_action_times[clean_symbol] = current_time
                     asyncio.create_task(
-                        self.order_manager.execute_smart_order(str_action, symbol, target_qty, self.data_collector)
+                        self.order_manager.execute_smart_order(str_action, clean_symbol, target_qty, self.data_collector)
                     )
 
         except Exception as e:
