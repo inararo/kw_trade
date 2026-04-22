@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox
-from PyQt6.QtCore import QDate, pyqtSlot
+from PyQt6.QtCore import QDate, pyqtSlot, Qt
 
 class AssetDataManagerTab(QWidget):
     """
@@ -22,8 +22,9 @@ class AssetDataManagerTab(QWidget):
         asset_group = QGroupBox("종목 리스트 관리")
         asset_layout = QVBoxLayout()
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["종목코드", "종목명"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량"])
+        self.table.horizontalHeader().setStretchLastSection(True)
         
         # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
         self.table.setStyleSheet("""
@@ -106,7 +107,6 @@ class AssetDataManagerTab(QWidget):
         main_layout.addWidget(data_group, stretch=1)
 
     def _connect_signals(self):
-        from PyQt6.QtCore import Qt
         self.view_model.symbols_loaded.connect(self.on_symbols_loaded)
         self.view_model.symbol_update_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
         self.view_model.symbol_update_success.connect(self.on_success, Qt.ConnectionType.QueuedConnection)
@@ -167,8 +167,31 @@ class AssetDataManagerTab(QWidget):
         self.table.setRowCount(0)
         for row, sym in enumerate(symbols):
             self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(sym.get("code", "")))
-            self.table.setItem(row, 1, QTableWidgetItem(sym.get("name", "")))
+            self.table.setItem(row, 0, QTableWidgetItem(str(sym.get("code", ""))))
+            self.table.setItem(row, 1, QTableWidgetItem(str(sym.get("name", ""))))
+            
+            # 현재가 표시 및 색상 적용
+            price = sym.get("price", 0.0)
+            flu_rt = sym.get("flu_rt", 0.0)
+            price_item = QTableWidgetItem(f"{int(price):,}")
+            
+            # 등락률 아이템 생성
+            rt_item = QTableWidgetItem(f"{flu_rt:+.2f}%")
+            
+            if flu_rt > 0:
+                price_item.setForeground(Qt.GlobalColor.red)
+                rt_item.setForeground(Qt.GlobalColor.red)
+            elif flu_rt < 0:
+                price_item.setForeground(Qt.GlobalColor.blue)
+                rt_item.setForeground(Qt.GlobalColor.blue)
+                
+            self.table.setItem(row, 2, price_item)
+            self.table.setItem(row, 3, rt_item)
+            
+            # 거래량 표시 (천 단위 콤마)
+            volume = sym.get("volume", 0)
+            vol_item = QTableWidgetItem(f"{int(volume):,}")
+            self.table.setItem(row, 4, vol_item)
 
     @pyqtSlot(str)
     def on_success(self, msg: str):

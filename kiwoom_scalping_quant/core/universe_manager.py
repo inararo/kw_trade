@@ -160,11 +160,21 @@ class UniverseManager:
                             flu_rt_str = item.get("flu_rt") or item.get("prdy_ctrt") or "0"
                             flu_rt = float(flu_rt_str)
 
+                            # 거래량 후보군 (trde_qty, acml_tr_qty 등)
+                            vol_candidates = ["trde_qty", "acml_tr_qty", "stck_vol", "vol"]
+                            vol_val = "0"
+                            for cand in vol_candidates:
+                                if item.get(cand):
+                                    vol_val = item.get(cand)
+                                    break
+                            current_volume = float(str(vol_val).replace(',', ''))
+
                         except (ValueError, TypeError):
                             current_price = 0.0
                             trading_value = 0.0
                             sign = "3"
                             flu_rt = 0.0
+                            current_volume = 0.0
 
                         parsed_stock = {
                             "code": code,
@@ -172,7 +182,8 @@ class UniverseManager:
                             "price": current_price,
                             "trading_value": trading_value,
                             "sign": str(sign),
-                            "flu_rt": flu_rt
+                            "flu_rt": flu_rt,
+                            "volume": current_volume
                         }
                         raw_market.append(parsed_stock)
 

@@ -273,7 +273,13 @@ class AssetDataViewModel(QObject):
         new_symbols = []
         for stock in top_stocks:
             if isinstance(stock, dict) and "code" in stock and "name" in stock:
-                new_symbols.append({"code": stock["code"], "name": stock["name"]})
+                new_symbols.append({
+                    "code": stock["code"], 
+                    "name": stock["name"],
+                    "price": stock.get("price", 0.0),
+                    "flu_rt": stock.get("flu_rt", 0.0),
+                    "volume": stock.get("volume", 0.0)
+                })
 
         # [버그 수정] 장외 시간이거나 API 응답이 없어 리스트가 비어있을 경우 덮어쓰지 않음
         if not new_symbols:
