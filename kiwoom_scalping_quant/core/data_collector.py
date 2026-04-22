@@ -331,13 +331,17 @@ class DataCollector:
             
             # 타입 식별 (trnm이 '0B' 등인 경우와 종목 코드인 경우 구분)
             msg_type = entry.get("type") or message_data.get("type") or message_data.get("tr_id")
-            if raw_code in ["0B", "0D", "REG", "LOGIN"]: # 코드 후보가 시스템 예약어면 무시
+            
+            # [수정] PING, PONG, SYSTEM 등 상태 유지용 패킷을 예약어 리스트에 추가
+            reserved_keywords = ["0B", "0D", "REG", "LOGIN", "PING", "PONG", "SYSTEM"]
+            if str(raw_code).upper() in reserved_keywords:
                 msg_type = raw_code
                 raw_code = None
             
             if not raw_code:
-                # 진단 로그: 심볼 추출 실패 시 데이터 구조 전체 출력 (디버깅용)
-                self.logger.error(f"심볼 코드 추출 실패! 데이터 샘플: {str(entry)[:300]}")
+                # 진단 로그: 예약어가 아닌데 코드가 없는 경우에만 출력 (로그 노이즈 감소)
+                if str(msg_type).upper() not in reserved_keywords:
+                    self.logger.debug(f"심볼 코드 추출 생략 (System Message): {msg_type}")
                 continue
             
             # 관리용 심볼 매핑 (005930_AL이더라도 005930와 완전 매칭 지원)
@@ -350,8 +354,8 @@ class DataCollector:
                     break
             
             if not target_symbol:
-                # 진단 로그: 매칭 실패 시 수신된 코드와 관리 중인 리스트를 100% 출력
-                self.logger.error(f"매칭 실패! 수신코드=[{raw_code}], 구독리스트={manager_symbols}")
+                # [로그 수준 완화] 매칭 실패 로그를 error에서 debug로 낮추어 노이즈 제거
+                self.logger.debug(f"매칭 실패 및 무시: 수신코드=[{raw_code}], 구독리스트={manager_symbols}")
                 continue
 
             # 3. FID 기반 정보 추출 (10: 현재가, 15: 체결량, 13: 누적거래량)
