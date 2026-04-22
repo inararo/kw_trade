@@ -217,9 +217,9 @@ class AssetDataViewModel(QObject):
         self.token_manager = token_manager
         self.logger = logging.getLogger("AssetDataViewModel")
 
-    def build_universe(self):
+    def build_universe(self, top_n: int = 20):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
-        asyncio.create_task(self._build_universe_task(is_auto=False))
+        asyncio.create_task(self._build_universe_task(top_n=top_n, is_auto=False))
 
     async def auto_collect_after_market(self):
         """
@@ -240,10 +240,10 @@ class AssetDataViewModel(QObject):
         else:
             self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
 
-    async def _build_universe_task(self, is_auto=False):
+    async def _build_universe_task(self, top_n: int = 20, is_auto=False):
         self.sig_progress_updated.emit(0)
         if not is_auto:
-            self.sig_status_updated.emit("시장 전체 종목 조회 및 주도주 필터링 중...")
+            self.sig_status_updated.emit(f"시장 전체 종목 조회 및 주도주 필터링 중 (Top {top_n})...")
 
         access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
         if not access_token:
@@ -251,7 +251,7 @@ class AssetDataViewModel(QObject):
             return False
 
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
-        result = await self.universe_manager.build_top_n_universe(access_token, top_n=20)
+        result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n)
 
         # @future_safe returns IOFailure on exception and IOSuccess on success
         if isinstance(result, IOFailure):

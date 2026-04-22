@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication
 from qasync import QEventLoop
 
 from core.container import Container
+from core.scheduler import MarketState
 from gui.main_window import MainWindow
 
 import logging
@@ -135,14 +136,22 @@ class QuantSystem:
         print("시스템: [Step 2] 스케줄러 가동 및 기존 유니버스 로드...")
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
 
-        # [버그 수정/기능 개선] 부팅 시마다 현재가와 투자 한도를 대조하여 필터링하고 새로운 종목으로 채웁니다.
-        # 기존의 단순 로딩(load_symbols) 대신 자동 갱신(build_universe) 태스크를 비동기로 실행합니다.
-        asyncio.create_task(self.asset_vm._build_universe_task(is_auto=True))
+        # [기능 개선] 장시간(매매 가능 시간)에 부팅할 경우에만 유니버스를 자동으로 갱신합니다.
+        # 장시간 외(야간, 주말 등) 부팅 시에는 불필요한 API 호출을 방지하기 위해 수동 수집만 허용합니다.
+        current_state = self.market_scheduler.determine_state(self.market_scheduler.get_current_time())
+        prepare_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
+        
+        if current_state in prepare_states:
+            print(f"시스템: [Step 2] 장시간 부팅 확인 (상태: {current_state}) → 유니버스 자동 갱신 시작...")
+            asyncio.create_task(self.asset_vm._build_universe_task(is_auto=True))
+        else:
+            print(f"시스템: [Step 2] 장외 시간 부팅 확인 (상태: {current_state}) → 자동 갱신 생략 (기존 리스트 로드).")
+            self.asset_vm.load_symbols()
 
         try:
             # 유니버스 로드가 완료될 때까지 잠시 대기
             await asyncio.wait_for(self.universe_ready_event.wait(), timeout=10.0)
-            print(f"시스템: [Step 2] 유니버스 로드 완료 (총 {len(self.asset_vm.config_manager.get_symbols())}개 종목).")
+            print(f"시스템: [Step 2] 유니버스 준비 완료 (총 {len(self.asset_vm.config_manager.get_symbols())}개 종목).")
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 유니버스 로드 타임아웃! 기본 설정으로 진행합니다.")
 

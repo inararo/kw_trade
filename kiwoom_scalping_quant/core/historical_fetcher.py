@@ -175,8 +175,12 @@ class HistoricalFetcher:
                                     formatted_ts = raw_time
 
                                 # 증분 수집 중단 체크: 이미 DB에 있는 시점에 도달함
-                                if stop_timestamp and formatted_ts <= stop_timestamp:
-                                    self.logger.error(f"[{symbol}] 증분 수집 중단 시점 도달: {formatted_ts} <= {stop_timestamp}")
+                                # [버그 수정] T 문자와 공백 혼용으로 인한 문자열 비교 오류 방지 (정규화)
+                                norm_target = formatted_ts.replace("T", " ")
+                                norm_stop = stop_timestamp.replace("T", " ") if stop_timestamp else ""
+                                
+                                if stop_timestamp and norm_target <= norm_stop:
+                                    self.logger.error(f"[{symbol}] 증분 수집 중단 시점 도달: {norm_target} <= {norm_stop}")
                                     stop_reached = True
                                     break
 

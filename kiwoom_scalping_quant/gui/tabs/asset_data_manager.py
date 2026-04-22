@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox
 from PyQt6.QtCore import QDate, pyqtSlot
 
 class AssetDataManagerTab(QWidget):
@@ -47,7 +47,26 @@ class AssetDataManagerTab(QWidget):
         btn_layout.addWidget(self.btn_remove)
         asset_layout.addLayout(btn_layout)
 
-        self.btn_auto_universe = QPushButton("주도주 유니버스 자동 생성 (Top 20)")
+        # 유니버스 생성 개수 입력 추가
+        univ_ctrl_layout = QHBoxLayout()
+        univ_ctrl_layout.addWidget(QLabel("수집 종목 수 (Top N):"))
+        self.spin_top_n = QSpinBox()
+        self.spin_top_n.setRange(1, 100)
+        self.spin_top_n.setValue(20)
+        self.spin_top_n.setMinimumSize(90, 30) # 너비와 높이를 충분히 확보
+        self.spin_top_n.setStyleSheet("""
+            QSpinBox {
+                padding-right: 15px; 
+                background-color: #333; 
+                color: white; 
+                border: 1px solid #555;
+            }
+        """)
+        univ_ctrl_layout.addWidget(self.spin_top_n)
+        univ_ctrl_layout.addStretch()
+        asset_layout.addLayout(univ_ctrl_layout)
+
+        self.btn_auto_universe = QPushButton("주도주 유니버스 생성 (Top N)")
         self.btn_auto_universe.setStyleSheet("background-color: #2b5b84; color: white;")
         self.btn_auto_universe.clicked.connect(self._on_btn_auto_universe_clicked)
         asset_layout.addWidget(self.btn_auto_universe)
@@ -115,9 +134,10 @@ class AssetDataManagerTab(QWidget):
             QMessageBox.warning(self, "경고", "삭제할 종목을 표에서 선택해주세요.")
 
     def _on_btn_auto_universe_clicked(self):
-        reply = QMessageBox.question(self, "확인", "기존 종목 리스트가 삭제되고 주도주 Top 20으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        top_n = self.spin_top_n.value()
+        reply = QMessageBox.question(self, "확인", f"기존 종목 리스트가 삭제되고 주도주 Top {top_n}으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            self.view_model.build_universe()
+            self.view_model.build_universe(top_n=top_n)
 
     def _on_btn_collect_clicked(self):
         current_row = self.table.currentRow()

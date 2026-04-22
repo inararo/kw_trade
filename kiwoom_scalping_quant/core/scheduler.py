@@ -229,11 +229,11 @@ class MarketScheduler:
                     await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty, order_type="03")
 
         elif new_state == MarketState.POST_MARKET:
-            self.logger.info("Post-Market: Starting end-of-day data collection for final top 20 universe.")
-            vm = getattr(self.universe_manager.config_manager, "_injected_asset_data_vm", None)
-            if vm and hasattr(vm, 'auto_collect_after_market'):
-                # Call view model UI flow properly asynchronously
-                asyncio.create_task(vm.auto_collect_after_market())
+            self.logger.info("Post-Market: 장 종료 및 정산 시점입니다. (자동 수집은 사용자의 요청에 의해 생략됩니다.)")
+            # [기능 변경] 장후 자동 데이터 수집을 생략합니다. (사용자가 데이터 관리 탭에서 수동으로 수행)
+            # vm = getattr(self.universe_manager.config_manager, "_injected_asset_data_vm", None)
+            # if vm and hasattr(vm, 'auto_collect_after_market'):
+            #     asyncio.create_task(vm.auto_collect_after_market())
 
     async def _intraday_scanner_loop(self):
         """
