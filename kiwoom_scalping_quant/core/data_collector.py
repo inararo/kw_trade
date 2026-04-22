@@ -257,21 +257,39 @@ class DataCollector:
             self.logger.error("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
             
             # [Handshake] LOGIN 응답 수신 대기 (중요: 응답 확인 후 구독 진행)
+            login_success = False
             try:
                 first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                 login_res = json.loads(first_msg)
                 if login_res.get("return_code") == 0:
                     self.logger.error(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
+                    login_success = True
                 else:
-                    self.logger.error(f"LOGIN 인증 실패: {login_res.get('return_msg')} (Code: {login_res.get('return_code')})")
-                    # 실패 시에도 일단 진행 (서버마다 다를 수 있음)
+                    self.logger.error(
+                        f"LOGIN 인증 실패: {login_res.get('return_msg')} "
+                        f"(Code: {login_res.get('return_code')}) "
+                        f"\u2192 토큰 갱신 요청 후 재연결 대기"
+                    )
+                    # [토큰 인증 실패] 지정된 config.token_manager를 통해 토큰 갱신 시도
+                    token_mgr = getattr(self.config, '_token_manager', None) or getattr(self.config, 'token_manager', None)
+                    if token_mgr and hasattr(token_mgr, 'refresh_token'):
+                        self.logger.error("LOGIN 실패: 토큰 갱신을 시도합니다...")
+                        await token_mgr.refresh_token()
+                        await asyncio.sleep(3.0)  # 서버 처리 대기
+                    else:
+                        await asyncio.sleep(10.0)  # token_manager 없으면 10초 대기
+                    return  # 웹소켓 컨텍스트 종료 → 자동 재연결 루프로
             except Exception as e:
                 self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
+                return
+
+            # LOGIN 성공 시에만 구독 진행
+            if not login_success:
+                return
 
             symbols = self.subscription_manager.get_symbols()
             if symbols:
                 self.logger.error(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
-                # [Step 2] 개별 순차 구독 요청 (서버 거절 방지)
                 for sym in symbols:
                     await self.subscribe_symbol(sym)
                 self.logger.error("초기 종목 구독 요청 완료.")
