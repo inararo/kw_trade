@@ -9,12 +9,12 @@ from qasync import QEventLoop
 from core.container import Container
 from gui.main_window import MainWindow
 
-# import logging
-#
-# logging.basicConfig(
-#     level=logging.DEBUG,
-#     format="%(asctime)s [%(levelname)s] %(message)s"
-# )
+import logging
+
+logging.basicConfig(
+    level=logging.ERROR,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 class QuantSystem:
     def __init__(self):
@@ -276,24 +276,40 @@ def main():
         else:
             raise e
     finally:
-        # 2. Final cleanup and grace period
+        # 2. 종료 후 잔여 태스크 정리 및 I/O 캐시 플러시를 위한 최종 유예
         print("System: Performing final cleanup sequence...")
         try:
-            # Cancel all remaining tasks before closing loop
-            tasks = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            # 루프가 닫히기 전 모든 태스크 취소
+            tasks = [t for t in asyncio.all_workers(loop) if not t.done()] if hasattr(asyncio, 'all_workers') else [t for t in asyncio.all_tasks(loop) if not t.done()]
+            
             if tasks:
                 for task in tasks:
                     task.cancel()
-                # Give tasks a chance to finalize (0.5s)
-                loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+                
+                # 취소된 태스크들이 정리될 기회를 주기 위해 루프를 잠깐 더 돌림
+                try:
+                    # gather를 통해 모든 태스크 취소를 기다림 (타임아웃 1초)
+                    loop.run_until_complete(asyncio.wait(tasks, timeout=1.0))
+                except Exception:
+                    pass
             
-            # Final delay for Proactor (IOCP) handles
-            loop.run_until_complete(asyncio.sleep(0.1))
-            
+            # Windows Proactor (IOCP) 핸들이 완전히 닫힐 시간을 주기 위한 짧은 유예
+            try:
+                loop.run_until_complete(asyncio.sleep(0.2))
+            except Exception:
+                pass
+
             if not loop.is_closed():
                 loop.stop()
-                loop.close()
-                print("System: Async loop closed safely.")
+                # [중요] qasync/proactor 환경에서 이미 Mutex가 삭제되었을 수 있으므로 예외 무시
+                try:
+                    loop.close()
+                    print("System: Async loop closed safely.")
+                except RuntimeError as e:
+                    if "QMutex" in str(e) or "deleted" in str(e).lower():
+                        print("System: Async loop terminated (resource already cleaned by OS/Qt).")
+                    else:
+                        raise e
         except Exception as cleanup_e:
             print(f"System: Cleanup error (ignored): {cleanup_e}")
         

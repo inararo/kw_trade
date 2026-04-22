@@ -84,8 +84,8 @@ class DataCollector:
                 ]
             })
             await self.ws_connection.send(msg)
-            # 서버 부하 방지 지연
-            await asyncio.sleep(0.2)
+            # 서버 부하 및 Windows 소켓 버퍼 오버플로우 방지 지연 (0.2 -> 0.3초)
+            await asyncio.sleep(0.3)
 
         return True
 
@@ -219,17 +219,23 @@ class DataCollector:
         # Watchdog 태스크 시작
         self._watchdog_task = asyncio.create_task(self._watchdog())
 
+        retry_delay = 1
         try:
             while self.is_running:
                 try:
                     await self._connect_and_listen()
+                    # 연결이 한 번이라도 성공적으로 유지되었다가 끊기면 딜레이 초기화
+                    retry_delay = 1
                 except asyncio.CancelledError:
                     self.logger.info("DataCollector 루프 완전 취소됨.")
                     break
                 except Exception as e:
                     self.logger.error(f"WebSocket 연결 오류: {e}")
                     if self.is_running:
-                        await asyncio.sleep(1) # 재연결 대기
+                        self.logger.info(f"재연결 시도 중... ({retry_delay}초 대기)")
+                        await asyncio.sleep(retry_delay)
+                        # 지수 백오프 (최대 30초)
+                        retry_delay = min(retry_delay * 2, 30)
         finally:
             self.is_running = False
 
@@ -293,9 +299,14 @@ class DataCollector:
             symbols = self.subscription_manager.get_symbols()
             if symbols:
                 self.logger.error(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
-                for sym in symbols:
-                    await self.subscribe_symbol(sym)
-                self.logger.error("초기 종목 구독 요청 완료.")
+                try:
+                    for sym in symbols:
+                        if not self.is_running:
+                            break
+                        await self.subscribe_symbol(sym)
+                    self.logger.error("초기 종목 구독 요청 완료.")
+                except Exception as e:
+                    self.logger.error(f"초기 구독 프로세스 중 오류 발생 (무시하고 계속 진행): {e}")
 
             try:
                 async for message in websocket:
@@ -325,6 +336,11 @@ class DataCollector:
             except asyncio.CancelledError:
                 self.logger.info("DataCollector: WebSocket 메시지 수신 루프가 취소되었습니다.")
                 raise
+            finally:
+                # [안정화] 연결이 끊기면 관련 상태를 명확히 초기화
+                self.ws_connected_event.clear()
+                self.ws_connection = None
+                self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
 
     async def _process_tick(self, message_data):
         """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
@@ -486,6 +502,10 @@ class DataCollector:
                 # 방어 로직 1: 웹소켓 구독이 완료되고 최초 데이터가 들어온 이후에만 감시 시작
                 if not self.ws_connected_event.is_set() or not self.first_data_received_event.is_set():
                     self.last_receive_time = time.time() # 억울하게 죽지 않도록 타이머 갱신
+                    continue
+                
+                # [추가] 최초 데이터 수신 직후 10초간은 네트워크 안정화를 위해 감시 유예
+                if time.time() - self.last_receive_time < 10.0:
                     continue
 
                 # 방어 로직 2: Market Scheduler 상태 확인 (장이 열려있을 때만)

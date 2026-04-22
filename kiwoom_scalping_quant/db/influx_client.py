@@ -18,9 +18,9 @@ class AsyncInfluxDBClient:
         if self.token == "YOUR_TOKEN" or not self.token:
             self.logger.warning("⚠️ InfluxDB 토큰이 기본값(YOUR_TOKEN)이거나 비어있습니다. .env 파일을 확인하세요.")
 
-        # 타임아웃 설정을 60초로 연장 (기본값은 보통 10~30초)
+        # 타임아웃 설정을 300초(5분)로 연장 (대량의 과거 데이터 조회 대응)
         from aiohttp import ClientTimeout
-        timeout = ClientTimeout(total=60)
+        timeout = ClientTimeout(total=300)
         self.client = InfluxDBClientAsync(url=self.url, token=self.token, org=self.org, timeout=timeout)
         self.write_api = self.client.write_api()
 
@@ -78,11 +78,15 @@ class AsyncInfluxDBClient:
         """특정 종목의 가장 최신 데이터 타임스탬프를 가져옵니다. (증분 수집용)"""
         try:
             query_api = self.client.query_api()
+            
+            # 접미사 제거된 순수 심볼 추출
+            clean_symbol = symbol.split('_')[0].strip()
+            
             query = f'''
                 from(bucket: "{self.bucket}")
                 |> range(start: -1y)
                 |> filter(fn: (r) => r["_measurement"] == "historical_data" or r["_measurement"] == "tick_data")
-                |> filter(fn: (r) => r["symbol"] == "{symbol}")
+                |> filter(fn: (r) => r["symbol"] == "{symbol}" or r["symbol"] == "{clean_symbol}")
                 |> last()
             '''
             tables = await query_api.query(query, org=self.org)
@@ -92,23 +96,27 @@ class AsyncInfluxDBClient:
                     return record.get_time().isoformat().replace("+00:00", "").replace("Z", "").split(".")[0]
             return None
         except Exception as e:
-            self.logger.error(f"InfluxDB 마지막 타임스탬프 조회 실패: {e}")
+            self.logger.error(f"InfluxDB 마지막 타임스탬프 조회 실패 (Symbol: {symbol}/{clean_symbol}): {e}")
             return None
 
     async def fetch_recent_data(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
         """
         학습용 데이터를 제공하기 위해 InfluxDB에서 특정 종목의 최근 데이터를 가져옵니다.
         """
-        self.logger.error(f"InfluxDB: [{symbol}] 과거 데이터 {limit}건 조회 시도")
+        # 접미사 제거된 순수 심볼 추출
+        clean_symbol = symbol.split('_')[0].strip()
+        search_range = "-1y" # 최근 30일에서 1년으로 확장 (과거 수집분 포함)
+
+        self.logger.error(f"InfluxDB: [{symbol}/{clean_symbol}] 과거 데이터 {limit}건 조회 시도 (범위: {search_range})")
 
         try:
             query_api = self.client.query_api()
-            # Simple Flux query to get recent data
+            # 원본 심볼과 정규화된 심볼을 모두 검색 (데이터 수집 시점의 형식 차이 대응)
             query = f'''
                 from(bucket: "{self.bucket}")
-                |> range(start: -30d)
+                |> range(start: {search_range})
                 |> filter(fn: (r) => r["_measurement"] == "historical_data" or r["_measurement"] == "tick_data")
-                |> filter(fn: (r) => r["symbol"] == "{symbol}")
+                |> filter(fn: (r) => r["symbol"] == "{symbol}" or r["symbol"] == "{clean_symbol}")
                 |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
                 |> sort(columns: ["_time"], desc: true)
                 |> limit(n: {limit})
@@ -129,14 +137,16 @@ class AsyncInfluxDBClient:
                     })
 
             if not results:
-                self.logger.error(f"InfluxDB: [{symbol}] 조회된 데이터가 없습니다 (0건).")
+                self.logger.error(
+                    f"InfluxDB: [{symbol}] 조회 결과가 없습니다. "
+                    f"(필터: symbol='{symbol}' OR '{clean_symbol}', 범위: {search_range})"
+                )
 
             # 역순 정렬을 원래 시간순(오름차순)으로 뒤집어서 반환
             return list(reversed(results))
 
         except Exception as e:
             self.logger.error(f"   [에러] InfluxDB [{symbol}] 조회 실패: {type(e).__name__} - {str(e)}")
-            # 상세한 디버깅을 위해 재발생시키거나 빈 리스트 반환
             return []
 
     async def bulk_insert(self, data_list: List[Dict[str, Any]], measurement: str = "historical_data"):
