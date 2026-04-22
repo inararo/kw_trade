@@ -29,10 +29,11 @@ class LiveDashboardViewModel(QObject):
     sig_risk_metrics_updated = pyqtSignal(float, float) # current PnL, available invest limit
     sig_status_alert = pyqtSignal(str)
 
-    def __init__(self, data_collector, order_manager):
+    def __init__(self, data_collector, order_manager, config_manager):
         super().__init__()
         self.data_collector = data_collector
         self.order_manager = order_manager
+        self.config_manager = config_manager
         self._is_running = False
         self._mock_task = None
 
@@ -40,12 +41,17 @@ class LiveDashboardViewModel(QObject):
         self.selected_symbol = None
         self.symbols_summary = {}
 
+        # 종목명 캐시 (Code -> Name): 접미사(_AL) 제거 후 순수 코드와 매핑
+        self._symbol_names = {
+            s.get("code", "").split('_')[0]: s.get("name") 
+            for s in self.config_manager.get_symbols() if s.get("code")
+        }
+
         # UI logging hook for Signal Only mode bypass messages
         if hasattr(self.order_manager, 'signals'):
             self.order_manager.signals.signal_only_log.connect(self.append_log)
 
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
-        # qasync 환경: asyncio와 Qt가 동일 스레드이므로 직접 호출이 안전함
         self.data_collector.set_ui_callback(self._on_data_received)
 
     def append_log(self, msg: str):
@@ -64,10 +70,19 @@ class LiveDashboardViewModel(QObject):
             symbol = raw_symbol.split('_')[0].strip()
 
             if symbol not in self.symbols_summary:
-                self.symbols_summary[symbol] = {"price": 0, "ai_signal": "-", "holdings": 0}
+                name = self._symbol_names.get(symbol)
+                if not name:
+                    # 캐시에 없으면 config에서 새로 조회 (중간에 추가된 종목 대응)
+                    for s in self.config_manager.get_symbols():
+                        cfg_code = s.get("code", "").split('_')[0]
+                        if cfg_code == symbol:
+                            name = s.get("name")
+                            self._symbol_names[symbol] = name
+                            break
+                
+                name = name or "-"
+                self.symbols_summary[symbol] = {"name": name, "price": 0, "ai_signal": "-", "holdings": 0}
 
-            if "price" in data:
-                self.symbols_summary[symbol]["price"] = data["price"]
             if "price" in data:
                 self.symbols_summary[symbol]["price"] = data["price"]
 

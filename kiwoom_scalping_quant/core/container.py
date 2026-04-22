@@ -99,7 +99,8 @@ class Container(containers.DeclarativeContainer):
     live_dashboard_view_model = providers.Factory(
         LiveDashboardViewModel,
         data_collector=data_collector,
-        order_manager=order_manager
+        order_manager=order_manager,
+        config_manager=config_manager
     )
 
     asset_data_view_model = providers.Factory(

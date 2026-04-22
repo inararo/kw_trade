@@ -38,10 +38,23 @@ class LiveDashboardTab(QWidget):
         master_group = QGroupBox("전체 감시 종목 (Universe)")
         master_layout = QVBoxLayout()
 
-        self.summary_table = QTableWidget(0, 4)
-        self.summary_table.setHorizontalHeaderLabels(["종목코드", "현재가", "AI 신호", "보유량"])
+        self.summary_table = QTableWidget(0, 5)
+        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "AI 신호", "보유량"])
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
+        self.summary_table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #3b3b3b;
+            }
+            QTableWidget::item:selected {
+                background-color: #007acc;
+                color: white;
+                font-weight: bold;
+            }
+        """)
+        
         self.summary_table.itemSelectionChanged.connect(self._on_table_selection_changed)
         master_layout.addWidget(self.summary_table)
 
@@ -136,30 +149,39 @@ class LiveDashboardTab(QWidget):
                 row = self.summary_table.rowCount()
                 self.summary_table.insertRow(row)
                 self.summary_table.setItem(row, 0, QTableWidgetItem(symbol))
+                
+                # 종목명 초기 설정 (index 1)
+                name = data.get('name', '-')
+                self.summary_table.setItem(row, 1, QTableWidgetItem(name))
                 symbol_to_row[symbol] = row
             
             row = symbol_to_row[symbol]
             
-            # 현재가 업데이트
+            # 종목명 업데이트 (필요시)
+            name = data.get('name', '-')
+            if self.summary_table.item(row, 1) is None or self.summary_table.item(row, 1).text() != name:
+                self.summary_table.setItem(row, 1, QTableWidgetItem(name))
+
+            # 현재가 업데이트 (index 2)
             price = data.get('price', 0)
             price_str = f"{price:,.0f}"
-            if self.summary_table.item(row, 1) is None or self.summary_table.item(row, 1).text() != price_str:
-                self.summary_table.setItem(row, 1, QTableWidgetItem(price_str))
+            if self.summary_table.item(row, 2) is None or self.summary_table.item(row, 2).text() != price_str:
+                self.summary_table.setItem(row, 2, QTableWidgetItem(price_str))
 
-            # AI 신호 업데이트
+            # AI 신호 업데이트 (index 3)
             ai_sig = data.get('ai_signal', '-')
-            if self.summary_table.item(row, 2) is None or self.summary_table.item(row, 2).text() != ai_sig:
+            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != ai_sig:
                 item_sig = QTableWidgetItem(ai_sig)
                 if ai_sig == "Buy":
                     item_sig.setForeground(Qt.GlobalColor.red)
                 elif ai_sig == "Sell":
                     item_sig.setForeground(Qt.GlobalColor.blue)
-                self.summary_table.setItem(row, 2, item_sig)
+                self.summary_table.setItem(row, 3, item_sig)
 
-            # 보유량 업데이트
+            # 보유량 업데이트 (index 4)
             holdings_str = str(data.get('holdings', 0))
-            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != holdings_str:
-                self.summary_table.setItem(row, 3, QTableWidgetItem(holdings_str))
+            if self.summary_table.item(row, 4) is None or self.summary_table.item(row, 4).text() != holdings_str:
+                self.summary_table.setItem(row, 4, QTableWidgetItem(holdings_str))
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):

@@ -24,6 +24,16 @@ class AssetDataManagerTab(QWidget):
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["종목코드", "종목명"])
+        
+        # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
+        self.table.setStyleSheet("""
+            QTableWidget::item:selected {
+                background-color: #007acc;
+                color: white;
+                font-weight: bold;
+            }
+        """)
+        
         asset_layout.addWidget(self.table)
 
         btn_layout = QHBoxLayout()
