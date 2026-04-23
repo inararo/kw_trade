@@ -157,7 +157,7 @@ class BacktestStudioTab(QWidget):
         if kpi.get('Total Return', 0) > 0:
             self.lbl_return.setStyleSheet("color: red; font-size: 16px; font-weight: bold;")
         else:
-            self.lbl_return.setStyleSheet("color: blue; font-size: 16px; font-weight: bold;")
+            self.lbl_return.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
 
         self.lbl_winrate.setText(f"승률: {kpi.get('Win Rate', 0):.2f} %")
         self.lbl_mdd.setText(f"MDD: {kpi.get('MDD', 0):.2f} %")

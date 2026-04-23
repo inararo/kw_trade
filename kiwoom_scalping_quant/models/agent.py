@@ -109,8 +109,14 @@ class TradingAgentWrapper:
             obs_tensor, _ = self.model.policy.obs_to_tensor(state)
             with torch.no_grad():
                 # 정책망으로부터 확률 분포 획득
-                # MaskablePPO의 경우 action_masks가 이미 apply_mask 등을 통해 반영된 분포를 반환함
                 distribution = self.model.policy.get_distribution(obs_tensor)
+                
+                # [보강] MaskablePPO의 경우 action_masks를 수동으로 적용해야 정확한 확률 분포(마스킹 반영)가 나옴
+                if action_masks is not None and hasattr(distribution, 'apply_mask'):
+                    # action_masks를 텐서로 변환하여 적용 (금지된 액션의 확률을 0으로 만듦)
+                    mask_tensor = torch.as_tensor(action_masks).to(obs_tensor.device)
+                    distribution.apply_mask(mask_tensor)
+
                 if hasattr(distribution, 'distribution') and hasattr(distribution.distribution, 'probs'):
                     probs = distribution.distribution.probs
                 else:

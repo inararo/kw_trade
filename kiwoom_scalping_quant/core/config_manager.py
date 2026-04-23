@@ -26,7 +26,11 @@ class ConfigManager:
         try:
             # 1. Load config.yaml
             if not os.path.exists(self.config_path):
-                self._config_cache = {"symbols": [], "ws_url": "ws://localhost:8080"}
+                self._config_cache = {
+                    "symbols": [], 
+                    "ws_url": "ws://localhost:8080",
+                    "ai_confidence_threshold": 0.5 # [신규] 기본 임계값
+                }
                 self.save_config()
             else:
                 with open(self.config_path, "r", encoding="utf-8") as f:

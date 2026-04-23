@@ -155,6 +155,19 @@ class SettingsTab(QWidget):
 
         system_group.setLayout(sys_form)
         main_layout.addWidget(system_group)
+        
+        # 6. AI Settings Group
+        ai_group = QGroupBox("AI 매매 설정")
+        ai_form = QFormLayout()
+        
+        self.spin_confidence_threshold = QDoubleSpinBox()
+        self.spin_confidence_threshold.setRange(0.0, 1.0)
+        self.spin_confidence_threshold.setSingleStep(0.05)
+        self.spin_confidence_threshold.setDecimals(2)
+        ai_form.addRow("AI 매매 신뢰도 임계값:", self.spin_confidence_threshold)
+        
+        ai_group.setLayout(ai_form)
+        main_layout.addWidget(ai_group)
 
         # 5. 하단 제어 버튼
         btn_layout = QHBoxLayout()
@@ -208,7 +221,8 @@ class SettingsTab(QWidget):
             "max_open_positions": self.spin_max_open_positions.value(),
             "enable_cutoff": self.chk_enable_cutoff.isChecked(),
             "cutoff_time": self.time_cutoff.time().toString("HH:mm"),
-            "protected_symbols": protected_symbols
+            "protected_symbols": protected_symbols,
+            "ai_confidence_threshold": self.spin_confidence_threshold.value()
         }
 
     # --- UI Action Handlers ---
@@ -260,6 +274,8 @@ class SettingsTab(QWidget):
         self.chk_enable_cutoff.setChecked(config.get("enable_cutoff", False))
         cutoff_str = config.get("cutoff_time", "13:00")
         self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
+
+        self.spin_confidence_threshold.setValue(float(config.get("ai_confidence_threshold", 0.5)))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

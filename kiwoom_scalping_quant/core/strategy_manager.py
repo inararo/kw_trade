@@ -201,16 +201,17 @@ class StrategyManager:
             action, probs = result
             if isinstance(action, np.ndarray): action = int(action[0])
 
-            # 확률 분포 확인
-            MIN_ACTION_CONFIDENCE = 0.50
+            # 확률 분포 및 최신 임계값 확인 (전역 설정 연동)
+            ai_threshold = self.config_manager.get("ai_confidence_threshold", 0.5)
             max_prob = float(max(probs))
             raw_action = action
-            if max_prob < MIN_ACTION_CONFIDENCE:
+            
+            if max_prob < ai_threshold:
                 action = 0  # 신뢰도 부족 → Hold 강제
 
             action_names = {0: "Hold", 1: "Buy", 2: "Sell"}
 
-            if action == 1: self.logger.error(
+            self.logger.error(
                 f"[AI-RESULT] [{clean_symbol}] 원본={action_names.get(raw_action,'?')} "
                 f"| 최종={action_names.get(action,'?')} "
                 f"| Hold={probs[0]:.2f} Buy={probs[1]:.2f} Sell={probs[2]:.2f} "
