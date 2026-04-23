@@ -91,7 +91,7 @@ class AITrainingStudioTab(QWidget):
 
         # [즉각 반응] 시작 버튼을 먼저 비활성화하여 중복 클릭 방지
         self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(False) # 데이터 로딩 중에는 중지 불가 (추후 개선 가능)
+        self.btn_stop.setEnabled(True) # [수정] 데이터 로딩 단계에서도 중지 가능하도록 즉시 활성화
 
         self._step_data.clear()
         self._reward_data.clear()

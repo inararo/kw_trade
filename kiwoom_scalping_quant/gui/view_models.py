@@ -521,6 +521,7 @@ class AITrainingViewModel(QObject):
         self.order_manager = order_manager
         self.influx_client = influx_client
         self.worker = None
+        self.prep_task = None # [신규] 데이터 조회 및 준비 태스크 추적용
 
     def start_training(self, total_timesteps: int, learning_rate: float, max_records: int):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
@@ -528,7 +529,11 @@ class AITrainingViewModel(QObject):
             self.sig_error.emit("이미 학습이 진행 중입니다.")
             return
 
-        asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records))
+        # 이전 태스크가 남아있다면 정리
+        if self.prep_task and not self.prep_task.done():
+            self.prep_task.cancel()
+
+        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records))
 
     async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
@@ -570,8 +575,15 @@ class AITrainingViewModel(QObject):
                 self.sig_error.emit("학습 가능한 데이터가 어느 종목에서도 발견되지 않았습니다.")
                 return
 
+            self.worker.start()
+
+        except asyncio.CancelledError:
+            self.sig_training_log.emit("   [알림] 데이터 조회 및 학습 준비 작업이 사용자에 의해 중단되었습니다.")
+            self.sig_training_finished.emit()
+            raise # 이벤트 루프에 취소 사실 전파
         except Exception as e:
             self.sig_error.emit(f"데이터 조회 준비 작업 중 에러: {e}")
+            self.sig_training_finished.emit()
             return
 
         # 2. Env 생성 및 Agent 주입
