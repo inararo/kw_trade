@@ -35,6 +35,22 @@ class StrategyManager:
 
         # 동적 유니버스 스왑을 위한 락
         self._swap_lock = asyncio.Lock()
+        
+        # [제어] AI 매매 판단 일시정지 플래그 (Safety Switch)
+        self.is_ai_paused = False
+
+    def set_ai_paused(self, paused: bool):
+        """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개합니다."""
+        self.is_ai_paused = paused
+        self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
+        
+        # [제어] AI 매매 판단 일시정지 플래그
+        self.is_ai_paused = False
+
+    def set_ai_paused(self, paused: bool):
+        """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개합니다."""
+        self.is_ai_paused = paused
+        self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
 
     def load_model(self, model_path: str):
         """초기 통합 모델 생성 및 가격 로드"""
@@ -132,7 +148,7 @@ class StrategyManager:
 
     async def _on_tick_event(self, symbol: str, normalized_state=None):
         """데이터 수신 시 호출되는 핵심 리스너 (Event-Driven)"""
-        if not self.is_running:
+        if not self.is_running or self.is_ai_paused:
             return
 
         try:
@@ -171,14 +187,15 @@ class StrategyManager:
             # --- GATE 5: 관측값 유효성 ---
             obs = self.data_collector.get_latest_state(symbol, seq_len=seq_len)
             if np.all(obs == 0):
-                self.logger.error(f"[AI-GATE5] [{clean_symbol}] 관측값 전체 0 → 추론 불가")
+                self.logger.info(f"[AI-GATE5] [{clean_symbol}] 관측값 전체 0 → 추론 불가")
                 return
 
             # --- 추론 실행 ---
             # Gymnasium v1.0 호환성: 래퍼 체인 내 속성 탐색을 위해 get_wrapper_attr 사용
             action_masks = env.get_wrapper_attr('action_masks')()
             obs_batch = np.expand_dims(obs, axis=0)
-            self.logger.error(f"[AI-INFER] [{clean_symbol}] 추론 시작 | masks={action_masks} | buf={buf_len}")
+
+            self.logger.info(f"[AI-INFER] [{clean_symbol}] 추론 시작 | masks={action_masks} | buf={buf_len}")
 
             result = self.shared_agent.predict(obs_batch, action_masks=action_masks, return_probs=True)
             action, probs = result
@@ -192,7 +209,8 @@ class StrategyManager:
                 action = 0  # 신뢰도 부족 → Hold 강제
 
             action_names = {0: "Hold", 1: "Buy", 2: "Sell"}
-            self.logger.error(
+
+            if action == 1: self.logger.error(
                 f"[AI-RESULT] [{clean_symbol}] 원본={action_names.get(raw_action,'?')} "
                 f"| 최종={action_names.get(action,'?')} "
                 f"| Hold={probs[0]:.2f} Buy={probs[1]:.2f} Sell={probs[2]:.2f} "
@@ -243,7 +261,7 @@ class StrategyManager:
                     target_qty = self.order_manager.holdings.get(clean_symbol, 0)
 
                 if target_qty > 0:
-                    self.logger.info(f"StrategyManager: [{clean_symbol}] 에이전트 결단 - {str_action} {target_qty}주")
+                    self.logger.error(f"StrategyManager: [{clean_symbol}] 에이전트 결단 - {str_action} {target_qty}주")
                     self.last_action_times[clean_symbol] = current_time
                     asyncio.create_task(
                         self.order_manager.execute_smart_order(str_action, clean_symbol, target_qty, self.data_collector)

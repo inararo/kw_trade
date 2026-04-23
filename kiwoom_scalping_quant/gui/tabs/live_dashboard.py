@@ -99,6 +99,27 @@ class LiveDashboardTab(QWidget):
         self.btn_mock.clicked.connect(self.view_model.start_mock_stream)
         control_layout.addWidget(self.btn_mock)
 
+        # [신규 추가] 시스템 실시간 제어 패널
+        sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
+        sys_ctrl_layout = QVBoxLayout()
+        
+        # 1. 종목 감시 (Websocket) 제어 버튼
+        self.btn_monitor_toggle = QPushButton("🛰️ 종목 감시 중지")
+        self.btn_monitor_toggle.setCheckable(True)
+        self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
+        self.btn_monitor_toggle.clicked.connect(self._on_monitor_toggle_clicked)
+        sys_ctrl_layout.addWidget(self.btn_monitor_toggle)
+        
+        # 2. AI 매매 의사결정 제어 버튼
+        self.btn_ai_toggle = QPushButton("🤖 AI 매매 일시 정지")
+        self.btn_ai_toggle.setCheckable(True)
+        self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 35px;")
+        self.btn_ai_toggle.clicked.connect(self._on_ai_toggle_clicked)
+        sys_ctrl_layout.addWidget(self.btn_ai_toggle)
+        
+        sys_ctrl_group.setLayout(sys_ctrl_layout)
+        control_layout.addWidget(sys_ctrl_group)
+
         # 체결 및 시스템 로그 리스트
         control_layout.addWidget(QLabel("시스템 및 체결 로그:"))
         self.log_list = QListWidget()
@@ -113,6 +134,29 @@ class LiveDashboardTab(QWidget):
 
         control_group.setLayout(control_layout)
         main_layout.addWidget(control_group, stretch=1)
+
+    # --- 실시간 제어 슬롯 ---
+    def _on_monitor_toggle_clicked(self, checked):
+        if checked:
+            self.btn_monitor_toggle.setText("📡 종목 감시 재개")
+            self.btn_monitor_toggle.setStyleSheet("background-color: #d32f2f; font-weight: bold; height: 35px;")
+            self.btn_ai_toggle.setEnabled(False) # 감시 중단 시 AI 제어 불가
+        else:
+            self.btn_monitor_toggle.setText("🛰️ 종목 감시 중지")
+            self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
+            self.btn_ai_toggle.setEnabled(True)
+            
+        self.view_model.toggle_monitoring(checked)
+
+    def _on_ai_toggle_clicked(self, checked):
+        if checked:
+            self.btn_ai_toggle.setText("⛔ AI 매매 일시 정지")
+            self.btn_ai_toggle.setStyleSheet("background-color: #f57c00; font-weight: bold; height: 35px;")
+        else:
+            self.btn_ai_toggle.setText("🤖 AI 자동 매매 재개")
+            self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 35px;")
+            
+        self.view_model.toggle_ai_trading(checked)
 
     def _connect_signals(self):
         self.view_model.sig_symbols_summary_updated.connect(self.on_symbols_summary_updated)

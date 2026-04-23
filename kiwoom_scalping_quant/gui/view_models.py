@@ -28,6 +28,10 @@ class LiveDashboardViewModel(QObject):
     # Risk Limits and Alerts
     sig_risk_metrics_updated = pyqtSignal(float, float) # current PnL, available invest limit
     sig_status_alert = pyqtSignal(str)
+    
+    # [제어 상태 시그널]
+    sig_trading_paused = pyqtSignal(bool)    # True: 일시정지, False: 재개
+    sig_monitoring_stopped = pyqtSignal(bool) # True: 중지, False: 감시중
 
     def __init__(self, data_collector, order_manager, config_manager):
         super().__init__()
@@ -144,6 +148,32 @@ class LiveDashboardViewModel(QObject):
         self.sig_log_appended.emit("메뉴: 당일 손익 데이터 초기화...")
         # 실제 로직은 계좌 관리 객체나 PnL 트래커를 리셋해야 함.
         self.sig_menu_action_result.emit("손익 초기화", "당일 누적 손익 데이터가 초기화되었습니다.")
+
+    # --- [실시간 제어 액션] ---
+    def toggle_ai_trading(self, paused: bool):
+        """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개"""
+        sm = getattr(self.config_manager, "_injected_strategy_manager", None)
+        if sm:
+            sm.set_ai_paused(paused)
+            self.sig_trading_paused.emit(paused)
+            status = "일시정지" if paused else "재개"
+            msg = f"[시스템] 🤖 AI 매매 의사결정이 {status}되었습니다."
+            self.sig_log_appended.emit(msg)
+
+    def toggle_monitoring(self, stopped: bool):
+        """실시간 데이터 수집(웹소켓) 자체를 중단하거나 재개"""
+        if stopped:
+            self._is_monitoring_stopped = True
+            asyncio.create_task(self.data_collector.stop())
+            self.sig_monitoring_stopped.emit(True)
+            self.sig_log_appended.emit("[시스템] 📡 실시간 종목 감시가 중단되었습니다. (웹소켓 연결 해제)")
+        else:
+            self._is_monitoring_stopped = False
+            # 재시작 전 안전하게 플래그 리셋
+            self.data_collector.is_running = True 
+            asyncio.create_task(self.data_collector.start())
+            self.sig_monitoring_stopped.emit(False)
+            self.sig_log_appended.emit("[시스템] 📡 실시간 종목 감시를 재개합니다. (재연결 시도 중...)")
 
     async def _execute_panic_sell(self):
         try:
