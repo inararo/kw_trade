@@ -575,8 +575,6 @@ class AITrainingViewModel(QObject):
                 self.sig_error.emit("학습 가능한 데이터가 어느 종목에서도 발견되지 않았습니다.")
                 return
 
-            self.worker.start()
-
         except asyncio.CancelledError:
             self.sig_training_log.emit("   [알림] 데이터 조회 및 학습 준비 작업이 사용자에 의해 중단되었습니다.")
             self.sig_training_finished.emit()
@@ -598,8 +596,11 @@ class AITrainingViewModel(QObject):
         }
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
-        # 설정 업데이트 (LR 반영 등)
-        agent_config = {"seq_len": 10, "learning_rate": lr}
+        # 설정 업데이트 (LR, Ent_Coef 반영 등)
+        ent_coef = 0.03  # 사용자의 요청에 따른 적극적 탐험 계수 (0.01~0.05)
+        agent_config = {"seq_len": 10, "learning_rate": lr, "ent_coef": ent_coef}
+        
+        self.sig_training_log.emit(f"   => 탐험 강도(Entropy Coefficient)를 {ent_coef}로 설정하여 관망 편향을 억제합니다.")
         agent = TradingAgentWrapper(env, agent_config)
 
         # 3. 최신 모델 가중치 자동 로드 (연속 학습 지원)
@@ -636,8 +637,14 @@ class AITrainingViewModel(QObject):
 
     def stop_training(self):
         """학습 중지 버튼 클릭 시"""
+        # 1. 데이터 조회 단계인 경우 태스크 취소
+        if self.prep_task and not self.prep_task.done():
+            self.sig_training_log.emit("데이터 조회 작업을 취소합니다...")
+            self.prep_task.cancel()
+            
+        # 2. 이미 학습 워커(Thread)가 실행 중인 경우
         if self.worker and self.worker.isRunning():
-            self.sig_training_log.emit("학습 중지 요청 전송됨...")
+            self.sig_training_log.emit("학습 워커 중지 요청 전송됨...")
             self.worker.stop()
 
 class SettingsViewModel(QObject):

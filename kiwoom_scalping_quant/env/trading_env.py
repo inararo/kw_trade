@@ -38,6 +38,11 @@ class ScalpingTradingEnv(gym.Env):
         self.historical_data_dict = config.get("historical_data_dict", None)
         self.historical_data = config.get("historical_data", None)
 
+        # 뇌동매매 방지용 변수
+        self.cooldown_steps = 5
+        self.steps_since_buy = 0
+        self.initial_price = 0
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
@@ -71,6 +76,10 @@ class ScalpingTradingEnv(gym.Env):
             self.end_step = 0
 
         self.reward_history = []
+        self.steps_since_buy = 0
+        
+        # 시작가 저장 (정규화 기준점)
+        self.initial_price = self._get_current_price()
 
         obs = self._get_observation()
         info = self._get_info()
@@ -83,17 +92,30 @@ class ScalpingTradingEnv(gym.Env):
             max_idx = len(self.historical_data) - 1
             idx = min(self.current_step, max_idx)
 
-            # (단순화: historical_data에서 seq_len 만큼 추출하여 패딩)
+            # (혁신: 원시 가격 -> 수익률 및 정규화 데이터로 변환)
             seq = []
+            prices = [row.get("price", 1000) for row in self.historical_data]
+            volumes = [row.get("volume", 0) for row in self.historical_data]
+            
+            # 기준값 계산
+            local_prices = prices[max(0, idx-50):idx+1]
+            local_volumes = volumes[max(0, idx-50):idx+1]
+            mean_p, std_p = np.mean(local_prices), np.std(local_prices) + 1e-9
+            mean_v, std_v = np.mean(local_volumes), np.std(local_volumes) + 1e-9
+
             for i in range(self.seq_len):
                 target_idx = max(0, idx - self.seq_len + 1 + i)
-                # Assuming data is a dict with raw prices/volumes, we'd normally pass it to FeatureEngineer.
-                # For this snippet's scope, we construct a dummy or simple normalized state.
                 row = self.historical_data[target_idx]
+                
+                # Z-Score 정규화 및 상대 수익률 계산
+                curr_p = row.get("price", 1000)
+                norm_price = (curr_p - mean_p) / std_p
+                rel_change = (curr_p - self.initial_price) / (self.initial_price + 1e-9)
+                norm_vol = (row.get("volume", 0) - mean_v) / std_v
+                
                 state_slice = np.array([
-                    row.get("price", 1000),
-                    row.get("volume", 0),
-                    0.0, 0.0, 0.0 # OIR, Volatility, Agg (Mocked for historical if not pre-calculated)
+                    norm_price, rel_change, norm_vol, 
+                    row.get("OIR", 0.0), row.get("Volatility", 0.0)
                 ], dtype=np.float32)
                 seq.append(state_slice)
             return np.concatenate(seq)
@@ -131,10 +153,12 @@ class ScalpingTradingEnv(gym.Env):
         if self.balance >= current_price:
             masks[1] = True
 
-        # SELL: 실제 보유 수량 기준
+        # SELL: 실제 보유 수량 기준 + 쿨다운 체크
         actual_holdings = self.order_manager.holdings.get(symbol, self.holdings)
         if actual_holdings > 0:
-            masks[2] = True
+            # 매수 후 최소 5스텝이 지나야 매도 가능
+            if self.steps_since_buy >= self.cooldown_steps:
+                masks[2] = True
 
         return masks
 
@@ -158,17 +182,35 @@ class ScalpingTradingEnv(gym.Env):
         # 3. 행동 이후의 총자산 가치
         new_net_worth = self.balance + (self.holdings * current_price)
 
-        # 4. 자산 증감분을 초기 자본금 대비 수익률(%)로 변환 및 스케일링
+        # 4. 자산 증감분 계산
+        delta_net_worth = new_net_worth - prev_net_worth
         initial_balance = float(self.config.get('initial_balance', 10000000))
-        pct_change = (new_net_worth - prev_net_worth) / initial_balance
+        pct_change = delta_net_worth / initial_balance
         step_reward = pct_change * 100.0
+        
+        # [수수료 체감] 매매 시 발생하는 고정 비용(Transaction Cost) 부여
+        transaction_cost = 0.05 # 수수료 + 슬리피지 추정치
+        if action == 1 or action == 2:
+            step_reward -= transaction_cost
+
+        # [수익 강화] 매도(Action 2) 시 수익이 발생했다면 보상 증폭
+        if action == 2 and delta_net_worth > 0:
+            step_reward *= 2.0
+            step_reward += 0.5  # 추가 수익 보너스
+
+        # 쿨다운용 카운트 업데이트
+        if action == 1:
+            self.steps_since_buy = 0
+        elif self.holdings > 0:
+            self.steps_since_buy += 1
 
         # 극단적인 값이 나오지 않도록 클리핑 (예: -10 ~ 10 사이)
         step_reward = float(np.clip(step_reward, -10.0, 10.0))
 
-        # 5. 시간 패널티 (Hold 방지) 스케일링된 보상에 맞게 미세 조정
+        # 5. [패널티 조정] 시간 패널티 (Hold 방지)
+        # 수수료(0.05)보다 작게 설정하여 억지 매매 방지
         if action == 0 and self.holdings == 0:
-            step_reward -= 0.001 # 무포지션 관망 시 미세한 패널티
+            step_reward -= 0.005
 
         self.reward_history.append(step_reward)
         if len(self.reward_history) > 10:
