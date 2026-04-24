@@ -108,6 +108,18 @@ class TradingAgentWrapper:
         else:
             raise FileNotFoundError(f"Model weights not found at {path}")
 
+    @staticmethod
+    def get_model_dimension(path: str) -> int:
+        """모델 파일을 실제로 에칭하기 전에 관측 차원(Dimension)만 추출합니다."""
+        try:
+            # env=None으로 로드하여 메타데이터만 확인
+            model = MaskablePPO.load(path, env=None)
+            if hasattr(model, "observation_space"):
+                return model.observation_space.shape[0]
+        except Exception:
+            pass
+        return 0
+
     def predict(self, state: np.ndarray, action_masks: Optional[np.ndarray] = None, return_probs: bool = False):
         """실시간 틱 데이터에서 다음 행동 추론"""
         action, _states = self.model.predict(state, action_masks=action_masks, deterministic=True)

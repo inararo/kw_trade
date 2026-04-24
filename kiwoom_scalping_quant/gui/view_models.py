@@ -882,14 +882,27 @@ class BacktestViewModel(QObject):
             from env.trading_env import ScalpingTradingEnv
             from models.agent import TradingAgentWrapper
 
+            # [혁신] 모델 파일 분석을 통해 feature_mode 자동 감지
+            model_dim = TradingAgentWrapper.get_model_dimension(self.model_path)
+            detected_mode = "basic"
+            if model_dim == 70:
+                detected_mode = "advanced"
+            elif model_dim == 50:
+                detected_mode = "basic"
+            else:
+                self.logger.warning(f"알 수 없는 모델 차원({model_dim}). 기본 설정(basic)을 사용합니다.")
+
             # historical_data를 직접 주입하고 모드를 backtest로 설정하여 전체 구간 테스트
             env_config = {
                 "symbol": symbol,
                 "initial_balance": 10000000,
                 "historical_data": data_list,
-                "mode": "backtest"
+                "mode": "backtest",
+                "feature_mode": detected_mode
             }
             env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+            
+            print(f"   => 백테스트 설정: 모델 차원({model_dim}) 감지됨. 분석 모드를 '{detected_mode}'로 자동 전환합니다.")
 
             agent_config = {"seq_len": 10}
             agent = TradingAgentWrapper(env, agent_config)
