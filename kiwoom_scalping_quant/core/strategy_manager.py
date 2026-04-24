@@ -169,11 +169,28 @@ class StrategyManager:
             if elapsed < self.cooldown_seconds:
                 return  # 쿨다운은 정상 로직, 로그 불필요
 
-            # --- GATE 3: env 존재 여부 ---
+            # --- GATE 3: env 존재 여부 (Lazy Initialization) ---
             env = self.envs.get(clean_symbol)
             if env is None:
-                self.logger.error(f"[AI-GATE3] [{clean_symbol}] 환경(env) 미등록! envs={list(self.envs.keys())}")
-                return
+                self.logger.info(f"[AI-GATE3] [{clean_symbol}] 실시간 환경(env) 미등록 발견 → 즉시 생성 및 등록 시도")
+                from env.trading_env import ScalpingTradingEnv
+                
+                # 전역 설정에서 현재 feature_mode 및 초기 자산 획득
+                config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+                feature_mode = config_dict.get("feature_mode", "basic")
+                initial_balance = config_dict.get("initial_balance", 10000000)
+                
+                env_config = {
+                    "symbol": clean_symbol, 
+                    "initial_balance": initial_balance,
+                    "feature_mode": feature_mode
+                }
+                
+                # 환경 생성 및 등록
+                self.envs[clean_symbol] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+                self.last_action_times[clean_symbol] = 0.0
+                env = self.envs[clean_symbol]
+                self.logger.info(f"   => [{clean_symbol}] 환경 등록 완료 (Mode: {feature_mode})")
 
             # --- GATE 4: 데이터 버퍼 충분 여부 ---
             seq_len = self.shared_agent.seq_len
