@@ -24,6 +24,81 @@ class UniverseManager:
         self.app_key = os.getenv("KIWOOM_APP_KEY")
         self.app_secret = os.getenv("KIWOOM_APP_SECRET")
         self.logger = logging.getLogger("UniverseManager")
+        
+        # 종목명 로컬 캐시 설정
+        self.cache_dir = "data"
+        self.cache_path = os.path.join(self.cache_dir, "stock_names.json")
+        self._name_cache = {}
+        self._load_name_cache()
+
+    def _load_name_cache(self):
+        """로컬 JSON 파일에서 종목명 캐시를 불러옵니다."""
+        import json
+        try:
+            if os.path.exists(self.cache_path):
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    self._name_cache = json.load(f)
+                self.logger.info(f"로컬 종목명 캐시 로드 완료: {len(self._name_cache)}건")
+        except Exception as e:
+            self.logger.error(f"종목명 캐시 로드 에러: {e}")
+
+    def _save_name_cache(self):
+        """메모리상의 종목명 캐시를 로컬 JSON 파일로 저장합니다."""
+        import json
+        try:
+            if not os.path.exists(self.cache_dir):
+                os.makedirs(self.cache_dir)
+            with open(self.cache_path, "w", encoding="utf-8") as f:
+                json.dump(self._name_cache, f, ensure_ascii=False, indent=4)
+        except Exception as e:
+            self.logger.error(f"종목명 캐시 저장 에러: {e}")
+
+    async def get_stock_name(self, access_token: str, code: str) -> Optional[str]:
+        """키움 API 마스터 정보를 활용하여 종목코드에 해당하는 한글명을 반환합니다."""
+        clean_code = code.split('_')[0].strip()
+        
+        # 1. 캐시 확인
+        if clean_code in self._name_cache:
+            return self._name_cache[clean_code]
+
+        # 2. API 조회 (ka10001: 주식 기본정보 요청)
+        endpoint = f"{self.base_url}/api/dostk/stkitem"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "api-id": "ka10001",
+            "Content-Type": "application/json"
+        }
+        params = {"stk_cd": clean_code}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, headers=headers, json=params, timeout=5) as response:
+                    status = response.status
+                    if status == 200:
+                        data = await response.json()
+                        # 응답 구조 내에서 한글 명칭 추출 (stkitem, opt10001, output 등 유연하게 대응)
+                        output = data.get("stkitem", {}) or data.get("opt10001", {}) or data.get("output", {})
+                        name = output.get("stk_nm") or output.get("hts_kor_isnm")
+                        
+                        if name:
+                            self.logger.debug(f"종목명 매핑 성공: {clean_code} -> {name}")
+                            self._name_cache[clean_code] = name
+                            self._save_name_cache() # [신규] 로컬 파일에 즉시 저장
+                            return name
+                        else:
+                            self.logger.warning(f"종목명 매핑 실패 (데이터 없음): {clean_code} | Keys: {list(data.keys())}")
+                    else:
+                        err_text = await response.text()
+                        self.logger.error(f"종목명 조회 API 에러 (Status {status}): {err_text}")
+        except Exception as e:
+            self.logger.warning(f"종목명 조회 예외 발생 ({clean_code}): {e}")
+            
+        return None
+
+    def get_stock_name_from_cache(self, code: str) -> Optional[str]:
+        """서버 호출 없이 로컬 캐시에서만 이름을 즉시 반환합니다."""
+        clean_code = code.split('_')[0].strip()
+        return self._name_cache.get(clean_code)
 
     def _is_valid_scalping_symbol(self, name: str, code: str) -> bool:
         """
@@ -132,6 +207,11 @@ class UniverseManager:
                         code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
                         name = item.get("stk_nm") or item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
 
+                        # [혁신] 발견된 종목명 정보를 로컬 캐시에 즉시 업데이트 (DB 로드 시 한글 이름 복원용)
+                        if code and name and "Unknown" not in name:
+                            clean_code = code.split('_')[0].strip()
+                            self._name_cache[clean_code] = name
+
                         # Handle string representation of numerical values
                         try:
                             # 현재가 파싱 후보군 자동 탐색 (사용자 로그에서 cur_prc 확인됨)
@@ -186,6 +266,10 @@ class UniverseManager:
                             "volume": current_volume
                         }
                         raw_market.append(parsed_stock)
+
+                    # [혁신] 루프 종료 후 한글 종목명 캐시를 파일로 한번에 저장
+                    if items:
+                        self._save_name_cache()
 
         except asyncio.TimeoutError:
             self.logger.error("API 요청 시간 초과 (Timeout).")

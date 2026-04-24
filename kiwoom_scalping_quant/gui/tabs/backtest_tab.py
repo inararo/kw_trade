@@ -177,6 +177,18 @@ class BacktestStudioTab(QWidget):
 
         self.price_curve.setData(steps, prices)
 
+        # [혁신] Y축 자동 스케일링: 데이터 범위에 맞춰 축 최적화
+        if len(prices) > 0:
+            y_min, y_max = prices.min(), prices.max()
+            # 가격 변동폭의 10%를 마진으로 적용 (변동이 없는 경우 대비 0.01% 최소 마진)
+            margin = (y_max - y_min) * 0.1 if y_max > y_min else prices[0] * 0.01
+            # 만약 가격이 0이라면 마진을 기본값으로 설정
+            if margin == 0: margin = 100 
+            
+            self.plot_widget.setYRange(y_min - margin, y_max + margin, padding=0)
+            self.plot_widget.setXRange(steps.min(), steps.max(), padding=0.02)
+            self.plot_widget.enableAutoRange(axis='y', enable=False) # 수동 설정 후 자동추적 중지 (고정)
+
         buys = df[df['action'] == 'Buy']
         sells = df[df['action'] == 'Sell']
 

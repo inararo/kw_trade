@@ -152,20 +152,34 @@ class AsyncInfluxDBClient:
     async def fetch_data_by_range(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
         특정 기간(시작일~종료일)의 데이터를 InfluxDB에서 조회합니다.
-        start_date, end_date: "YYYYMMDD" 형식 문자열
+        start_date, end_date: "YYYYMMDD" 또는 "YYYY-MM-DD" 형식 지원
         """
+        if not start_date or not end_date:
+            self.logger.warning(f"InfluxDB: 조회 날짜가 비어있습니다. (Start: {start_date}, End: {end_date})")
+            return []
+
         clean_symbol = symbol.split('_')[0].strip()
         
         try:
-            # 날짜 포맷팅 (YYYYMMDD -> RFC3339)
             import datetime
-            s_dt = datetime.datetime.strptime(start_date, "%Y%m%d")
-            e_dt = datetime.datetime.strptime(end_date, "%Y%m%d").replace(hour=23, minute=59, second=59)
+            # 하이픈(-) 제거하여 YYYYMMDD 포맷으로 통일
+            s_str = start_date.replace("-", "").replace("/", "").strip()
+            e_str = end_date.replace("-", "").replace("/", "").strip()
+            
+            s_dt = datetime.datetime.strptime(s_str, "%Y%m%d")
+            # 종료일은 해당 날짜의 마지막 순간(23:59:59)까지 포함
+            e_dt = datetime.datetime.strptime(e_str, "%Y%m%d").replace(hour=23, minute=59, second=59)
+            
+            # [방어 로직] InfluxDB의 "cannot query an empty range" 에러 방지
+            if s_dt >= e_dt:
+                self.logger.warning(f"InfluxDB: 시작일({s_str})이 종료일({e_str})보다 늦거나 같습니다. 범위를 강제 조정합니다.")
+                # 시작일과 종료일이 같으면 종료일을 +1초 하여 최소 범위 확보
+                e_dt = s_dt + datetime.timedelta(seconds=1)
             
             start_iso = s_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             stop_iso = e_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-            self.logger.info(f"InfluxDB: [{symbol}] 기간 조회 ({start_iso} ~ {stop_iso})")
+            self.logger.info(f"InfluxDB: [{symbol}/{clean_symbol}] 기간 조회 ({start_iso} ~ {stop_iso})")
 
             query_api = self.client.query_api()
             query = f'''

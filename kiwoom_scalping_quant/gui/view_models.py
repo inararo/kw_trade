@@ -263,15 +263,32 @@ class AssetDataViewModel(QObject):
             self.symbol_update_failed.emit("DB에서 저장된 종목 데이터를 찾을 수 없습니다.")
             return
 
-        # DB에는 코드만 저장되어 있으므로 이름을 코드와 동일하게 설정 (추후 보완 가능)
-        new_symbols = [{"code": s, "name": s} for s in symbols]
+        self.sig_status_updated.emit(f"DB 심볼 {len(symbols)}개 발견. 로컬 캐시 매핑 중...")
         
+        # [최적화] 서버 호출 없이 로컬 캐시 정보만 활용
+        new_symbols = []
+        
+        for raw_code in symbols:
+            # 기본값은 코드명
+            stock_name = raw_code 
+            
+            # 1. 로컬 파일 캐시에서만 명칭 조회 (서버 호출 배제)
+            if hasattr(self.universe_manager, 'get_stock_name_from_cache'):
+                name_result = self.universe_manager.get_stock_name_from_cache(raw_code)
+                if name_result:
+                    stock_name = name_result
+            
+            new_symbols.append({
+                "code": raw_code, 
+                "name": stock_name
+            })
+            
         # Config 업데이트 및 저장 (set_symbols 내부에서 자동 저장됨)
         self.config_manager.set_symbols(new_symbols)
         
         # UI 동기화
         self.symbols_loaded.emit(new_symbols)
-        self.symbol_update_success.emit(f"DB로부터 {len(symbols)}개의 종목 리스트를 성공적으로 불러왔습니다.")
+        self.symbol_update_success.emit(f"DB로부터 {len(symbols)}개의 종목 리스트를 로컬 캐시 기반으로 불러왔습니다.")
         self.sig_status_updated.emit("대기 중")
 
     async def auto_collect_after_market(self):

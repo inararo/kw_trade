@@ -132,7 +132,11 @@ class StrategyManager:
                 if sym not in self.symbols:
                     self.logger.info(f"StrategyManager: [{sym}] 신규 유니버스 편입.")
                     self.symbols.append(sym)
-                    env_config = {"symbol": sym, "initial_balance": config_dict.get("initial_balance", 10000000)}
+                    env_config = {
+                        "symbol": sym, 
+                        "initial_balance": config_dict.get("initial_balance", 10000000),
+                        "feature_mode": config_dict.get("feature_mode", "basic")
+                    }
                     self.envs[sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
                     self.last_action_times[sym] = 0.0
 

@@ -51,12 +51,14 @@ class BacktestEngine:
             # 4. 정보 기록 (매 스텝 기록하여 차트 연속성 유지)
             current_price = getattr(env, '_get_current_price', lambda: 1000.0)()
             
+            # [필터링] 모델이 선택한 action이 아니라, 환경에서 실제로 승인/실행된 action(action_executed)을 기록
+            action_executed = info.get("action_executed", action)
             action_map = {0: "Hold", 1: "Buy", 2: "Sell"}
             
             self.history.append({
                 "step": step,
                 "price": current_price,
-                "action": action_map.get(action, "Hold"),
+                "action": action_map.get(action_executed, "Hold"),
                 "reward": reward,
                 "balance": info.get('balance', initial_balance)
             })

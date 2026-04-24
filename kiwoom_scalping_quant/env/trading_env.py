@@ -96,6 +96,7 @@ class ScalpingTradingEnv(gym.Env):
 
         self.reward_history = []
         self.steps_since_buy = 0
+        self.avg_entry_price = 0.0  # [추가] 매수 단가 추적용
         
         # 시작가 저장 (정규화 기준점)
         self.initial_price = self._get_current_price()
@@ -201,47 +202,83 @@ class ScalpingTradingEnv(gym.Env):
         prev_net_worth = self.balance + (self.holdings * current_price)
 
         # 2. 액션 수행 (수수료/슬리피지 적용)
+        action_executed = action
+        invalid_action_penalty = 0.0
+        
         if action == 1: # Buy
             cost = current_price * (1 + slippage)
-            self.balance -= cost
-            self.holdings += 1
+            if self.holdings > 0:
+                # [버그 수정] 이미 보유 중인데 또 매수하려 함 → Hold로 강제 전환 및 벌점
+                action_executed = 0
+                invalid_action_penalty = -0.01
+                self.logger.debug(f"Action 1(BUY) 무효: 이미 {self.holdings}주 보유 중. 강제 Hold 전환.")
+            elif self.balance < cost:
+                # 잔고 부족
+                action_executed = 0
+                invalid_action_penalty = -0.01
+                self.logger.debug(f"Action 1(BUY) 무효: 잔고 부족({self.balance} < {cost}). 강제 Hold 전환.")
+            else:
+                self.balance -= cost
+                self.holdings += 1
+                self.avg_entry_price = cost  # [추가] 매수 단가 저장
+                
         elif action == 2: # Sell
-            revenue = current_price * (1 - slippage)
-            self.balance += revenue
-            self.holdings -= 1
+            if self.holdings <= 0:
+                # [버그 수정] 팔 주식이 없는데 매도하려 함 → Hold로 강제 전환 및 벌점
+                action_executed = 0
+                invalid_action_penalty = -0.01
+                self.logger.debug("Action 2(SELL) 무효: 보유 주식 없음. 강제 Hold 전환.")
+            else:
+                revenue = current_price * (1 - slippage)
+                self.balance += revenue
+                self.holdings -= 1
 
-        # 3. 행동 이후의 총자산 가치
+        # 3. 행동 이후의 총자산 가치 (실제 실행된 action_executed 기준)
         new_net_worth = self.balance + (self.holdings * current_price)
 
-        # 4. 자산 증감분 계산
-        delta_net_worth = new_net_worth - prev_net_worth
-        initial_balance = float(self.config.get('initial_balance', 10000000))
-        pct_change = delta_net_worth / initial_balance
-        step_reward = pct_change * 100.0
+        step_reward = 0.0
         
         # [수수료 체감] 매매 시 발생하는 고정 비용(Transaction Cost) 부여
         transaction_cost = 0.05 # 수수료 + 슬리피지 추정치
-        if action == 1 or action == 2:
+        if action_executed == 1:
             step_reward -= transaction_cost
+        elif action_executed == 2:
+            step_reward -= transaction_cost
+            # [혁신] 미실현 수익 보상 제거 & 실현 수익(Realized PnL) 중심 보상 체계 적용
+            revenue = current_price * (1 - slippage)
+            realized_profit = revenue - self.avg_entry_price
+            profit_pct = (realized_profit / self.avg_entry_price) * 100.0 if self.avg_entry_price > 0 else 0.0
 
-        # [수익 강화] 매도(Action 2) 시 수익이 발생했다면 보상 증폭
-        if action == 2 and delta_net_worth > 0:
-            step_reward *= 2.0
-            step_reward += 0.5  # 추가 수익 보너스
+            if profit_pct > 0:
+                # 수익 실현 시 강력한 도파민 보강 (10배 증폭 + 성공 보너스)
+                step_reward += (profit_pct * 10.0) + 1.0
+                self.logger.info(f"   >>> [DOPAMINE] 실현 수익 발생! 보상 증폭 적용. Reward: {step_reward:.4f}")
+            else:
+                # 손실 시에는 손실 분만큼 직접 차감
+                step_reward += profit_pct
+            
+            self.avg_entry_price = 0.0 # 매도 후 평단가 리셋
+        
+        # [벌점] 불가능한 액션 시도에 대한 패널티 추가
+        step_reward += invalid_action_penalty
 
         # 쿨다운용 카운트 업데이트
-        if action == 1:
+        if action_executed == 1:
             self.steps_since_buy = 0
         elif self.holdings > 0:
             self.steps_since_buy += 1
 
+        # 4. [패널티 조정] 상태별 차등 시간 패널티 부여 (Hold Bias 및 존버 방지)
+        if action_executed == 0:
+            if self.holdings > 0:
+                # [혁신] 주식을 보유한 상태에서 관망 시 강한 '보유 패널티' 부과 (시간 감가)
+                step_reward -= 0.0050
+            else:
+                # 무포지션 관망 패널티 (기존 0.002)
+                step_reward -= 0.0020
+
         # 극단적인 값이 나오지 않도록 클리핑 (예: -10 ~ 10 사이)
         step_reward = float(np.clip(step_reward, -10.0, 10.0))
-
-        # 5. [패널티 조정] 시간 패널티 (Hold 방지)
-        # 수수료(0.05)보다 작게 설정하여 억지 매매 방지
-        if action == 0 and self.holdings == 0:
-            step_reward -= 0.005
 
         self.reward_history.append(step_reward)
         if len(self.reward_history) > 10:
@@ -263,6 +300,21 @@ class ScalpingTradingEnv(gym.Env):
         # [기능 개선] 고정된 에피소드 길이(max_steps) 도달 시 종료
         if self.historical_data is not None and self.current_step >= self.end_step:
             truncated = True
+
+        # [추가] 에피소드 종료 시 강제 청산 (Force Close) 및 오버나잇 패널티
+        if (terminated or truncated) and self.holdings > 0:
+            revenue = current_price * (1 - slippage)
+            self.balance += revenue
+            self.holdings -= 1
+            realized_profit = revenue - self.avg_entry_price
+            profit_pct = (realized_profit / self.avg_entry_price) * 100.0 if self.avg_entry_price > 0 else 0.0
+            
+            # 오버나잇 강제 청산 패널티 부여 (-5.0)
+            step_reward += profit_pct - 5.0
+            self.logger.warning(f"에피소드 종료 강제 청산! (Overnight Penalty 부과) PnL: {profit_pct:.2f}%")
+
+        # [추가] 실제 실행된 액션 정보를 info에 담아 시각화 도구가 필터링할 수 있게 도움
+        info["action_executed"] = action_executed
 
         return obs, step_reward, terminated, truncated, info
 

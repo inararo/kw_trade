@@ -106,24 +106,27 @@ class AdvancedFeatureEngineer:
         # 3. MA Disparity (이동평균 이격도 - 20틱 기준)
         df['ma20'] = df['price'].rolling(window=20, min_periods=1).mean()
         df['ma_disparity'] = (df['price'] - df['ma20']) / (df['ma20'] + 1e-9)
-        # 이격도 정규화 (대략 -0.05 ~ 0.05 범위를 -1.0 ~ 1.0으로 스케일링, 극단값 클리핑)
-        df['ma_disp_norm'] = (df['ma_disparity'] * 20.0).clip(-1.0, 1.0)
+        # 이격도 정규화 (스케일을 20.0 -> 50.0으로 상향하여 미세한 꺽임 강조)
+        df['ma_disp_norm'] = (df['ma_disparity'] * 50.0).clip(-1.0, 1.0)
         
         # 4. Bollinger Bands Position (상/하단선 기준 위치)
         df['std20'] = df['price'].rolling(window=20, min_periods=1).std().fillna(0)
         df['upper'] = df['ma20'] + (2 * df['std20'])
         df['lower'] = df['ma20'] - (2 * df['std20'])
         band_range = df['upper'] - df['lower']
-        # 하단=0, 중간=0.5, 상단=1.0. 이걸 -1.0 ~ 1.0으로
-        df['bb_pos'] = np.where(band_range > 0, (df['price'] - df['lower']) / band_range, 0.5)
+        # 하단=0, 중간=0.5, 상단=1.0. 이걸 -1.0 ~ 1.0으로 전환
+        df['bb_pos'] = np.where(band_range > 1e-9, (df['price'] - df['lower']) / (band_range + 1e-9), 0.5)
         df['bb_pos_norm'] = (df['bb_pos'] - 0.5) * 2.0
         df['bb_pos_norm'] = df['bb_pos_norm'].clip(-1.0, 1.0)
         
         # 5. Volume Spike (거래량 급증)
         df['vol_ma20'] = df['volume'].rolling(window=20, min_periods=1).mean()
         df['vol_spike'] = df['volume'] / (df['vol_ma20'] + 1e-9)
-        # 평소=1.0. 0~5 범위를 대략 -1.0 ~ 1.0으로 스케일링
-        df['vol_spike_norm'] = (df['vol_spike'] / 2.5 - 1.0).clip(-1.0, 1.0)
+        # 거래량이 MA 대비 3배 이상이면 1.0에 수렴하도록 조정
+        df['vol_spike_norm'] = (df['vol_spike'] / 2.0 - 1.0).clip(-1.0, 1.0)
+        
+        # 6. 수익률 정규화 (변동폭이 작을 수 있으므로 100.0 -> 200.0배 증폭)
+        df['return_norm'] = (df['price_return'] * 200.0).clip(-1.0, 1.0)
         
         # 6. 수익률 정규화 (최근 50 스텝 기준 Z-Score 모방, 통상 -1~1 사이)
         df['return_norm'] = (df['price_return'] * 100.0).clip(-1.0, 1.0)
