@@ -15,8 +15,14 @@ class ScalpingTradingEnv(gym.Env):
         self.config = config
         self.logger = logging.getLogger("ScalpingTradingEnv")
 
-        # [Price, Volume, OIR, Volatility, Aggressiveness]
-        self.single_feature_dim = 5
+        self.feature_mode = config.get('feature_mode', 'basic')
+        
+        # [모드 분기] Basic: 5차원, Advanced: 7차원
+        if self.feature_mode == 'advanced':
+            self.single_feature_dim = 7
+        else:
+            self.single_feature_dim = 5
+            
         self.seq_len = config.get('seq_len', 10)
         self.feature_dim = self.single_feature_dim * self.seq_len
 
@@ -58,6 +64,19 @@ class ScalpingTradingEnv(gym.Env):
         self.balance = self.config.get('initial_balance', 10000000)
         self.holdings = 0
         
+        # [피처 전처리 캐싱] Advanced 모드일 경우 전체 배열을 한 번에 Pandas로 전처리
+        if self.historical_data is not None and self.feature_mode == 'advanced':
+            from core.feature_engineer import AdvancedFeatureEngineer
+            symbol = self.config.get('symbol', 'unknown')
+            
+            if hasattr(self, '_feature_cache') is False:
+                self._feature_cache = {}
+                
+            if symbol not in self._feature_cache:
+                self.logger.info(f"[{symbol}] Advanced Feature DataFrame 계산 및 캐싱 중...")
+                self._feature_cache[symbol] = AdvancedFeatureEngineer.process_historical_data(self.historical_data)
+            self.precomputed_features = self._feature_cache[symbol]
+        
         # [기능 개선] 랜덤 시작점 로직 도입 (백테스트 모드일 경우 0부터 시작)
         if self.historical_data is not None:
             data_len = len(self.historical_data)
@@ -92,7 +111,19 @@ class ScalpingTradingEnv(gym.Env):
             max_idx = len(self.historical_data) - 1
             idx = min(self.current_step, max_idx)
 
-            # (혁신: 원시 가격 -> 수익률 및 정규화 데이터로 변환)
+            # [O(1) 캐싱 대응] Advanced 모드면 캐시에서 바로 꺼내옴
+            if self.feature_mode == 'advanced' and hasattr(self, 'precomputed_features'):
+                seq = []
+                for i in range(self.seq_len):
+                    target_idx = max(0, idx - self.seq_len + 1 + i)
+                    # 만약 데이터 길이가 짧아 target_idx가 범위를 벗어나면 패딩
+                    if len(self.precomputed_features) > target_idx:
+                        seq.append(self.precomputed_features[target_idx])
+                    else:
+                        seq.append(np.zeros(self.single_feature_dim, dtype=np.float32))
+                return np.concatenate(seq)
+
+            # (Basic 모드 로직: 원시 가격 -> 수익률 및 정규화 데이터로 변환)
             seq = []
             prices = [row.get("price", 1000) for row in self.historical_data]
             volumes = [row.get("volume", 0) for row in self.historical_data]

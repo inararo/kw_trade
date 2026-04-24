@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget, QComboBox
 from PyQt6.QtCore import pyqtSlot
 import pyqtgraph as pg
 
@@ -36,6 +36,10 @@ class AITrainingStudioTab(QWidget):
         self.spin_max_records.setValue(100000)
         self.spin_max_records.setSingleStep(1000)
         form_layout.addRow("데이터 로드 건수 (종목당):", self.spin_max_records)
+
+        self.combo_feature_mode = QComboBox()
+        self.combo_feature_mode.addItems(["Basic (단순 가격/거래량)", "Advanced (보조지표 추가)"])
+        form_layout.addRow("데이터 분석 모드:", self.combo_feature_mode)
 
         self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
@@ -88,6 +92,7 @@ class AITrainingStudioTab(QWidget):
         timesteps = self.spin_steps.value()
         lr = self.spin_lr.value()
         max_records = self.spin_max_records.value()
+        feature_mode = "advanced" if self.combo_feature_mode.currentIndex() == 1 else "basic"
 
         # [즉각 반응] 시작 버튼을 먼저 비활성화하여 중복 클릭 방지
         self.btn_start.setEnabled(False)
@@ -98,7 +103,7 @@ class AITrainingStudioTab(QWidget):
         self.reward_curve.setData([], [])
         self.log_list.clear()
 
-        self.view_model.start_training(timesteps, lr, max_records)
+        self.view_model.start_training(timesteps, lr, max_records, feature_mode=feature_mode)
 
     def _on_stop_clicked(self):
         self.btn_stop.setEnabled(False) # 중복 중단 요청 방지

@@ -523,7 +523,7 @@ class AITrainingViewModel(QObject):
         self.worker = None
         self.prep_task = None # [신규] 데이터 조회 및 준비 태스크 추적용
 
-    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int):
+    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, feature_mode: str = "basic"):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
@@ -533,9 +533,9 @@ class AITrainingViewModel(QObject):
         if self.prep_task and not self.prep_task.done():
             self.prep_task.cancel()
 
-        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records))
+        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records, feature_mode))
 
-    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int):
+    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, feature_mode: str):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
         # [안정성 강화] 동시 조회 개수를 3개로 제한
         sem = asyncio.Semaphore(3)
@@ -589,16 +589,22 @@ class AITrainingViewModel(QObject):
         from models.agent import TradingAgentWrapper
         from gui.training_worker import TrainingWorker, TrainingSignals
 
-        self.sig_training_log.emit("2. RL Environment 생성 및 Agent 초기화 (다중 종목 모드)...")
+        self.sig_training_log.emit(f"2. RL Environment 생성 및 Agent 초기화 (Feature Mode: {feature_mode})...")
         env_config = {
             "historical_data_dict": historical_data_dict,
-            "initial_balance": 10000000
+            "initial_balance": 10000000,
+            "feature_mode": feature_mode
         }
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
         # 설정 업데이트 (LR, Ent_Coef 반영 등)
         ent_coef = 0.03  # 사용자의 요청에 따른 적극적 탐험 계수 (0.01~0.05)
-        agent_config = {"seq_len": 10, "learning_rate": lr, "ent_coef": ent_coef}
+        agent_config = {
+            "seq_len": 10,
+            "learning_rate": lr,
+            "ent_coef": ent_coef,
+            "feature_mode": feature_mode  # 에이전트에서도 모드 식별 가능하도록 패스스루
+        }
         
         self.sig_training_log.emit(f"   => 탐험 강도(Entropy Coefficient)를 {ent_coef}로 설정하여 관망 편향을 억제합니다.")
         agent = TradingAgentWrapper(env, agent_config)
@@ -608,19 +614,27 @@ class AITrainingViewModel(QObject):
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-        # model_YYYYMMDD_HHMM.zip 패턴의 파일 리스트 확보
-        model_files = glob.glob(os.path.join(save_dir, "model_*.zip"))
+        # 현재 feature_mode에 해당하는 모델만 검색 (예: model_advanced_*.zip)
+        model_prefix = f"model_{feature_mode}"
+        model_files = glob.glob(os.path.join(save_dir, f"{model_prefix}_*.zip"))
+        
+        # 구버전 호환성 체크 (기존 model_2024...zip 파일들도 basic 모드일 땐 같이 검색)
+        if feature_mode == 'basic':
+            # 정규표현식으로 과거 model_YYYY 패턴 매칭
+            legacy_files = [f for f in glob.glob(os.path.join(save_dir, "model_*.zip")) if not "advanced" in f]
+            model_files = list(set(model_files + legacy_files))
+
         if model_files:
             # 파일명을 기준으로 정렬하여 가장 최신(문자열 순서상 뒤) 파일을 선택
             latest_model_zip = sorted(model_files)[-1]
             load_path = latest_model_zip.replace(".zip", "")
             try:
                 agent.load_weights(load_path)
-                self.sig_training_log.emit(f"   => 발견된 최신 모델({os.path.basename(latest_model_zip)})의 지식을 계승하여 이어서 학습합니다.")
+                self.sig_training_log.emit(f"   => 발견된 최신 {feature_mode} 모델({os.path.basename(latest_model_zip)})의 지식을 계승합니다.")
             except Exception as e:
-                self.sig_training_log.emit(f"   => [주의] 모델 로드 실패 (기존 뇌 초기화): {e}")
+                self.sig_training_log.emit(f"   => [주의] {feature_mode} 모델 로드 중 충돌 (초기화): {e}")
         else:
-            self.sig_training_log.emit("   => 기존 학습 모델이 없습니다. 백지상태에서 학습을 시작합니다.")
+            self.sig_training_log.emit(f"   => 기존 {feature_mode} 학습 모델이 없습니다. 백지상태에서 학습을 시작합니다.")
 
         # 3. Worker 생성 및 실행
         self.sig_training_log.emit("3. QThread 학습 워커 실행...")

@@ -75,3 +75,74 @@ class FeatureEngineer:
             "Volatility": volatility,
             "Aggressiveness": aggressiveness
         }
+
+class AdvancedFeatureEngineer:
+    """
+    백테스트/학습 시 Pandas를 활용하여 시계열 데이터를 일괄 처리하고,
+    보조지표(RSI, 이격도, 볼린저 밴드, 거래량 스파이크 등)를 정규화하여 추출하는 모듈.
+    """
+    @staticmethod
+    def process_historical_data(data_list: list) -> np.ndarray:
+        import pandas as pd
+        if not data_list:
+            return np.array([])
+            
+        df = pd.DataFrame(data_list)
+        if "price" not in df.columns or "volume" not in df.columns:
+            return np.array([])
+            
+        # 1. Price Return (수익률)
+        df['price_return'] = df['price'].pct_change().fillna(0)
+        
+        # 2. RSI (14기간)
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14, min_periods=1).mean()
+        rs = gain / (loss + 1e-9)
+        df['rsi'] = 100 - (100 / (1 + rs))
+        # RSI 정규화: 0~100 -> -1.0 ~ 1.0 (50 기준)
+        df['rsi_norm'] = (df['rsi'] - 50.0) / 50.0
+        
+        # 3. MA Disparity (이동평균 이격도 - 20틱 기준)
+        df['ma20'] = df['price'].rolling(window=20, min_periods=1).mean()
+        df['ma_disparity'] = (df['price'] - df['ma20']) / (df['ma20'] + 1e-9)
+        # 이격도 정규화 (대략 -0.05 ~ 0.05 범위를 -1.0 ~ 1.0으로 스케일링, 극단값 클리핑)
+        df['ma_disp_norm'] = (df['ma_disparity'] * 20.0).clip(-1.0, 1.0)
+        
+        # 4. Bollinger Bands Position (상/하단선 기준 위치)
+        df['std20'] = df['price'].rolling(window=20, min_periods=1).std().fillna(0)
+        df['upper'] = df['ma20'] + (2 * df['std20'])
+        df['lower'] = df['ma20'] - (2 * df['std20'])
+        band_range = df['upper'] - df['lower']
+        # 하단=0, 중간=0.5, 상단=1.0. 이걸 -1.0 ~ 1.0으로
+        df['bb_pos'] = np.where(band_range > 0, (df['price'] - df['lower']) / band_range, 0.5)
+        df['bb_pos_norm'] = (df['bb_pos'] - 0.5) * 2.0
+        df['bb_pos_norm'] = df['bb_pos_norm'].clip(-1.0, 1.0)
+        
+        # 5. Volume Spike (거래량 급증)
+        df['vol_ma20'] = df['volume'].rolling(window=20, min_periods=1).mean()
+        df['vol_spike'] = df['volume'] / (df['vol_ma20'] + 1e-9)
+        # 평소=1.0. 0~5 범위를 대략 -1.0 ~ 1.0으로 스케일링
+        df['vol_spike_norm'] = (df['vol_spike'] / 2.5 - 1.0).clip(-1.0, 1.0)
+        
+        # 6. 수익률 정규화 (최근 50 스텝 기준 Z-Score 모방, 통상 -1~1 사이)
+        df['return_norm'] = (df['price_return'] * 100.0).clip(-1.0, 1.0)
+        
+        # OIR, Volatility 등 기타 데이터가 있다면 추가 패스스루
+        df['oir'] = df['OIR'] if 'OIR' in df.columns else 0.0
+        df['volatility'] = df['Volatility'] if 'Volatility' in df.columns else 0.0
+        
+        # 최종 Feature Matrix 구성
+        feature_cols = [
+            'return_norm',      # 수익률 정규화 [-1.0, 1.0]
+            'vol_spike_norm',   # 거래량 스파이크 [-1.0, 1.0]
+            'rsi_norm',         # RSI 정규화 [-1.0, 1.0]
+            'ma_disp_norm',     # MA 이격도 [-1.0, 1.0]
+            'bb_pos_norm',      # BB 위치 [-1.0, 1.0]
+            'oir',              # OIR (기존 -1~1)
+            'volatility'        # 변동성
+        ]
+        
+        # 결측값 방어
+        out_df = df[feature_cols].fillna(0.0)
+        return out_df.to_numpy(dtype=np.float32)

@@ -51,6 +51,10 @@ class TradingAgentWrapper:
     def __init__(self, env: gym.Env, config: Dict[str, Any]):
         self.env = env
         self.config = config
+        self.feature_mode = config.get("feature_mode", "basic")
+        
+        # 모델 저장/로드 시 모드 분기를 위한 prefix 생성
+        self.model_prefix = f"model_{self.feature_mode}"
         self.model = None
         self.seq_len = config.get("seq_len", 10)
 
@@ -88,15 +92,19 @@ class TradingAgentWrapper:
 
         self.model.learn(total_timesteps=total_timesteps, callback=all_callbacks)
 
-        # 학습 완료 후 최종 가중치 저장 (버전 관리을 위해 타임스탬프 부여)
+        # 학습 완료 후 최종 가중치 저장 (버전 관리를 위해 타임스탬프와 feature_mode 부여)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        final_path = os.path.join(log_dir, f"model_{timestamp}")
+        final_path = os.path.join(log_dir, f"{self.model_prefix}_{timestamp}")
         self.model.save(final_path)
 
     def load_weights(self, path: str):
         """GUI에서 모델을 동적으로 교체하기 위한 메서드"""
         if os.path.exists(path + ".zip") or os.path.exists(path):
-            self.model = MaskablePPO.load(path, env=self.env)
+            try:
+                self.model = MaskablePPO.load(path, env=self.env)
+            except ValueError as e:
+                # Value Error: 보통 Observation Space Dimension mismatch 시 발생
+                raise ValueError(f"Observation Space 차원 불일치 (현재 피처 모드: {self.feature_mode}): {e}")
         else:
             raise FileNotFoundError(f"Model weights not found at {path}")
 
