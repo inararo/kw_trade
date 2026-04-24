@@ -867,6 +867,7 @@ class BacktestViewModel(QObject):
         self.influx_client = influx_client
         self.data_collector = data_collector
         self.order_manager = order_manager
+        self.logger = logging.getLogger("BacktestViewModel")
 
         from core.backtester import BacktestEngine
         self.engine = BacktestEngine(self.data_collector, self.config_manager.get_symbols())
@@ -902,9 +903,10 @@ class BacktestViewModel(QObject):
             # [혁신] 모델 파일 분석을 통해 feature_mode 자동 감지
             model_dim = TradingAgentWrapper.get_model_dimension(self.model_path)
             detected_mode = "basic"
-            if model_dim == 70:
+            # [최적화] 피처 차원 변경 반영 (Advanced: 10*10=100, Basic: 5*10=50)
+            if model_dim >= 100:
                 detected_mode = "advanced"
-            elif model_dim == 50:
+            elif model_dim >= 50:
                 detected_mode = "basic"
             else:
                 self.logger.warning(f"알 수 없는 모델 차원({model_dim}). 기본 설정(basic)을 사용합니다.")

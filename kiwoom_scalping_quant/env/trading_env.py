@@ -17,9 +17,9 @@ class ScalpingTradingEnv(gym.Env):
 
         self.feature_mode = config.get('feature_mode', 'basic')
         
-        # [모드 분기] Basic: 5차원, Advanced: 7차원
+        # [모드 분기] Basic: 5차원, Advanced: 10차원 (3개 추가 지표 반영)
         if self.feature_mode == 'advanced':
-            self.single_feature_dim = 7
+            self.single_feature_dim = 10
         else:
             self.single_feature_dim = 5
             
@@ -45,8 +45,10 @@ class ScalpingTradingEnv(gym.Env):
         self.historical_data = config.get("historical_data", None)
 
         # 뇌동매매 방지용 변수
-        self.cooldown_steps = 5
+        self.cooldown_steps = 10  # [상향] 매수/매도 사이 최소 간격
+        self.grace_period = 10     # [신규] 매수 후 패널티 면제 기간
         self.steps_since_buy = 0
+        self.steps_since_sell = 0 # [신규] 매도 후 경과 스텝
         self.initial_price = 0
 
     def reset(self, seed=None, options=None):
@@ -96,6 +98,7 @@ class ScalpingTradingEnv(gym.Env):
 
         self.reward_history = []
         self.steps_since_buy = 0
+        self.steps_since_sell = 100 # 초기에는 바로 매매 가능하도록 큰 값 설정
         self.avg_entry_price = 0.0  # [추가] 매수 단가 추적용
         
         # 시작가 저장 (정규화 기준점)
@@ -181,9 +184,10 @@ class ScalpingTradingEnv(gym.Env):
         if current_price <= 0:
             return masks  # 가격 정보 없음 → Hold 강제
 
-        # BUY: 잔고가 현재가 이상일 때만 허용
+        # BUY: 잔고가 현재가 이상일 때만 허용 + [추가] 매도 후 쿨다운 체크
         if self.balance >= current_price:
-            masks[1] = True
+            if self.steps_since_sell >= self.cooldown_steps:
+                masks[1] = True
 
         # SELL: 실제 보유 수량 기준 + 쿨다운 체크
         actual_holdings = self.order_manager.holdings.get(symbol, self.holdings)
@@ -232,6 +236,7 @@ class ScalpingTradingEnv(gym.Env):
                 revenue = current_price * (1 - slippage)
                 self.balance += revenue
                 self.holdings -= 1
+                self.steps_since_sell = 0 # [추가] 매도 카운트 리셋
 
         # 3. 행동 이후의 총자산 가치 (실제 실행된 action_executed 기준)
         new_net_worth = self.balance + (self.holdings * current_price)
@@ -271,11 +276,18 @@ class ScalpingTradingEnv(gym.Env):
         # 4. [패널티 조정] 상태별 차등 시간 패널티 부여 (Hold Bias 및 존버 방지)
         if action_executed == 0:
             if self.holdings > 0:
-                # [혁신] 주식을 보유한 상태에서 관망 시 강한 '보유 패널티' 부과 (시간 감가)
-                step_reward -= 0.0050
+                # [혁신] 유예 기간(Grace Period) 동안은 패널티 면제하여 패닉셀 방지
+                if self.steps_since_buy > self.grace_period:
+                    step_reward -= 0.0050
+                else:
+                    # 유예 기간 중에는 패널티 0 (인내심 유도)
+                    pass
             else:
                 # 무포지션 관망 패널티 (기존 0.002)
                 step_reward -= 0.0020
+
+        # 불필요한 연타 방지를 위해 모든 액션 시 카운트 증가
+        self.steps_since_sell += 1
 
         # 극단적인 값이 나오지 않도록 클리핑 (예: -10 ~ 10 사이)
         step_reward = float(np.clip(step_reward, -10.0, 10.0))

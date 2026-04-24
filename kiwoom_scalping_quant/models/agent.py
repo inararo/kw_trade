@@ -68,13 +68,17 @@ class TradingAgentWrapper:
 
         # Monitor 래퍼 등을 통해 환경 래핑 필요 (생략 가능)
 
+        # [에러 방지] 매 학습마다 유니크한 로그 폴더 생성 (PermissionError 방지)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        tb_log_dir = os.path.join(self.config.get("tensorboard_log", "./tensorboard_logs/"), f"PPO_{timestamp}")
+
         self.model = MaskablePPO(
             "MlpPolicy",
             self.env,
             policy_kwargs=policy_kwargs,
             learning_rate=self.config.get("learning_rate", 3e-4),
             ent_coef=self.config.get("ent_coef", 0.01), # [탐험 강도] 기본 0.01로 상향
-            tensorboard_log=self.config.get("tensorboard_log", "./tensorboard_logs/"),
+            tensorboard_log=tb_log_dir,
             verbose=1
         )
 

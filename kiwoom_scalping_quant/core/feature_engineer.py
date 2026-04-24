@@ -128,14 +128,35 @@ class AdvancedFeatureEngineer:
         # 6. 수익률 정규화 (변동폭이 작을 수 있으므로 100.0 -> 200.0배 증폭)
         df['return_norm'] = (df['price_return'] * 200.0).clip(-1.0, 1.0)
         
-        # 6. 수익률 정규화 (최근 50 스텝 기준 Z-Score 모방, 통상 -1~1 사이)
-        df['return_norm'] = (df['price_return'] * 100.0).clip(-1.0, 1.0)
-        
+        # [혁신] 7. VWAP Disparity (거래량 가중 평균가 이격도)
+        df['cum_cash'] = (df['price'] * df['volume']).cumsum()
+        df['cum_volume'] = df['volume'].cumsum()
+        df['vwap'] = df['cum_cash'] / (df['cum_volume'] + 1e-9)
+        df['vwap_disparity'] = (df['price'] - df['vwap']) / (df['vwap'] + 1e-9)
+        df['vwap_disp_norm'] = (df['vwap_disparity'] * 50.0).clip(-1.0, 1.0)
+
+        # [혁신] 8. 단기 변동성 (Short-term Volatility) - 최근 20기간 수익률 표준편차
+        df['ret_std'] = df['price_return'].rolling(window=20, min_periods=1).std().fillna(0)
+        df['volatility_norm'] = (df['ret_std'] * 50.0 - 1.0).clip(-1.0, 1.0)
+
+        # [혁신] 9. Time of Day (장중 시간 비율 0.0 ~ 1.0)
+        if 'timestamp' in df.columns:
+            # Timestamp 파싱 (UTC 등 다양한 포맷 방어)
+            try:
+                temp_ts = pd.to_datetime(df['timestamp'], utc=True)
+                temp_ts = temp_ts.dt.tz_convert('Asia/Seoul')
+                elapsed_mins = (temp_ts.dt.hour - 9) * 60 + temp_ts.dt.minute
+                df['time_of_day'] = (elapsed_mins / 390.0).clip(0.0, 1.0)
+            except Exception:
+                df['time_of_day'] = 0.5
+        else:
+            df['time_of_day'] = 0.5
+
         # OIR, Volatility 등 기타 데이터가 있다면 추가 패스스루
         df['oir'] = df['OIR'] if 'OIR' in df.columns else 0.0
         df['volatility'] = df['Volatility'] if 'Volatility' in df.columns else 0.0
         
-        # 최종 Feature Matrix 구성
+        # 최종 Feature Matrix 구성 (10차원)
         feature_cols = [
             'return_norm',      # 수익률 정규화 [-1.0, 1.0]
             'vol_spike_norm',   # 거래량 스파이크 [-1.0, 1.0]
@@ -143,7 +164,10 @@ class AdvancedFeatureEngineer:
             'ma_disp_norm',     # MA 이격도 [-1.0, 1.0]
             'bb_pos_norm',      # BB 위치 [-1.0, 1.0]
             'oir',              # OIR (기존 -1~1)
-            'volatility'        # 변동성
+            'volatility',       # 기존 틱 변동성
+            'vwap_disp_norm',   # [신규] VWAP 이격도 [-1.0, 1.0]
+            'volatility_norm',  # [신규] 최근 추세 변동성 [-1.0, 1.0]
+            'time_of_day'       # [신규] 장중 경과 시간 [0.0, 1.0]
         ]
         
         # 결측값 방어

@@ -21,8 +21,9 @@ class AITrainingStudioTab(QWidget):
         form_layout = QFormLayout()
 
         self.spin_steps = QSpinBox()
-        self.spin_steps.setRange(1000, 1000000)
-        self.spin_steps.setValue(100000)
+        self.spin_steps.setRange(1000, 10000000) # 1,000만 스텝으로 상향
+        self.spin_steps.setValue(1000000)       # 기본값도 100만으로 상향
+        self.spin_steps.setSingleStep(100000)
         form_layout.addRow("총 스텝 수:", self.spin_steps)
 
         self.spin_lr = QDoubleSpinBox()
@@ -32,13 +33,14 @@ class AITrainingStudioTab(QWidget):
         form_layout.addRow("학습률:", self.spin_lr)
 
         self.spin_max_records = QSpinBox()
-        self.spin_max_records.setRange(1000, 1000000)
+        self.spin_max_records.setRange(1000, 10000000) # 데이터 로드 한계도 상향
         self.spin_max_records.setValue(100000)
-        self.spin_max_records.setSingleStep(1000)
+        self.spin_max_records.setSingleStep(10000)
         form_layout.addRow("데이터 로드 건수 (종목당):", self.spin_max_records)
 
         self.combo_feature_mode = QComboBox()
         self.combo_feature_mode.addItems(["Basic (단순 가격/거래량)", "Advanced (보조지표 추가)"])
+        self.combo_feature_mode.setCurrentIndex(1)  # [추가] 기본값을 Advanced로 설정
         form_layout.addRow("데이터 분석 모드:", self.combo_feature_mode)
 
         self.btn_start = QPushButton("학습 시작")
