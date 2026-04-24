@@ -53,9 +53,24 @@ class StrategyManager:
         self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
 
     def load_model(self, model_path: str):
-        """초기 통합 모델 생성 및 가격 로드"""
+        """초기 통합 모델 생성 및 가중치 로드 (차원 자동 감지 로직 포함)"""
         try:
-            dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, {"symbol": "DUMMY"})
+            # 1. 모델 파일에서 차원 정보 추출
+            model_dim = TradingAgentWrapper.get_model_dimension(model_path) if model_path else 0
+            
+            # [혁신] 감지된 차원에 따라 분석 모드 자동 결정
+            detected_mode = "basic"
+            if model_dim >= 100:
+                detected_mode = "advanced"
+                self.logger.info(f"StrategyManager: 100차원 모델 감지 => 'Advanced' 분석 모드로 자동 전환")
+            else:
+                detected_mode = "basic"
+                self.logger.info(f"StrategyManager: {model_dim}차원 모델 감지 => 'Basic' 분석 모드 유지")
+
+            # 2. 감지된 모드로 더미 환경 생성 (Agent 초기화용)
+            dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode}
+            dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
+            
             config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
             agent_config = {"seq_len": config_dict.get("seq_len", 10)}
 
@@ -67,13 +82,17 @@ class StrategyManager:
             else:
                 self.logger.info("StrategyManager: Running with initialized untrained weights.")
 
-            # [버그 수정] 종목별 독립 환경 구성 - envs 키를 순수 코드로 통일 (DataCollector 콜백과 매칭)
+            # 3. [동기화] 종목별 실제 환경도 감지된 모드로 초기화
             for sym in self.symbols:
-                clean_sym = sym.split('_')[0]  # "005930_AL" → "005930"
-                env_config = {"symbol": clean_sym, "initial_balance": config_dict.get("initial_balance", 10000000)}
+                clean_sym = sym.split('_')[0]
+                env_config = {
+                    "symbol": clean_sym, 
+                    "initial_balance": config_dict.get("initial_balance", 10000000),
+                    "feature_mode": detected_mode # 분석 모드 강제 동기화
+                }
                 self.envs[clean_sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
                 self.last_action_times[clean_sym] = 0.0
-                self.logger.info(f"StrategyManager: [{clean_sym}] 환경 초기화 완료.")
+                self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}) 초기화 완료.")
 
         except Exception as e:
             self.logger.error(f"StrategyManager 초기화 중 에러: {e}")
