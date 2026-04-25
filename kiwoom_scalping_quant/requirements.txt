@@ -5,7 +5,7 @@ numpy
 gymnasium==0.29.1
 stable-baselines3==2.1.0
 torch
-sb3-contrib==2.1.0
+sb3-contrib==2.8.0
 influxdb-client[async]==1.36.0
 dependency-injector
 returns==0.22.0

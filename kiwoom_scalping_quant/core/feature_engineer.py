@@ -139,24 +139,33 @@ class AdvancedFeatureEngineer:
         df['ret_std'] = df['price_return'].rolling(window=20, min_periods=1).std().fillna(0)
         df['volatility_norm'] = (df['ret_std'] * 50.0 - 1.0).clip(-1.0, 1.0)
 
-        # [혁신] 9. Time of Day (장중 시간 비율 0.0 ~ 1.0)
+        # [혁신] 9. Time of Day & Market Type (장중 시간 및 시장 성격)
         if 'timestamp' in df.columns:
-            # Timestamp 파싱 (UTC 등 다양한 포맷 방어)
             try:
                 temp_ts = pd.to_datetime(df['timestamp'], utc=True)
                 temp_ts = temp_ts.dt.tz_convert('Asia/Seoul')
-                elapsed_mins = (temp_ts.dt.hour - 9) * 60 + temp_ts.dt.minute
-                df['time_of_day'] = (elapsed_mins / 390.0).clip(0.0, 1.0)
+                
+                # 08:00(NXT 시작) ~ 20:00(NXT 종료) 사이의 분 단위 정규화
+                minutes_since_08 = (temp_ts.dt.hour - 8) * 60 + temp_ts.dt.minute
+                df['time_of_day'] = (minutes_since_08 / (12 * 60.0)).clip(0.0, 1.0)
+                
+                # 정규 시장(09:00 ~ 15:30) 여부 판별 피처 추가
+                # 09:00(540분) ~ 15:30(930분)
+                minutes_abs = temp_ts.dt.hour * 60 + temp_ts.dt.minute
+                df['is_regular_market'] = np.where((minutes_abs >= 540) & (minutes_abs <= 930), 1.0, -1.0)
+                
             except Exception:
                 df['time_of_day'] = 0.5
+                df['is_regular_market'] = 1.0
         else:
             df['time_of_day'] = 0.5
+            df['is_regular_market'] = 1.0
 
         # OIR, Volatility 등 기타 데이터가 있다면 추가 패스스루
         df['oir'] = df['OIR'] if 'OIR' in df.columns else 0.0
         df['volatility'] = df['Volatility'] if 'Volatility' in df.columns else 0.0
         
-        # 최종 Feature Matrix 구성 (10차원)
+        # 최종 Feature Matrix 구성 (11차원)
         feature_cols = [
             'return_norm',      # 수익률 정규화 [-1.0, 1.0]
             'vol_spike_norm',   # 거래량 스파이크 [-1.0, 1.0]
@@ -167,7 +176,8 @@ class AdvancedFeatureEngineer:
             'volatility',       # 기존 틱 변동성
             'vwap_disp_norm',   # [신규] VWAP 이격도 [-1.0, 1.0]
             'volatility_norm',  # [신규] 최근 추세 변동성 [-1.0, 1.0]
-            'time_of_day'       # [신규] 장중 경과 시간 [0.0, 1.0]
+            'time_of_day',      # [신규] 장중 경과 시간 [0.0, 1.0]
+            'is_regular_market' # [신규] 정규 시장 여부 [1.0 or -1.0]
         ]
         
         # 결측값 방어

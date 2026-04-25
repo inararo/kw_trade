@@ -29,6 +29,7 @@ class AssetDataManagerTab(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         # 선택 열 너비 조정
         self.table.setColumnWidth(0, 40)
+        self.table.setColumnWidth(2, 120)  # 종목명 컬럼 너비 충분히 확보
         
         # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
         self.table.setStyleSheet("""
@@ -238,7 +239,11 @@ class AssetDataManagerTab(QWidget):
             self.table.setItem(row, 0, chk_item)
 
             self.table.setItem(row, 1, QTableWidgetItem(str(sym.get("code", ""))))
-            self.table.setItem(row, 2, QTableWidgetItem(str(sym.get("name", ""))))
+            
+            # [UI 개선] 종목명 최소 10자리 보장 (공백 패딩)
+            raw_name = str(sym.get("name", ""))
+            padded_name = raw_name.ljust(10)
+            self.table.setItem(row, 2, QTableWidgetItem(padded_name))
             
             # 현재가 표시 및 색상 적용
             price = sym.get("price", 0.0)

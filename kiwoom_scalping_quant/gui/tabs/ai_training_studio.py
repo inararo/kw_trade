@@ -178,8 +178,8 @@ class AITrainingStudioTab(QWidget):
         
         if is_advanced:
             mode_title = "Advanced (고도화 분석)"
-            features = "가격변동률, 거래량스파이크, RSI, MA이격도, BB위치, OIR, 틱변동성, VWAP이격도, 추세변동성, 장중시간"
-            dim = 100
+            features = "가격변동률, 거래량스파이크, RSI, MA이격도, BB위치, OIR, 틱변동성, VWAP이격도, 추세변동성, 장중시간, 정규시장여부"
+            dim = 110
         else:
             mode_title = "Basic (단순 지표)"
             features = "가격변동률, 수익률, 거래량, OIR, 틱변동성"

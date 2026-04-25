@@ -19,16 +19,20 @@ class ScalpingTradingEnv(gym.Env):
         
         # [모드 분기] Basic: 5차원, Advanced: 10차원 (3개 추가 지표 반영)
         if self.feature_mode == 'advanced':
-            self.single_feature_dim = 10
+            self.single_feature_dim = 11
         else:
             self.single_feature_dim = 5
             
-        self.seq_len = config.get('seq_len', 10)
-        self.feature_dim = self.single_feature_dim * self.seq_len
+        self.window_size = config.get('window_size', config.get('seq_len', 10))
+        self.feature_dim = self.single_feature_dim * self.window_size
+
+        from collections import deque
+        self.lookback_buffer = deque(maxlen=self.window_size)
 
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.feature_dim,), dtype=np.float32
         )
+        self.logger.info(f"Lookback Window가 {self.window_size} 스텝으로 적용되었습니다. (입력 차원: {self.feature_dim})")
 
         # Action space: 0: Hold, 1: Buy, 2: Sell
         self.action_space = spaces.Discrete(3)
@@ -111,64 +115,61 @@ class ScalpingTradingEnv(gym.Env):
         # 시작가 저장 (정규화 기준점)
         self.initial_price = self._get_current_price()
 
+        # [Lookback Buffer] 패딩 초기화
+        self.lookback_buffer.clear()
+        first_feature = self._extract_single_feature(self.current_step)
+        for _ in range(self.window_size):
+            self.lookback_buffer.append(first_feature)
+
         obs = self._get_observation()
         info = self._get_info()
         return obs, info
 
-    def _get_observation(self):
-        # 만약 학습/백테스트 모드라서 historical_data가 주어졌다면,
-        # data_collector 대신 historical_data 배열에서 상태를 구성
+    def _extract_single_feature(self, idx):
+        """단일 스텝(current_step)에 대한 1차원 지표 배열을 추출합니다."""
         if self.historical_data is not None:
             max_idx = len(self.historical_data) - 1
-            idx = min(self.current_step, max_idx)
+            idx = min(idx, max_idx)
 
-            # [O(1) 캐싱 대응] Advanced 모드면 캐시에서 바로 꺼내옴
             if self.feature_mode == 'advanced' and hasattr(self, 'precomputed_features'):
-                seq = []
-                for i in range(self.seq_len):
-                    target_idx = max(0, idx - self.seq_len + 1 + i)
-                    # 만약 데이터 길이가 짧아 target_idx가 범위를 벗어나면 패딩
-                    if len(self.precomputed_features) > target_idx:
-                        seq.append(self.precomputed_features[target_idx])
-                    else:
-                        seq.append(np.zeros(self.single_feature_dim, dtype=np.float32))
-                return np.concatenate(seq)
+                if len(self.precomputed_features) > idx:
+                    return self.precomputed_features[idx]
+                else:
+                    return np.zeros(self.single_feature_dim, dtype=np.float32)
 
-            # (Basic 모드 로직: 원시 가격 -> 수익률 및 정규화 데이터로 변환)
-            seq = []
-            prices = [row.get("price", 1000) for row in self.historical_data]
-            volumes = [row.get("volume", 0) for row in self.historical_data]
+            # (Basic 모드 로직)
+            row = self.historical_data[idx]
+            prices = [r.get("price", 1000) for r in self.historical_data]
+            volumes = [r.get("volume", 0) for r in self.historical_data]
             
-            # 기준값 계산
             local_prices = prices[max(0, idx-50):idx+1]
             local_volumes = volumes[max(0, idx-50):idx+1]
             mean_p, std_p = np.mean(local_prices), np.std(local_prices) + 1e-9
             mean_v, std_v = np.mean(local_volumes), np.std(local_volumes) + 1e-9
 
-            for i in range(self.seq_len):
-                target_idx = max(0, idx - self.seq_len + 1 + i)
-                row = self.historical_data[target_idx]
-                
-                # Z-Score 정규화 및 상대 수익률 계산
-                curr_p = row.get("price", 1000)
-                norm_price = (curr_p - mean_p) / std_p
-                rel_change = (curr_p - self.initial_price) / (self.initial_price + 1e-9)
-                norm_vol = (row.get("volume", 0) - mean_v) / std_v
-                
-                state_slice = np.array([
-                    norm_price, rel_change, norm_vol, 
-                    row.get("OIR", 0.0), row.get("Volatility", 0.0)
-                ], dtype=np.float32)
-                seq.append(state_slice)
-            return np.concatenate(seq)
+            curr_p = row.get("price", 1000.0)
+            norm_price = (curr_p - mean_p) / std_p
+            rel_change = (curr_p - self.initial_price) / (self.initial_price + 1e-9)
+            norm_vol = (row.get("volume", 0.0) - mean_v) / std_v
+            
+            return np.array([
+                norm_price, rel_change, norm_vol, 
+                row.get("OIR", 0.0), row.get("Volatility", 0.0)
+            ], dtype=np.float32)
 
+        # 실전 라이브 환경
         symbol = self.config.get('symbol')
         if hasattr(self.data_collector, "get_latest_state"):
-            # DataCollector is now expected to return a sequence of states flattened
-            state = self.data_collector.get_latest_state(symbol, seq_len=self.seq_len)
-            if state is not None and len(state) == self.feature_dim:
-                return state
-        return np.zeros(self.feature_dim, dtype=np.float32)
+            state = self.data_collector.get_latest_state(symbol, seq_len=self.window_size)
+            if state is not None and len(state) >= self.single_feature_dim:
+                return state[-self.single_feature_dim:]
+        return np.zeros(self.single_feature_dim, dtype=np.float32)
+
+    def _get_observation(self):
+        """Lookback 윈도우에 쌓인 2D 데이터를 numpy 1D 배열로 Gilge 펴서 리턴합니다."""
+        if len(self.lookback_buffer) == 0:
+            return np.zeros(self.feature_dim, dtype=np.float32)
+        return np.concatenate(list(self.lookback_buffer)).astype(np.float32)
 
     def _get_info(self):
         return {
@@ -310,6 +311,11 @@ class ScalpingTradingEnv(gym.Env):
         step_reward = float(np.clip(step_reward, -10.0, 10.0))
 
         self.current_step += 1
+        
+        # [추가] Lookback 버퍼에 최신 스텝 특징 벡터 삽입
+        new_feature = self._extract_single_feature(self.current_step)
+        self.lookback_buffer.append(new_feature)
+
         obs = self._get_observation()
         info = self._get_info()
 
@@ -317,14 +323,18 @@ class ScalpingTradingEnv(gym.Env):
         truncated = False
 
         # [기능 개선] 날짜 변경 감지 (Day-Break Reset)
-        # 같은 날짜 안에서만 에피소드가 이어지도록 강제하여 오버나잇 왜곡 방지
         day_changed = False
         if self.historical_data is not None and self.current_step < self.end_step:
-            curr_ts = self.historical_data[self.current_step - 1].get("timestamp", "")
-            next_ts = self.historical_data[self.current_step].get("timestamp", "")
-            if curr_ts and next_ts and curr_ts[:10] != next_ts[:10]:
+            c_ts_raw = self.historical_data[self.current_step - 1].get("timestamp", "")
+            n_ts_raw = self.historical_data[self.current_step].get("timestamp", "")
+            
+            # datetime 객체든 문자열이든 안전하게 'YYYY-MM-DD' 추출
+            curr_date = str(c_ts_raw)[:10] if c_ts_raw else ""
+            next_date = str(n_ts_raw)[:10] if n_ts_raw else ""
+            
+            if curr_date and next_date and curr_date != next_date:
                 day_changed = True
-                self.logger.info(f"날짜 변경 감지 ({curr_ts[:10]} -> {next_ts[:10]}). 에피소드를 종료합니다.")
+                self.logger.info(f"날짜 변경 감지 ({curr_date} -> {next_date}). 에피소드를 종료합니다.")
 
         # 고정된 에피소드 길이(max_steps) 도달 시 또는 날짜 변경 시 종료
         if self.historical_data is not None:
