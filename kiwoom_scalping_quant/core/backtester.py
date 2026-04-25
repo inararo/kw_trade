@@ -38,7 +38,7 @@ class BacktestEngine:
                 for cb in callbacks:
                     cb(s, tot, pnl)
 
-        while not done and not truncated and self.is_running and step < total_steps:
+        while not done and self.is_running and step < total_steps:
             # 1. Action Masking 적용
             action_masks = env.get_wrapper_attr('action_masks')()
 
@@ -48,10 +48,8 @@ class BacktestEngine:
             # 3. 환경 Step 실행
             next_obs, reward, done, truncated, info = env.step(action)
 
-            # 4. 정보 기록 (매 스텝 기록하여 차트 연속성 유지)
+            # 4. 정보 기록
             current_price = getattr(env, '_get_current_price', lambda: 1000.0)()
-            
-            # [필터링] 모델이 선택한 action이 아니라, 환경에서 실제로 승인/실행된 action(action_executed)을 기록
             action_executed = info.get("action_executed", action)
             action_map = {0: "Hold", 1: "Buy", 2: "Sell"}
             
@@ -63,7 +61,17 @@ class BacktestEngine:
                 "balance": info.get('balance', initial_balance)
             })
 
-            obs = next_obs
+            # [혁신] 날짜 변경(truncated) 발생 시 환경 리셋 후 다음 날짜로 이어서 진행
+            if truncated and not done and step < total_steps - 1:
+                current_balance = info.get('balance', initial_balance)
+                # 다음 스텝(step + 1)부터 시작하도록 환경 리셋
+                obs, info = env.reset(options={
+                    'current_balance': current_balance,
+                    'start_step': step + 1
+                })
+            else:
+                obs = next_obs
+            
             step += 1
 
             if step % 100 == 0:

@@ -54,7 +54,12 @@ class ScalpingTradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         
-        # 다중 종목 샘플링 모드 체크
+        # [혁신] 외부 옵션을 통한 상태 주입 (백테스트 연속성 유지용)
+        options = options or {}
+        self.balance = options.get('current_balance', self.config.get('initial_balance', 10000000))
+        forced_start_step = options.get('start_step', None)
+
+        # 다중 종목 샘플링 모드 체크 (복구)
         if self.historical_data_dict:
             available_symbols = list(self.historical_data_dict.keys())
             if available_symbols:
@@ -62,8 +67,7 @@ class ScalpingTradingEnv(gym.Env):
                 self.historical_data = self.historical_data_dict[selected_sym]
                 self.config['symbol'] = selected_sym
                 self.logger.info(f"에피소드 초기화: 랜덤 종목 선택 => {selected_sym} (데이터 {len(self.historical_data)}건)")
-
-        self.balance = self.config.get('initial_balance', 10000000)
+        
         self.holdings = 0
         
         # [피처 전처리 캐싱] Advanced 모드일 경우 전체 배열을 한 번에 Pandas로 전처리
@@ -79,10 +83,13 @@ class ScalpingTradingEnv(gym.Env):
                 self._feature_cache[symbol] = AdvancedFeatureEngineer.process_historical_data(self.historical_data)
             self.precomputed_features = self._feature_cache[symbol]
         
-        # [기능 개선] 랜덤 시작점 로직 도입 (백테스트 모드일 경우 0부터 시작)
+        # [기능 개선] 시작점 결정 로직 (forced_start_step 우선)
         if self.historical_data is not None:
             data_len = len(self.historical_data)
-            if self.config.get("mode") == "backtest":
+            if forced_start_step is not None:
+                self.current_step = forced_start_step
+                self.end_step = data_len - 1
+            elif self.config.get("mode") == "backtest":
                 self.current_step = 0
                 self.end_step = data_len - 1
             else:
