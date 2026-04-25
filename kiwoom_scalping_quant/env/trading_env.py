@@ -309,9 +309,20 @@ class ScalpingTradingEnv(gym.Env):
         terminated = self.balance < 0
         truncated = False
 
-        # [기능 개선] 고정된 에피소드 길이(max_steps) 도달 시 종료
-        if self.historical_data is not None and self.current_step >= self.end_step:
-            truncated = True
+        # [기능 개선] 날짜 변경 감지 (Day-Break Reset)
+        # 같은 날짜 안에서만 에피소드가 이어지도록 강제하여 오버나잇 왜곡 방지
+        day_changed = False
+        if self.historical_data is not None and self.current_step < self.end_step:
+            curr_ts = self.historical_data[self.current_step - 1].get("timestamp", "")
+            next_ts = self.historical_data[self.current_step].get("timestamp", "")
+            if curr_ts and next_ts and curr_ts[:10] != next_ts[:10]:
+                day_changed = True
+                self.logger.info(f"날짜 변경 감지 ({curr_ts[:10]} -> {next_ts[:10]}). 에피소드를 종료합니다.")
+
+        # 고정된 에피소드 길이(max_steps) 도달 시 또는 날짜 변경 시 종료
+        if self.historical_data is not None:
+            if self.current_step >= self.end_step or day_changed:
+                truncated = True
 
         # [추가] 에피소드 종료 시 강제 청산 (Force Close) 및 오버나잇 패널티
         if (terminated or truncated) and self.holdings > 0:
