@@ -94,11 +94,6 @@ class LiveDashboardTab(QWidget):
         ai_layout.addWidget(self.prog_sell)
         control_layout.addLayout(ai_layout)
 
-        # 장외 시간 테스트용 Mock 데이터 실행 버튼
-        self.btn_mock = QPushButton("가상 데이터 스트림 실행")
-        self.btn_mock.clicked.connect(self.view_model.start_mock_stream)
-        control_layout.addWidget(self.btn_mock)
-
         # [신규 추가] 시스템 실시간 제어 패널
         sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
         sys_ctrl_layout = QVBoxLayout()
