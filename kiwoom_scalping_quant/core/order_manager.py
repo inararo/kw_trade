@@ -115,7 +115,7 @@ class OrderManager:
 
             if signal_only:
                 msg = f"[SIGNAL ONLY] 🔴 {order_type}: {symbol} ({qty}주 @ {price}) - 실제 주문 생략됨"
-                self.logger.info(msg)
+                self.logger.error(msg)
 
                 # EMIT SIGNAL
                 self.signals.signal_only_log.emit(msg)
@@ -150,23 +150,141 @@ class OrderManager:
                 'ack_event': asyncio.Event() # 응답 대기용 이벤트
             }
 
-            self.logger.info(f"주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
+            self.logger.error(f"주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
 
-            # API 요청 전송 로직 (Mock)
-            # 실제 구현에서는 aiohttp를 활용하여 self.rest_base_url 에 요청을 전송합니다.
-            # endpoint = f"{self.rest_base_url}/uapi/domestic-stock/v1/trading/order-cash"
-            # headers = {"authorization": f"Bearer {self.auth_manager.get_token()}", ...}
-            # async with aiohttp.ClientSession() as session:
-            #     async with session.post(endpoint, json=payload, headers=headers) as resp:
-            #         ...
+            # ─────────────────────────────────────────────────────
+            # 키움증권 REST API 실거래 주문 (api-id 헤더 방식)
+            # 매수: kt10000 / 매도: kt10001 / 정정: kt10002 / 취소: kt10003
+            # ─────────────────────────────────────────────────────
+            import aiohttp
 
-            # 백그라운드에서 3초 타임아웃 검사 실행
-            asyncio.create_task(self._wait_for_ack(internal_id, timeout=3.0))
+            # 1. 인증 정보 수집
+            app_key    = self.config.get("KIWOOM_APP_KEY", "")    if hasattr(self.config, 'get') else ""
+            app_secret = self.config.get("KIWOOM_APP_SECRET", "") if hasattr(self.config, 'get') else ""
+            account_no = self.config.get("ACCOUNT_NO", "")        if hasattr(self.config, 'get') else ""
+            token      = self.auth_manager.get_token()            if self.auth_manager else None
 
-            # 백테스팅/Mock 환경을 위한 자동 접수 에뮬레이션
-            asyncio.create_task(self._mock_broker_ack(internal_id))
+            if not token:
+                self.logger.error("❌ 유효한 API 토큰이 없어 주문을 거절합니다. 토큰 갱신을 확인하세요.")
+                self.active_orders[internal_id]['status'] = OrderState.FAILED
+                raise Exception("API_TOKEN_MISSING")
+
+            if not account_no:
+                self.logger.error("❌ 계좌번호(ACCOUNT_NO)가 설정되지 않아 주문을 거절합니다.")
+                self.active_orders[internal_id]['status'] = OrderState.FAILED
+                raise Exception("ACCOUNT_NO_MISSING")
+
+            # 2. 주문 종류별 api-id 및 엔드포인트 결정
+            endpoint = f"{self.rest_base_url}/api/dostk/ordr"
+
+            if order_type == "BUY":
+                api_id = 'kt10000'
+                # trde_tp: '0'=지정가, '3'=시장가
+                trde_tp = '0' if price > 0 else '3'
+                body = {
+                    "dmst_stex_tp": 'KRX',  # 국내거래소 구분 필수, 예시로 KRX 고정
+                    "stk_cd":       symbol,
+                    "ord_qty":      str(qty),
+                    "ord_uv":       str(price) if price > 0 else '',
+                    "trde_tp":      trde_tp,
+                }
+
+            elif order_type == "SELL":
+                api_id = 'kt10001'
+                trde_tp = '0' if price > 0 else '3'
+                body = {
+                    "dmst_stex_tp": 'KRX',
+                    "stk_cd":       symbol,
+                    "ord_qty":      str(qty),
+                    "ord_uv":       str(price) if price > 0 else '',
+                    "trde_tp":      trde_tp,
+                }
+
+            elif order_type == "REPLACE":
+                api_id = 'kt10002'
+                body = {
+					"dmst_stex_tp": 'KRX',
+                    "orig_ord_no":   str(orig_order_no),
+                    "stk_cd":        symbol,
+                    "mdfy_qty":      str(qty),
+                    "mdfy_uv":       str(price) if price > 0 else '',
+                    "mdfy_cond_uv":  '', # 정정 조건 가격 (필요시 추가)
+                }
+
+            elif order_type == "CANCEL":
+                api_id = 'kt10003'
+                body = {
+					"dmst_stex_tp": 'KRX',
+                    "orig_ord_no": str(orig_order_no),
+                    "stk_cd":      symbol,
+                    "cncl_qty":    str(qty),
+                }
+
+            else:
+                self.active_orders[internal_id]['status'] = OrderState.FAILED
+                raise Exception(f"지원하지 않는 주문 타입: {order_type}")
+
+            # 3. HTTP Headers (키움 REST API 주문 전용 규격)
+            headers = {
+                "Content-Type": "application/json;charset=UTF-8",
+                "authorization": f"Bearer {token}",
+                "api-id":       str(api_id),
+            }
+
+            self.logger.info(f"📤 주문 전송 [{api_id}] {order_type} {symbol} {qty}주 @ {price:,}원")
+            self.logger.debug(f"   └ Body: {body}")
+
+            # 4. 비동기 HTTP POST (키움 증권사 서버망)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        endpoint, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=5.0)
+                    ) as resp:
+                        res_data = await resp.json(content_type=None)
+
+                        # return_code와 return_msg는 문자열 키로 정확히 접근
+                        return_code = str(res_data.get('return_code', '-1'))
+                        return_msg  = str(res_data.get('return_msg', ''))
+
+                        if return_code == '0':
+                            # 주문 접수 성공 – 원주문번호(ord_no) 파싱 (문자열 키 사용)
+                            output = res_data.get('output', {}) or {}
+                            broker_id = (
+                                str(output.get('ord_no', ''))
+                                or str(output.get('org_ord_no', ''))
+                                or str(res_data.get('ord_no', ''))
+                                or internal_id
+                            )
+                            self.logger.info(f"✅ 키움 접수 완료! 주문번호: {broker_id} | {return_msg}")
+
+                            # 내부 상태 업데이트 시 문자열 키 사용 ('status', 'broker_id', 'ack_event')
+                            self.active_orders[internal_id]['status']    = OrderState.ACCEPTED
+                            self.active_orders[internal_id]['broker_id'] = broker_id
+                            self.broker_id_map[broker_id]                = internal_id
+                            self.active_orders[internal_id]['ack_event'].set()
+
+                        else:
+                            self.logger.error(f"❌ 키움 주문 거부: [{return_code}] {return_msg}")
+                            self.active_orders[internal_id]['status'] = OrderState.FAILED
+                            self.active_orders[internal_id]['ack_event'].set()
+                            raise Exception(f"KIWOOM_ORDER_REJECTED: {return_msg}")
+
+            except asyncio.TimeoutError:
+                self.logger.error(f"⏰ 키움 API 응답 타임아웃 (5초 초과)! ID: {internal_id}")
+                self.active_orders[internal_id]['status'] = OrderState.FAILED
+                self.active_orders[internal_id]['ack_event'].set()
+                raise Exception("KIWOOM_API_TIMEOUT")
+
+            except Exception as e:
+                # 이미 KIWOOM_ 접두어가 붙은 예외는 중복 처리 방지
+                if "KIWOOM_" not in str(e):
+                    self.logger.error(f"🔥 주문 전송 중 예외 발생: {e}")
+                    self.active_orders[internal_id]['status'] = OrderState.FAILED
+                    self.active_orders[internal_id]['ack_event'].set()
+                raise
 
             return internal_id
+
 
     async def _wait_for_ack(self, internal_id: str, timeout: float):
         """주문 접수 후 브로커 응답(접수 확인) 타임아웃 감시"""

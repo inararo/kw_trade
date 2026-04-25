@@ -51,6 +51,11 @@ class Container(containers.DeclarativeContainer):
     )
 
     # Core 비즈니스 로직 (싱글톤)
+    token_manager = providers.Singleton(
+        TokenManager,
+        config_manager=config_manager
+    )
+
     data_collector = providers.Singleton(
         DataCollector,
         config=config_manager
@@ -59,7 +64,7 @@ class Container(containers.DeclarativeContainer):
     order_manager = providers.Singleton(
         OrderManager,
         config=config_manager,
-        auth_manager=None, # 추후 AuthManager provider 주입 가능
+        auth_manager=token_manager,
         telegram_notifier=telegram_notifier
     )
 
@@ -77,10 +82,6 @@ class Container(containers.DeclarativeContainer):
         risk_manager=risk_manager
     )
 
-    token_manager = providers.Singleton(
-        TokenManager,
-        config_manager=config_manager
-    )
 
     market_scheduler = providers.Singleton(
         MarketScheduler,
