@@ -35,6 +35,10 @@ class LiveTradingEngine:
         self.last_action_time = 0.0
         self.cooldown_seconds = 3.0
         
+        # 하드 스탑로스/테이크프로핏 임계값
+        self.tick_stop_loss = -0.015
+        self.tick_take_profit = 0.03
+
         # 웜업 상태 플래그
         self.is_warmed_up = False
 
@@ -69,6 +73,24 @@ class LiveTradingEngine:
             ts_str = timestamp
         else:
             ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+        # [신규] 1. 틱 단위 실시간 감시 (Stop Loss / Take Profit)
+        holdings = getattr(self.order_manager, 'holdings', {}).get(self.symbol, 0)
+        if holdings > 0:
+            avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
+            if avg_price > 0:
+                pnl_pct = (price - avg_price) / avg_price
+                if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
+                    # 조건 충족 시 즉각 매도 (정각 대기 안 함)
+                    self.logger.error(f"[긴급] 틱 단위 스탑로스/익절 발동! (현재 수익률: {pnl_pct*100:.2f}%)")
+                    
+                    # 즉각 주문 실행 (비동기)
+                    asyncio.create_task(self.order_manager.send_order("SELL", self.symbol, int(price), holdings))
+                    
+                    # AI 상태 즉시 강제 동기화 (헛발질 방지)
+                    self.order_manager.holdings[self.symbol] = 0
+                    self.order_manager.avg_entry_prices[self.symbol] = 0.0
+                    return # 캔들 병합 및 시스템 진행 스킵 (이미 팔았음)
             
         # 'YYYY-MM-DD HH:MM' 분 단위까지만 절사
         minute_str = ts_str[:16]
@@ -193,11 +215,12 @@ class LiveTradingEngine:
             action = 0 # Hold 하향 변환
 
         action_names = {0: "Hold", 1: "Buy", 2: "Sell"}
-        self.logger.info(
-            f"[AI추론] 신호: {action_names.get(raw_action,'?')} -> 최종: {action_names.get(action,'?')} "
-            f"| C={current_price:,} | H={probs[0]:.2f} B={probs[1]:.2f} S={probs[2]:.2f} "
-            f"| 확신도: {max_prob:.2f}"
-        )
+        if action in [1, 2]:
+            self.logger.error(
+                f"[AI추론] 신호: {action_names.get(raw_action,'?')} -> 최종: {action_names.get(action,'?')} "
+                f"| C={current_price:,} | H={probs[0]:.2f} B={probs[1]:.2f} S={probs[2]:.2f} "
+                f"| 확신도: {max_prob:.2f}"
+            )
 
         # 6. UI 업데이트 연결 및 텔레그램 알림
         self._update_ui_signals(action, action_names.get(action, "Hold"), probs)
@@ -226,12 +249,12 @@ class LiveTradingEngine:
         if action == 1: # Buy
             qty = int(max_invest // current_price)
             if qty > 0:
-                self.order_manager.place_order(self.symbol, "BUY", current_price, qty, "LIMIT")
+                asyncio.create_task(self.order_manager.send_order("BUY", self.symbol, int(current_price), qty))
                 self.last_action_time = current_time
         elif action == 2: # Sell
             qty = holdings
             if qty > 0:
-                self.order_manager.place_order(self.symbol, "SELL", current_price, qty, "MARKET")
+                asyncio.create_task(self.order_manager.send_order("SELL", self.symbol, int(current_price), qty))
                 self.last_action_time = current_time
 
     def _update_ui_signals(self, action, signal_text, probs):
