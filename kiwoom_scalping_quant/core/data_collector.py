@@ -435,13 +435,15 @@ class DataCollector:
                         self.logger.info(f"데이터 매칭 성공! [{target_symbol}] 현재가: {price:,.0f} | 타입: {msg_type}")
 
                     # 5. 이벤트 콜백 실행 (StrategyManager 등 알림)
+                    from datetime import datetime
+                    now_time = datetime.now()
                     for callback in self.on_state_updated_callbacks:
                         if asyncio.iscoroutinefunction(callback):
-                            task = asyncio.create_task(callback(target_symbol, normalized_state))
+                            task = asyncio.create_task(callback(target_symbol, normalized_state, price=price, volume=volume, timestamp=now_time))
                             self._pending_tasks.add(task)
                             task.add_done_callback(self._pending_tasks.discard)
                         else:
-                            callback(target_symbol, normalized_state)
+                            callback(target_symbol, normalized_state, price=price, volume=volume, timestamp=now_time)
                 
                 # 6. UI 업데이트 지원 (시세 또는 호가 정보가 있을 때)
                 if price > 0 or msg_type == "0D":

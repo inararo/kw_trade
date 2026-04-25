@@ -72,3 +72,28 @@ class OrderbookLadderWidget(QWidget):
         # Y축을 가격으로 변경하고 렌더링
         self.bar_asks.setOpts(y=ask_prices, width=ask_qtys, height=(ask_prices[1]-ask_prices[0])*0.8 if len(ask_prices)>1 else 50)
         self.bar_bids.setOpts(y=bid_prices, width=bid_qtys, height=(bid_prices[0]-bid_prices[1])*0.8 if len(bid_prices)>1 else 50)
+
+        # 현재 종목(selected_symbol)의 평단가 및 보유량 가져오기
+        selected = getattr(self.view_model, 'selected_symbol', None)
+        if selected and hasattr(self.view_model, 'order_manager'):
+            order_manager = self.view_model.order_manager
+            holdings = order_manager.holdings.get(selected, 0)
+            avg_price = order_manager.avg_entry_prices.get(selected, 0.0)
+            
+            if holdings > 0 and avg_price > 0:
+                if not hasattr(self, 'avg_line'):
+                    self.avg_line = pg.InfiniteLine(angle=0, pen=pg.mkPen('y', width=2, style=pg.QtCore.Qt.PenStyle.DashLine))
+                    self.plot_widget.addItem(self.avg_line)
+                    self.holding_text = pg.TextItem(color='y', anchor=(0, 1))
+                    self.plot_widget.addItem(self.holding_text)
+                    
+                self.avg_line.setPos(avg_price)
+                self.holding_text.setPos(0, avg_price)
+                self.holding_text.setText(f"평단가: {avg_price:,.0f} ({holdings}주)")
+                self.avg_line.show()
+                self.holding_text.show()
+            else:
+                if hasattr(self, 'avg_line'):
+                    self.avg_line.hide()
+                    self.holding_text.hide()
+

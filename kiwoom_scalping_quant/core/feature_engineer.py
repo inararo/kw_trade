@@ -128,9 +128,22 @@ class AdvancedFeatureEngineer:
         # 6. 수익률 정규화 (변동폭이 작을 수 있으므로 100.0 -> 200.0배 증폭)
         df['return_norm'] = (df['price_return'] * 200.0).clip(-1.0, 1.0)
         
-        # [혁신] 7. VWAP Disparity (거래량 가중 평균가 이격도)
-        df['cum_cash'] = (df['price'] * df['volume']).cumsum()
-        df['cum_volume'] = df['volume'].cumsum()
+        # Timestamp를 미리 파싱 (시간 관련 피처 및 VWAP 그룹화 용도)
+        if 'timestamp' in df.columns:
+            try:
+                temp_ts = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Asia/Seoul')
+                df['_date'] = temp_ts.dt.date
+            except Exception:
+                df['_date'] = '1970-01-01'  # Fallback
+                temp_ts = None
+        else:
+            df['_date'] = '1970-01-01'
+            temp_ts = None
+
+        # [혁신] 7. VWAP Disparity (거래량 가중 평균가 이격도 - 일일 초기화)
+        # 당일 시점(09:00:00)부터의 누적 거래대금/거래량으로 VWAP 계산
+        df['cum_cash'] = (df['price'] * df['volume']).groupby(df['_date']).cumsum()
+        df['cum_volume'] = df['volume'].groupby(df['_date']).cumsum()
         df['vwap'] = df['cum_cash'] / (df['cum_volume'] + 1e-9)
         df['vwap_disparity'] = (df['price'] - df['vwap']) / (df['vwap'] + 1e-9)
         df['vwap_disp_norm'] = (df['vwap_disparity'] * 50.0).clip(-1.0, 1.0)
@@ -140,11 +153,8 @@ class AdvancedFeatureEngineer:
         df['volatility_norm'] = (df['ret_std'] * 50.0 - 1.0).clip(-1.0, 1.0)
 
         # [혁신] 9. Time of Day & Market Type (장중 시간 및 시장 성격)
-        if 'timestamp' in df.columns:
+        if temp_ts is not None:
             try:
-                temp_ts = pd.to_datetime(df['timestamp'], utc=True)
-                temp_ts = temp_ts.dt.tz_convert('Asia/Seoul')
-                
                 # 08:00(NXT 시작) ~ 20:00(NXT 종료) 사이의 분 단위 정규화
                 minutes_since_08 = (temp_ts.dt.hour - 8) * 60 + temp_ts.dt.minute
                 df['time_of_day'] = (minutes_since_08 / (12 * 60.0)).clip(0.0, 1.0)

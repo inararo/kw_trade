@@ -113,6 +113,9 @@ class StrategyManager:
                 self.logger.info("StrategyManager: DataCollector 이벤트 구독 완료.")
         else:
             self.logger.error("StrategyManager: DataCollector에 이벤트 리스너 리스트가 없습니다.")
+            
+        # 빈 캔들 감시 데몬 구동
+        asyncio.create_task(self._empty_candle_watchdog())
 
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
         """동적 유니버스 스캐너가 호출하는 Safe Swap Logic"""
@@ -169,7 +172,57 @@ class StrategyManager:
             updated_dicts = [{"code": s, "name": f"Dynamic_{s}"} for s in self.symbols]
             self.config_manager.set_symbols(updated_dicts)
 
-    async def _on_tick_event(self, symbol: str, normalized_state=None):
+    async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
+        """데이터 수신 시 호출되는 핵심 리스너 (Event-Driven)"""
+        if not self.is_running or self.is_ai_paused:
+            return
+
+        try:
+            clean_symbol = symbol.split('_')[0]
+
+            # --- GATE 1: MarketState 체크 ---
+            from core.scheduler import MarketState
+            scheduler = getattr(self.config_manager, "_injected_scheduler", None)
+            if scheduler and scheduler.current_state != MarketState.TRADING:
+                if time.time() % 30 < 1:  # 30초마다 1회 출력 (단순화)
+                    self.logger.debug(f"[AI-GATE1] [{clean_symbol}] 장 외 시간 → 판단 차단")
+                return
+
+            # --- GATE 2: LiveTradingEngine Lazy Initialization ---
+            engine = self.envs.get(clean_symbol)
+            if engine is None:
+                self.logger.info(f"[AI-GATE2] [{clean_symbol}] 실시간 엔진(LiveTradingEngine) 미등록 발견 → 즉시 생성 및 웜업")
+                from core.live_trading_engine import LiveTradingEngine
+                engine = LiveTradingEngine(clean_symbol, self.config_manager, self.order_manager, self.shared_agent)
+                self.envs[clean_symbol] = engine
+                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN") or getattr(self.config_manager, "get", lambda x: None)("KIWOOM_ACCESS_TOKEN")
+                # 백그라운드 태스크로 웜업 실행 (블로킹 방지)
+                asyncio.create_task(engine.warmup(token))
+
+            # --- GATE 3: 틱 업데이트 (엔진으로 데이터 토스) ---
+            if price > 0 and timestamp is not None:
+                await engine.update_tick(price, int(volume), timestamp)
+
+        except Exception as e:
+            self.logger.error(f"[StrategyManager] _on_tick_event 처리 중 에러: {e}")
+
+    async def _empty_candle_watchdog(self):
+        """정기적으로 모든 엔진을 순회하며 거래량 0인 빈 캔들 케이스를 강제 확정시키는 데몬"""
+        from datetime import datetime
+        while self.is_running:
+            await asyncio.sleep(1.0)
+            now_dt = datetime.now()
+            # 정각(0초) 무렵에 한 번씩 체크를 실행
+            if now_dt.second == 0 or now_dt.second == 1:
+                for sym, engine in list(self.envs.items()):
+                    # 엔진에 empty_minute 체크 위임
+                    if hasattr(engine, 'check_empty_minute'):
+                        await engine.check_empty_minute(now_dt)
+                # 동일 분 내 중복 실행 방지
+                await asyncio.sleep(2.0)
+
+
+    async def _on_tick_event_backup(self, symbol: str, normalized_state=None):
         """데이터 수신 시 호출되는 핵심 리스너 (Event-Driven)"""
         if not self.is_running or self.is_ai_paused:
             return
@@ -197,18 +250,18 @@ class StrategyManager:
             if env is None:
                 self.logger.info(f"[AI-GATE3] [{clean_symbol}] 실시간 환경(env) 미등록 발견 → 즉시 생성 및 등록 시도")
                 from env.trading_env import ScalpingTradingEnv
-                
+
                 # 전역 설정에서 현재 feature_mode 및 초기 자산 획득
                 config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
                 feature_mode = config_dict.get("feature_mode", "basic")
                 initial_balance = config_dict.get("initial_balance", 10000000)
-                
+
                 env_config = {
-                    "symbol": clean_symbol, 
+                    "symbol": clean_symbol,
                     "initial_balance": initial_balance,
                     "feature_mode": feature_mode
                 }
-                
+
                 # 환경 생성 및 등록
                 self.envs[clean_symbol] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
                 self.last_action_times[clean_symbol] = 0.0
@@ -245,15 +298,15 @@ class StrategyManager:
             ai_threshold = self.config_manager.get("ai_confidence_threshold", 0.5)
             max_prob = float(max(probs))
             raw_action = action
-            
+
             if max_prob < ai_threshold:
                 action = 0  # 신뢰도 부족 → Hold 강제
 
             action_names = {0: "Hold", 1: "Buy", 2: "Sell"}
 
             self.logger.error(
-                f"[AI-RESULT] [{clean_symbol}] 원본={action_names.get(raw_action,'?')} "
-                f"| 최종={action_names.get(action,'?')} "
+                f"[AI-RESULT] [{clean_symbol}] 원본={action_names.get(raw_action, '?')} "
+                f"| 최종={action_names.get(action, '?')} "
                 f"| Hold={probs[0]:.2f} Buy={probs[1]:.2f} Sell={probs[2]:.2f} "
                 f"| max_conf={max_prob:.2f}"
             )
@@ -266,8 +319,10 @@ class StrategyManager:
             }
 
             signal_text = "Hold"
-            if action == 1: signal_text = "Buy"
-            elif action == 2: signal_text = "Sell"
+            if action == 1:
+                signal_text = "Buy"
+            elif action == 2:
+                signal_text = "Sell"
 
             vm = getattr(self.config_manager, "_injected_live_vm", None)
             if vm:
@@ -287,7 +342,7 @@ class StrategyManager:
                     self.logger.error(f"[AI-ORDER] [{clean_symbol}] {str_action} 신호이나 현재가 0 → 주문 생략")
                     return
 
-                if action == 1: # BUY - 동적 수량 계산
+                if action == 1:  # BUY - 동적 수량 계산
                     max_invest = self.risk_manager.get_max_invest_per_symbol()
                     qty = int(max_invest // current_price)
 
@@ -298,7 +353,7 @@ class StrategyManager:
                         if vm: vm.sig_log_appended.emit(msg)
                         return
                     target_qty = qty
-                else: # SELL
+                else:  # SELL
                     target_qty = self.order_manager.holdings.get(clean_symbol, 0)
 
                 if target_qty > 0:
