@@ -263,11 +263,12 @@ class ScalpingTradingEnv(gym.Env):
             profit_pct = (realized_profit / self.avg_entry_price) * 100.0 if self.avg_entry_price > 0 else 0.0
 
             if profit_pct > 0:
-                # 수익 실현 시 강력한 도파민 보강 (10배 증폭 + 성공 보너스)
-                step_reward += (profit_pct * 10.0) + 1.0
-                self.logger.info(f"   >>> [DOPAMINE] 실현 수익 발생! 보상 증폭 적용. Reward: {step_reward:.4f}")
+                # [야수성 주입] 수익 실현 시 극단적인 도파민 보강 (80배 증폭 + 파격 보너스)
+                # 에이전트가 시간 패널티의 공포보다 수익의 쾌감을 압도적으로 크게 느끼게 함
+                step_reward += (profit_pct * 80.0) + 5.0
+                self.logger.info(f"   >>> [BEAST MODE] 대규모 수익 실현! 보상 대폭 증폭. Reward: {step_reward:.4f}")
             else:
-                # 손실 시에는 손실 분만큼 직접 차감
+                # 손실 시에는 손실 분만큼 직접 차감 (비대칭 보상 유지)
                 step_reward += profit_pct
             
             self.avg_entry_price = 0.0 # 매도 후 평단가 리셋
