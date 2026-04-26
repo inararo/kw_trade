@@ -32,25 +32,38 @@ class LSTMExtractor(BaseFeaturesExtractor):
         super().__init__(observation_space, features_dim)
 
         self.seq_len = seq_len
-        self.feature_size = observation_space.shape[0] // seq_len
-        self.hidden_size = hidden_size
+        # [FIX] 관측값 중 피처 영역과 종목 ID 영역을 명확히 분리
+        # 어드밴스드 기준 11, 베이식 기준 5 차원 (seq_len으로 나눈 몫이 타당함)
+        self.single_feature_dim = observation_space.shape[0] // seq_len
+        self.feature_dim = self.seq_len * self.single_feature_dim
+        self.stock_id_dim = observation_space.shape[0] - self.feature_dim
 
         self.lstm = nn.LSTM(
-            input_size=self.feature_size,
-            hidden_size=self.hidden_size,
+            input_size=self.single_feature_dim,
+            hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True
         )
 
-        self.linear = nn.Linear(self.hidden_size, features_dim)
+        # 최종 출력 레이어: LSTM 출력 + 종목 ID 차원 결합
+        self.linear = nn.Linear(hidden_size + self.stock_id_dim, features_dim)
         self.relu = nn.ReLU()
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         batch_size = observations.shape[0]
-        obs_reshaped = observations.view(batch_size, self.seq_len, self.feature_size)
-
-        out, (h_n, c_n) = self.lstm(obs_reshaped)
-
+        
+        # 1. 데이터 분리: (순차 피처 110개)와 (정적 종목 ID n개)
+        sequence_data = observations[:, :self.feature_dim]
+        static_data = observations[:, self.feature_dim:] # 종목 ID (One-hot)
+        
+        # 2. LSTM 통과를 위해 리셰이핑 (Batch, Seq, Dim)
+        obs_reshaped = sequence_data.view(batch_size, self.seq_len, self.single_feature_dim)
+        out, _ = self.lstm(obs_reshaped)
+        
+        # 3. 마지막 타임스텝의 출력 추출 및 종목 ID 결합
         last_hidden = out[:, -1, :]
-        features = self.relu(self.linear(last_hidden))
+        combined = torch.cat([last_hidden, static_data], dim=1)
+        
+        # 4. 최종 특징 추출
+        features = self.relu(self.linear(combined))
         return features

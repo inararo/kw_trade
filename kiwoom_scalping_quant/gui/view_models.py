@@ -615,7 +615,8 @@ class AITrainingViewModel(QObject):
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
         # 설정 업데이트 (LR, Ent_Coef 반영 등)
-        ent_coef = 0.03  # 사용자의 요청에 따른 적극적 탐험 계수 (0.01~0.05)
+        # [FIX] 불필요한 뇌동매매 억제를 위해 탐험 계수 하향 (0.03 -> 0.005)
+        ent_coef = 0.005
         agent_config = {
             "seq_len": 10,
             "learning_rate": lr,

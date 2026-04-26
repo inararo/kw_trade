@@ -3,10 +3,16 @@ from gymnasium import spaces
 import numpy as np
 import random
 import logging
+from collections import deque
+import pandas as pd
 
 class ScalpingTradingEnv(gym.Env):
     """
-    Maskable PPO와 호환되는 단일 종목 스캘핑 커스텀 환경
+    [Expert Baseline] 다종목 학습 최적화 환경 엔진.
+    1. 보상 % 스케일링 (x10)
+    2. 중도 리턴 버그 해결
+    3. 스케일 불변 피처 적용
+    4. 동적 종목 임베딩
     """
     def __init__(self, data_collector, order_manager, config):
         super().__init__()
@@ -16,362 +22,201 @@ class ScalpingTradingEnv(gym.Env):
         self.logger = logging.getLogger("ScalpingTradingEnv")
 
         self.feature_mode = config.get('feature_mode', 'basic')
+        self.window_size = config.get('window_size', 10)
         
-        # [모드 분기] Basic: 5차원, Advanced: 10차원 (3개 추가 지표 반영)
-        if self.feature_mode == 'advanced':
-            self.single_feature_dim = 11
-        else:
-            self.single_feature_dim = 5
-            
-        self.window_size = config.get('window_size', config.get('seq_len', 10))
+        # [모드 분기] 
+        self.single_feature_dim = 11 if self.feature_mode == 'advanced' else 5
         self.feature_dim = self.single_feature_dim * self.window_size
 
-        from collections import deque
+        # [4] 다종목 학습을 위한 유니버스 정보 및 동적 임배딩 설정
+        self.historical_data_dict = config.get("historical_data_dict", {})
+        
+        # 백테스트/실거래 시 차원 일치를 위한 유니버스 복구
+        global_symbols = config.get("all_symbols", [])
+        if len(global_symbols) > 0:
+            self.all_symbols = sorted(list(set(global_symbols)))
+        else:
+            self.all_symbols = sorted(list(self.historical_data_dict.keys())) if self.historical_data_dict else []
+            
+        self.symbol_to_idx = {sym: i for i, sym in enumerate(self.all_symbols)}
+        self.current_symbol_idx = 0
+        self.stock_id_dim = len(self.all_symbols) if len(self.all_symbols) > 0 else 1
+        
+        # [3] Observation 공간 차원: 특징(Scale-invariant) + 종목ID(One-hot)
+        self.observation_space = spaces.Box(
+            low=-10.0, high=10.0, shape=(self.feature_dim + self.stock_id_dim,), dtype=np.float32
+        )
         self.lookback_buffer = deque(maxlen=self.window_size)
 
-        self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.feature_dim,), dtype=np.float32
-        )
-        self.logger.info(f"Lookback Window가 {self.window_size} 스텝으로 적용되었습니다. (입력 차원: {self.feature_dim})")
-
-        # Action space: 0: Hold, 1: Buy, 2: Sell
-        self.action_space = spaces.Discrete(3)
-
+        self.action_space = spaces.Discrete(3) # 0:Hold, 1:Buy, 2:Sell
         self.balance = config.get('initial_balance', 10000000)
         self.holdings = 0
         self.current_step = 0
-        self.max_steps = config.get('max_steps', 2000) # 한 에피소드당 최대 스텝 수
+        self.max_steps = config.get('max_steps', 2000)
         self.end_step = 0
-        self.reward_history = []
-
-        # Historical / Backtest 모드에서 사용할 데이터
-        self.historical_data_dict = config.get("historical_data_dict", None)
-        self.historical_data = config.get("historical_data", None)
-
-        # 뇌동매매 방지용 변수
-        self.cooldown_steps = 10  # [상향] 매수/매도 사이 최소 간격
-        self.grace_period = 10     # [신규] 매수 후 패널티 면제 기간
-        self.steps_since_buy = 0
-        self.steps_since_sell = 0 # [신규] 매도 후 경과 스텝
+        self.avg_entry_price = 0.0
         self.initial_price = 0
+        
+        # 쿨다운
+        self.cooldown_steps = 10
+        self.steps_since_buy = 0
+        self.steps_since_sell = 100
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        
-        # [혁신] 외부 옵션을 통한 상태 주입 (백테스트 연속성 유지용)
         options = options or {}
-        self.balance = options.get('current_balance', self.config.get('initial_balance', 10000000))
-        forced_start_step = options.get('start_step', None)
-
-        # 다중 종목 샘플링 모드 체크 (복구)
+        
+        # 다중 종목 무작위 샘플링
         if self.historical_data_dict:
             available_symbols = list(self.historical_data_dict.keys())
             if available_symbols:
                 selected_sym = random.choice(available_symbols)
                 self.historical_data = self.historical_data_dict[selected_sym]
                 self.config['symbol'] = selected_sym
-                self.logger.info(f"에피소드 초기화: 랜덤 종목 선택 => {selected_sym} (데이터 {len(self.historical_data)}건)")
+                self.current_symbol_idx = self.symbol_to_idx.get(selected_sym, 0)
         
+        self.balance = options.get('current_balance', self.config.get('initial_balance', 10000000))
         self.holdings = 0
+        self.steps_since_buy = 0
+        self.steps_since_sell = 100
+        self.avg_entry_price = 0.0
         
-        # [피처 전처리 캐싱] Advanced 모드일 경우 전체 배열을 한 번에 Pandas로 전처리
-        if self.historical_data is not None and self.feature_mode == 'advanced':
-            from core.feature_engineer import AdvancedFeatureEngineer
-            symbol = self.config.get('symbol', 'unknown')
-            
-            if hasattr(self, '_feature_cache') is False:
-                self._feature_cache = {}
-                
-            if symbol not in self._feature_cache:
-                self.logger.info(f"[{symbol}] Advanced Feature DataFrame 계산 및 캐싱 중...")
-                self._feature_cache[symbol] = AdvancedFeatureEngineer.process_historical_data(self.historical_data)
-            self.precomputed_features = self._feature_cache[symbol]
-        
-        # [기능 개선] 시작점 결정 로직 (forced_start_step 우선)
+        # 데이터 시작/종료점 설정
         if self.historical_data is not None:
             data_len = len(self.historical_data)
-            if forced_start_step is not None:
-                self.current_step = forced_start_step
-                self.end_step = data_len - 1
-            elif self.config.get("mode") == "backtest":
-                self.current_step = 0
-                self.end_step = data_len - 1
-            else:
-                # 학습 시에는 다양성을 위해 랜덤 시작점 사용
-                max_start_idx = max(0, data_len - self.max_steps - 1)
-                self.current_step = random.randint(0, max_start_idx)
-                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            max_start = max(0, data_len - self.max_steps - 1)
+            self.current_step = random.randint(0, max_start) if self.config.get("mode") != "backtest" else 0
+            self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            self.initial_price = self._get_current_price()
             
-            self.logger.info(f"에피소드 시작: 모드={self.config.get('mode', 'train')} / 시작점 {self.current_step} / 종료점 {self.end_step}")
-        else:
-            self.current_step = 0
-            self.end_step = 0
+            # Advanced 캐시 초기화
+            if self.feature_mode == 'advanced':
+                from core.feature_engineer import AdvancedFeatureEngineer
+                if not hasattr(self, '_feature_cache'): self._feature_cache = {}
+                sym = self.config.get('symbol')
+                if sym not in self._feature_cache:
+                    self._feature_cache[sym] = AdvancedFeatureEngineer.process_historical_data(self.historical_data)
+                self.precomputed_features = self._feature_cache[sym]
 
-        self.reward_history = []
-        self.steps_since_buy = 0
-        self.steps_since_sell = 100 # 초기에는 바로 매매 가능하도록 큰 값 설정
-        self.avg_entry_price = 0.0  # [추가] 매수 단가 추적용
-        
-        # 시작가 저장 (정규화 기준점)
-        self.initial_price = self._get_current_price()
-
-        # [Lookback Buffer] 패딩 초기화
+        # 버퍼 초기화
         self.lookback_buffer.clear()
-        first_feature = self._extract_single_feature(self.current_step)
         for _ in range(self.window_size):
-            self.lookback_buffer.append(first_feature)
+            self.lookback_buffer.append(self._extract_single_feature(self.current_step))
 
-        obs = self._get_observation()
-        info = self._get_info()
-        return obs, info
+        return self._get_observation(), self._get_info()
 
     def _extract_single_feature(self, idx):
-        """단일 스텝(current_step)에 대한 1차원 지표 배열을 추출합니다."""
-        if self.historical_data is not None:
-            max_idx = len(self.historical_data) - 1
-            idx = min(idx, max_idx)
+        """[3] 스케일 불변 피처 추출 로직 (Basic/Advanced 통합)"""
+        if self.historical_data is None: return np.zeros(self.single_feature_dim, dtype=np.float32)
+        
+        idx = min(idx, len(self.historical_data) - 1)
+        
+        if self.feature_mode == 'advanced' and hasattr(self, 'precomputed_features'):
+            return self.precomputed_features[idx]
 
-            if self.feature_mode == 'advanced' and hasattr(self, 'precomputed_features'):
-                if len(self.precomputed_features) > idx:
-                    return self.precomputed_features[idx]
-                else:
-                    return np.zeros(self.single_feature_dim, dtype=np.float32)
-
-            # (Basic 모드 로직)
-            row = self.historical_data[idx]
-            prices = [r.get("price", 1000) for r in self.historical_data]
-            volumes = [r.get("volume", 0) for r in self.historical_data]
-            
-            local_prices = prices[max(0, idx-50):idx+1]
-            local_volumes = volumes[max(0, idx-50):idx+1]
-            mean_p, std_p = np.mean(local_prices), np.std(local_prices) + 1e-9
-            mean_v, std_v = np.mean(local_volumes), np.std(local_volumes) + 1e-9
-
-            curr_p = row.get("price", 1000.0)
-            norm_price = (curr_p - mean_p) / std_p
-            rel_change = (curr_p - self.initial_price) / (self.initial_price + 1e-9)
-            norm_vol = (row.get("volume", 0.0) - mean_v) / std_v
-            
-            return np.array([
-                norm_price, rel_change, norm_vol, 
-                row.get("OIR", 0.0), row.get("Volatility", 0.0)
-            ], dtype=np.float32)
-
-        # 실전 라이브 환경
-        symbol = self.config.get('symbol')
-        if hasattr(self.data_collector, "get_latest_state"):
-            state = self.data_collector.get_latest_state(symbol, seq_len=self.window_size)
-            if state is not None and len(state) >= self.single_feature_dim:
-                return state[-self.single_feature_dim:]
-        return np.zeros(self.single_feature_dim, dtype=np.float32)
+        # Basic 모드: 가격 수익률 및 변화율 기반
+        row = self.historical_data[idx]
+        prev_row = self.historical_data[max(0, idx-1)]
+        curr_p, prev_p = float(row.get("price", 1000)), float(prev_row.get("price", 1000))
+        
+        ret = (curr_p - prev_p) / (prev_p + 1e-9) * 100.0
+        rel_p = (curr_p - self.initial_price) / (self.initial_price + 1e-9) * 10.0
+        vol_ret = (float(row.get("volume", 0)) - float(prev_row.get("volume", 0))) / (float(prev_row.get("volume", 0)) + 1e-9)
+        
+        return np.array([
+            np.clip(ret, -5, 5), 
+            np.clip(rel_p, -10, 10), 
+            np.clip(vol_ret, -10, 10),
+            row.get("OIR", 0.0), row.get("Volatility", 0.0)
+        ], dtype=np.float32)
 
     def _get_observation(self):
-        """Lookback 윈도우에 쌓인 2D 데이터를 numpy 1D 배열로 Gilge 펴서 리턴합니다."""
-        if len(self.lookback_buffer) == 0:
-            return np.zeros(self.feature_dim, dtype=np.float32)
-        return np.concatenate(list(self.lookback_buffer)).astype(np.float32)
+        """[4] 특징 배열 + 동적 종목 One-hot 결합"""
+        features = np.concatenate(list(self.lookback_buffer)).astype(np.float32)
+        stock_onehot = np.zeros(self.stock_id_dim, dtype=np.float32)
+        if self.current_symbol_idx < self.stock_id_dim:
+            stock_onehot[self.current_symbol_idx] = 1.0
+        return np.concatenate([features, stock_onehot])
 
     def _get_info(self):
-        return {
-            "balance": self.balance,
-            "holdings": self.holdings,
-            "unexecuted_orders": self.order_manager.has_unexecuted_orders()
-        }
+        return {"balance": self.balance, "holdings": self.holdings, "current_step": self.current_step}
 
     def action_masks(self):
-        masks = [True, False, False]  # Hold만 기본 허용
-
-        symbol = self.config.get('symbol')
-
-        # 미체결 주문이 있으면 Hold만 허용
-        if self.order_manager.has_unexecuted_orders(symbol=symbol):
-            return masks
-
-        # [버그 수정] 실제 가격 조회 - 0이면 매매 불가
-        current_price = self._get_current_price()
-        if current_price <= 0:
-            return masks  # 가격 정보 없음 → Hold 강제
-
-        # BUY: 잔고가 현재가 이상일 때만 허용 + [추가] 매도 후 쿨다운 체크
-        if self.balance >= current_price:
-            if self.steps_since_sell >= self.cooldown_steps:
-                masks[1] = True
-
-        # SELL: 실제 보유 수량 기준 + 쿨다운 체크
-        actual_holdings = self.order_manager.holdings.get(symbol, self.holdings)
-        if actual_holdings > 0:
-            # 매수 후 최소 5스텝이 지나야 매도 가능
-            if self.steps_since_buy >= self.cooldown_steps:
-                masks[2] = True
-
+        """인위적인 마스킹 없이 잔고/보유량 기반 기본 마스킹만 수행"""
+        masks = [True, False, False]
+        curr_p = self._get_current_price()
+        if curr_p <= 0: return masks
+        
+        if self.balance >= curr_p * 1.001 and self.holdings == 0 and self.steps_since_sell >= self.cooldown_steps:
+            masks[1] = True
+        if self.holdings > 0 and self.steps_since_buy >= self.cooldown_steps:
+            masks[2] = True
         return masks
 
     def step(self, action):
         current_price = self._get_current_price()
         slippage = self.config.get('slippage', 0.0005)
-
-        # 1. 행동 이전의 총자산 가치 (현금 잔고 + 보유 주식 가치)
-        prev_net_worth = self.balance + (self.holdings * current_price)
-
-        # 2. 액션 수행 (수수료/슬리피지 적용)
+        step_reward = 0.0
         action_executed = action
-        invalid_action_penalty = 0.0
         
+        # 1. Action Execution
         if action == 1: # Buy
             cost = current_price * (1 + slippage)
-            if self.holdings > 0:
-                # [버그 수정] 이미 보유 중인데 또 매수하려 함 → Hold로 강제 전환 및 벌점
-                action_executed = 0
-                invalid_action_penalty = -0.01
-                self.logger.debug(f"Action 1(BUY) 무효: 이미 {self.holdings}주 보유 중. 강제 Hold 전환.")
-            elif self.balance < cost:
-                # 잔고 부족
-                action_executed = 0
-                invalid_action_penalty = -0.01
-                self.logger.debug(f"Action 1(BUY) 무효: 잔고 부족({self.balance} < {cost}). 강제 Hold 전환.")
-            else:
+            if self.balance >= cost and self.holdings == 0:
                 self.balance -= cost
                 self.holdings += 1
-                self.avg_entry_price = cost  # [추가] 매수 단가 저장
+                self.avg_entry_price = cost
+                self.steps_since_buy = 0
+            else:
+                action_executed = 0
                 
         elif action == 2: # Sell
-            if self.holdings <= 0:
-                # [버그 수정] 팔 주식이 없는데 매도하려 함 → Hold로 강제 전환 및 벌점
-                action_executed = 0
-                invalid_action_penalty = -0.01
-                self.logger.debug("Action 2(SELL) 무효: 보유 주식 없음. 강제 Hold 전환.")
-            else:
+            if self.holdings > 0:
                 revenue = current_price * (1 - slippage)
                 self.balance += revenue
                 self.holdings -= 1
-                self.steps_since_sell = 0 # [추가] 매도 카운트 리셋
-
-        # 3. 행동 이후의 총자산 가치 (실제 실행된 action_executed 기준)
-        new_net_worth = self.balance + (self.holdings * current_price)
-
-        step_reward = 0.0
-        
-        # [수수료 체감] 매매 시 발생하는 고정 비용(Transaction Cost) 부여
-        transaction_cost = 0.05 # 수수료 + 슬리피지 추정치
-        if action_executed == 1:
-            step_reward -= transaction_cost
-        elif action_executed == 2:
-            step_reward -= transaction_cost
-            # [혁신] 미실현 수익 보상 제거 & 실현 수익(Realized PnL) 중심 보상 체계 적용
-            revenue = current_price * (1 - slippage)
-            realized_profit = revenue - self.avg_entry_price
-            profit_pct = (realized_profit / self.avg_entry_price) * 100.0 if self.avg_entry_price > 0 else 0.0
-
-            if profit_pct > 0:
-                # [야수성 주입] 수익 실현 시 극단적인 도파민 보강 (80배 증폭 + 파격 보너스)
-                # 에이전트가 시간 패널티의 공포보다 수익의 쾌감을 압도적으로 크게 느끼게 함
-                step_reward += (profit_pct * 80.0) + 5.0
-                self.logger.info(f"   >>> [BEAST MODE] 대규모 수익 실현! 보상 대폭 증폭. Reward: {step_reward:.4f}")
+                self.steps_since_sell = 0
+                
+                # [1] % 수익률 기반 보상 (x10 도파민 가중치)
+                profit_pct = (revenue - self.avg_entry_price) / self.avg_entry_price * 100.0
+                step_reward = profit_pct * 10.0
+                
+                self.avg_entry_price = 0.0
             else:
-                # 손실 시에는 손실 분만큼 직접 차감 (비대칭 보상 유지)
-                step_reward += profit_pct
-            
-            self.avg_entry_price = 0.0 # 매도 후 평단가 리셋
-        
-        # [벌점] 불가능한 액션 시도에 대한 패널티 추가
-        step_reward += invalid_action_penalty
+                action_executed = 0
 
-        # 쿨다운용 카운트 업데이트
-        if action_executed == 1:
-            self.steps_since_buy = 0
-        elif self.holdings > 0:
-            self.steps_since_buy += 1
-
-        # 4. [패널티 조정] 상태별 차등 시간 패널티 부여 (Hold Bias 및 존버 방지)
-        if action_executed == 0:
-            if self.holdings > 0:
-                # [혁신] 유예 기간(Grace Period) 동안은 패널티 면제하여 패닉셀 방지
-                if self.steps_since_buy > self.grace_period:
-                    step_reward -= 0.0050
-                else:
-                    # 유예 기간 중에는 패널티 0 (인내심 유도)
-                    pass
-            else:
-                # 무포지션 관망 패널티 (기존 0.002)
-                step_reward -= 0.0020
-
-        # 불필요한 연타 방지를 위해 모든 액션 시 카운트 증가
-        self.steps_since_sell += 1
-
-        # 극단적인 값이 나오지 않도록 클리핑 (예: -10 ~ 10 사이)
-        step_reward = float(np.clip(step_reward, -10.0, 10.0))
-
-        self.reward_history.append(step_reward)
-        if len(self.reward_history) > 10:
-            returns = np.array(self.reward_history)
-            sharpe_ratio = np.mean(returns) / (np.std(returns) + 1e-9)
-            # Sharpe ratio based bonus/penalty
-            step_reward += sharpe_ratio * 0.1
-
-        # 다시 한 번 클리핑 (샤프 지수 보너스 적용 후에도 안정성 유지)
-        step_reward = float(np.clip(step_reward, -10.0, 10.0))
-
+        # 4. [FIX] 모든 시간 패널티 제거 (에이전트의 인내심 확보)
+        # 포지션 보유 중 매 스텝 부과되던 감점(-0.0050 등)을 완전히 삭제하여 수익 구간까지 무한 홀딩을 가능하게 함
         self.current_step += 1
+        self.steps_since_buy += 1
+        self.steps_since_sell += 1
         
-        # [추가] Lookback 버퍼에 최신 스텝 특징 벡터 삽입
-        new_feature = self._extract_single_feature(self.current_step)
-        self.lookback_buffer.append(new_feature)
-
-        obs = self._get_observation()
-        info = self._get_info()
-
+        # 상태 업데이트
+        self.lookback_buffer.append(self._extract_single_feature(self.current_step))
+        
+        # 종료 판정
         terminated = self.balance < 0
         truncated = False
-
-        # [기능 개선] 날짜 변경 감지 (Day-Break Reset)
+        
         day_changed = False
-        if self.historical_data is not None and self.current_step < self.end_step:
-            c_ts_raw = self.historical_data[self.current_step - 1].get("timestamp", "")
-            n_ts_raw = self.historical_data[self.current_step].get("timestamp", "")
+        if self.historical_data is not None and self.current_step < len(self.historical_data):
+            curr_date = str(self.historical_data[self.current_step-1].get("timestamp", ""))[:10]
+            next_date = str(self.historical_data[self.current_step].get("timestamp", ""))[:10]
+            if curr_date and next_date and curr_date != next_date: day_changed = True
             
-            # datetime 객체든 문자열이든 안전하게 'YYYY-MM-DD' 추출
-            curr_date = str(c_ts_raw)[:10] if c_ts_raw else ""
-            next_date = str(n_ts_raw)[:10] if n_ts_raw else ""
-            
-            if curr_date and next_date and curr_date != next_date:
-                day_changed = True
-                self.logger.info(f"날짜 변경 감지 ({curr_date} -> {next_date}). 에피소드를 종료합니다.")
+        if self.current_step >= self.end_step or day_changed:
+            truncated = True
+            # 장 마감 시 강제 청산 보상 처리
+            if self.holdings > 0:
+                revenue = current_price * (1 - slippage)
+                profit_pct = (revenue - self.avg_entry_price) / self.avg_entry_price * 100.0
+                step_reward += profit_pct * 10.0
+                self.balance += revenue
+                self.holdings = 0
 
-        # 고정된 에피소드 길이(max_steps) 도달 시 또는 날짜 변경 시 종료
-        if self.historical_data is not None:
-            if self.current_step >= self.end_step or day_changed:
-                truncated = True
-
-        # [추가] 에피소드 종료 시 강제 청산 (Force Close) 및 오버나잇 패널티
-        if (terminated or truncated) and self.holdings > 0:
-            revenue = current_price * (1 - slippage)
-            self.balance += revenue
-            self.holdings -= 1
-            realized_profit = revenue - self.avg_entry_price
-            profit_pct = (realized_profit / self.avg_entry_price) * 100.0 if self.avg_entry_price > 0 else 0.0
-            
-            # 오버나잇 강제 청산 패널티 부여 (-5.0)
-            step_reward += profit_pct - 5.0
-            self.logger.warning(f"에피소드 종료 강제 청산! (Overnight Penalty 부과) PnL: {profit_pct:.2f}%")
-
-        # [추가] 실제 실행된 액션 정보를 info에 담아 시각화 도구가 필터링할 수 있게 도움
-        info["action_executed"] = action_executed
-
-        return obs, step_reward, terminated, truncated, info
+        return self._get_observation(), float(np.clip(step_reward, -10, 10)), terminated, truncated, self._get_info()
 
     def _get_current_price(self):
-        if self.historical_data is not None:
-            max_idx = len(self.historical_data) - 1
-            idx = min(self.current_step, max_idx)
-            return float(self.historical_data[idx].get("price", 1000.0))
-
-        symbol = self.config.get('symbol')
-        if hasattr(self.data_collector, "get_latest_price"):
-            # [버그 수정] 순수 코드와 _AL 접미사 양쪽 모두 시도
-            price = self.data_collector.get_latest_price(symbol)
-            if price > 0:
-                return price
-            price = self.data_collector.get_latest_price(symbol + "_AL")
-            if price > 0:
-                return price
-        return 0.0  # 가격 미확인 시 0 반환 (caller가 BUY 차단)
+        if self.historical_data is None: return 0.0
+        idx = min(self.current_step, len(self.historical_data)-1)
+        return float(self.historical_data[idx].get("price", 1000.0))
