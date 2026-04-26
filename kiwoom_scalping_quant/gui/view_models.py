@@ -901,24 +901,30 @@ class BacktestViewModel(QObject):
             from env.trading_env import ScalpingTradingEnv
             from models.agent import TradingAgentWrapper
 
-            # [혁신] 모델 파일 분석을 통해 feature_mode 자동 감지
+            # [최적화] 고정된 종목 임베딩(100)을 제외한 피처 영역 차원으로 모드 감지
             model_dim = TradingAgentWrapper.get_model_dimension(self.model_path)
-            detected_mode = "basic"
-            # [최적화] 피처 차원 변경 반영 (Advanced: 10*10=100, Basic: 5*10=50)
-            if model_dim >= 100:
+            if model_dim >= 200:
                 detected_mode = "advanced"
-            elif model_dim >= 50:
+            elif model_dim >= 140:
                 detected_mode = "basic"
+            elif model_dim > 100: # 구형 모델 호환
+                detected_mode = "advanced"
             else:
-                self.logger.warning(f"알 수 없는 모델 차원({model_dim}). 기본 설정(basic)을 사용합니다.")
+                detected_mode = "basic"
+                self.logger.info(f"모델 차원({model_dim}) 기반 자동 모드 설정: {detected_mode}")
 
             # historical_data를 직접 주입하고 모드를 backtest로 설정하여 전체 구간 테스트
+            # [FIX] 백테스트 시 모델 차원 불일치 방지: 훈련 시와 동일한 전체 유니버스 리스트 주입
+            all_symbols_list = [s.get("code") for s in self.config_manager.get_symbols()]
+
             env_config = {
                 "symbol": symbol,
                 "initial_balance": 10000000,
                 "historical_data": data_list,
                 "mode": "backtest",
-                "feature_mode": detected_mode
+                "feature_mode": detected_mode,
+                "target_dim": model_dim, # [핵심] 환경이 모델에 맞출 수 있도록 목표 차원 전달
+                "all_symbols": all_symbols_list
             }
             env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
             

@@ -61,16 +61,9 @@ class BacktestEngine:
                 "balance": info.get('balance', initial_balance)
             })
 
-            # [혁신] 날짜 변경(truncated) 발생 시 환경 리셋 후 다음 날짜로 이어서 진행
-            if truncated and not done and step < total_steps - 1:
-                current_balance = info.get('balance', initial_balance)
-                # 다음 스텝(step + 1)부터 시작하도록 환경 리셋
-                obs, info = env.reset(options={
-                    'current_balance': current_balance,
-                    'start_step': step + 1
-                })
-            else:
-                obs = next_obs
+            # [FIX] 백테스트 시 시계열 연속성을 위해 중간 리셋 로직 제거
+            # 날짜가 바뀌더라도(truncated) 환경을 초기화하지 않고 그대로 시점(obs)을 이어가서 LSTM 버퍼를 보존함
+            obs = next_obs
             
             step += 1
 

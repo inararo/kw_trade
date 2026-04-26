@@ -30,8 +30,9 @@ class ScalpingTradingEnv(gym.Env):
 
         # [4] 다종목 학습을 위한 유니버스 정보 및 동적 임배딩 설정
         self.historical_data_dict = config.get("historical_data_dict", {})
+        self.historical_data = config.get("historical_data", None) # [FIX] 백테스트 데이터 주입 복구
         
-        # 백테스트/실거래 시 차원 일치를 위한 유니버스 복구
+        # [FIX] 백테스트 및 실거래 시 차원 일치 보장
         global_symbols = config.get("all_symbols", [])
         if len(global_symbols) > 0:
             self.all_symbols = sorted(list(set(global_symbols)))
@@ -40,13 +41,25 @@ class ScalpingTradingEnv(gym.Env):
             
         self.symbol_to_idx = {sym: i for i, sym in enumerate(self.all_symbols)}
         self.current_symbol_idx = 0
-        self.stock_id_dim = len(self.all_symbols) if len(self.all_symbols) > 0 else 1
+
+        # [2] 종목 임베딩(One-hot) 차원 적응형 매칭 (Smart-Padding)
+        # target_dim이 주어지면 모델에 맞춰 역산하고, 없으면 기본 100 사용
+        target_dim = config.get("target_dim")
+        if target_dim:
+            self.stock_id_dim = max(1, target_dim - self.feature_dim)
+            self.max_num_symbols = self.stock_id_dim
+            self.logger.info(f"Target Dimension Detected: Adapting stock_id_dim to {self.stock_id_dim}")
+        else:
+            self.max_num_symbols = 100 
+            self.stock_id_dim = self.max_num_symbols
         
-        # [3] Observation 공간 차원: 특징(Scale-invariant) + 종목ID(One-hot)
+        # [3] Observation 공간 차원: 특징 + 가변/고정 종목ID 차원 (최종 차원은 target_dim에 수렴)
         self.observation_space = spaces.Box(
             low=-10.0, high=10.0, shape=(self.feature_dim + self.stock_id_dim,), dtype=np.float32
         )
         self.lookback_buffer = deque(maxlen=self.window_size)
+        total_dim = self.feature_dim + self.stock_id_dim
+        self.logger.info(f"PPO Env Init: Obs Shape = {self.observation_space.shape} (Total:{total_dim})")
 
         self.action_space = spaces.Discrete(3) # 0:Hold, 1:Buy, 2:Sell
         self.balance = config.get('initial_balance', 10000000)
@@ -84,9 +97,18 @@ class ScalpingTradingEnv(gym.Env):
         # 데이터 시작/종료점 설정
         if self.historical_data is not None:
             data_len = len(self.historical_data)
-            max_start = max(0, data_len - self.max_steps - 1)
-            self.current_step = random.randint(0, max_start) if self.config.get("mode") != "backtest" else 0
-            self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            
+            # [FIX] 백테스트 모드: options['start_step']이 있으면 해당 위치부터, 없으면 0부터 시작
+            if self.config.get("mode") == "backtest":
+                self.current_step = options.get('start_step', 0)
+                self.end_step = data_len - 1
+                self.logger.info(f"Backtest Reset: Starting at {self.current_step} / End at {self.end_step}")
+            else:
+                # 학습 모드: 다양성을 위해 랜덤 샘플링 유지
+                max_start = max(0, data_len - self.max_steps - 1)
+                self.current_step = options.get('start_step', random.randint(0, max_start))
+                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            
             self.initial_price = self._get_current_price()
             
             # Advanced 캐시 초기화
@@ -131,11 +153,16 @@ class ScalpingTradingEnv(gym.Env):
         ], dtype=np.float32)
 
     def _get_observation(self):
-        """[4] 특징 배열 + 동적 종목 One-hot 결합"""
+        """[2] 특징 배열 + 100차원 고정 Hard-Padding One-hot 결합"""
         features = np.concatenate(list(self.lookback_buffer)).astype(np.float32)
-        stock_onehot = np.zeros(self.stock_id_dim, dtype=np.float32)
-        if self.current_symbol_idx < self.stock_id_dim:
+        
+        # 무조건 100칸짜리 고정 배열 생성
+        stock_onehot = np.zeros(self.max_num_symbols, dtype=np.float32)
+        
+        # 현재 종목의 인덱스가 100 이내인 경우에만 인코딩 (0 ~ 99)
+        if hasattr(self, 'current_symbol_idx') and self.current_symbol_idx < self.max_num_symbols:
             stock_onehot[self.current_symbol_idx] = 1.0
+            
         return np.concatenate([features, stock_onehot])
 
     def _get_info(self):
@@ -204,9 +231,11 @@ class ScalpingTradingEnv(gym.Env):
             next_date = str(self.historical_data[self.current_step].get("timestamp", ""))[:10]
             if curr_date and next_date and curr_date != next_date: day_changed = True
             
-        if self.current_step >= self.end_step or day_changed:
+        # [FIX] 백테스트 모드: 실제 데이터의 끝에 도달했을 때만 종료 (날짜 변경 무시)
+        is_backtest = self.config.get("mode") == "backtest"
+        if self.current_step >= self.end_step or (day_changed and not is_backtest):
             truncated = True
-            # 장 마감 시 강제 청산 보상 처리
+            # 장 마감 시(학습 중) 또는 데이터 종료 시(백테스트) 강제 청산 보상 처리
             if self.holdings > 0:
                 revenue = current_price * (1 - slippage)
                 profit_pct = (revenue - self.avg_entry_price) / self.avg_entry_price * 100.0
