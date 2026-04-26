@@ -1,5 +1,5 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget, QComboBox
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget, QComboBox, QAbstractSpinBox
+from PyQt6.QtCore import pyqtSlot, Qt
 import pyqtgraph as pg
 
 class AITrainingStudioTab(QWidget):
@@ -20,23 +20,87 @@ class AITrainingStudioTab(QWidget):
         params_group = QGroupBox("학습 파라미터 설정")
         form_layout = QFormLayout()
 
+        # HTS 스타일 가로형 컨트롤 공통 스타일 (슬림화 및 정밀 정렬)
+        base_style = """
+            QLineEdit, QSpinBox, QDoubleSpinBox {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 2px;
+                padding: 0 5px;
+                font-size: 12px;
+                font-family: 'Consolas', monospace;
+            }
+            QPushButton#spin_btn {
+                min-width: 40px;
+                max-width: 40px;
+                background-color: #383838;
+                color: #ffffff;
+                border: 1px solid #4d4d4d;
+                border-radius: 2px;
+                padding: 0;
+                margin: 0;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton#spin_btn:hover {
+                background-color: #007acc;
+                border: 1px solid #0098ff;
+            }
+            QPushButton#spin_btn:pressed {
+                background-color: #005a9e;
+            }
+        """
+
+        def create_h_spin(widget, label, form):
+            container = QWidget()
+            layout = QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(2) 
+            
+            widget.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            widget.setStyleSheet(base_style)
+            widget.setFixedHeight(24) # 높이 24px 강제 고정
+            
+            btn_up = QPushButton("▲")
+            btn_up.setObjectName("spin_btn")
+            btn_up.setStyleSheet(base_style)
+            btn_up.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_up.setFixedHeight(24) # 버튼 높이도 24px로 완전 일치
+            btn_up.clicked.connect(widget.stepUp)
+            
+            btn_down = QPushButton("▼")
+            btn_down.setObjectName("spin_btn")
+            btn_down.setStyleSheet(base_style)
+            btn_down.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_down.setFixedHeight(24) # 버튼 높이도 24px로 완전 일치
+            btn_down.clicked.connect(widget.stepDown)
+            
+            layout.addWidget(widget, stretch=1)
+            layout.addWidget(btn_up)
+            layout.addWidget(btn_down)
+            form.addRow(label, container)
+
         self.spin_steps = QSpinBox()
-        self.spin_steps.setRange(1000, 10000000) # 1,000만 스텝으로 상향
-        self.spin_steps.setValue(1000000)       # 기본값도 100만으로 상향
+        self.spin_steps.setRange(1000, 10000000)
+        self.spin_steps.setValue(1000000)
         self.spin_steps.setSingleStep(100000)
-        form_layout.addRow("총 스텝 수:", self.spin_steps)
+        self.spin_steps.setGroupSeparatorShown(True)
+        create_h_spin(self.spin_steps, "총 스텝 수:", form_layout)
 
         self.spin_lr = QDoubleSpinBox()
         self.spin_lr.setDecimals(5)
         self.spin_lr.setRange(0.00001, 0.1)
         self.spin_lr.setValue(0.00030)
-        form_layout.addRow("학습률:", self.spin_lr)
+        self.spin_lr.setSingleStep(0.00001)
+        create_h_spin(self.spin_lr, "학습률:", form_layout)
 
         self.spin_max_records = QSpinBox()
-        self.spin_max_records.setRange(1000, 10000000) # 데이터 로드 한계도 상향
+        self.spin_max_records.setRange(1000, 10000000)
         self.spin_max_records.setValue(100000)
         self.spin_max_records.setSingleStep(10000)
-        form_layout.addRow("데이터 로드 건수 (종목당):", self.spin_max_records)
+        self.spin_max_records.setGroupSeparatorShown(True)
+        create_h_spin(self.spin_max_records, "데이터 로드 건수 (종목당):", form_layout)
 
         self.combo_feature_mode = QComboBox()
         self.combo_feature_mode.addItems(["Basic (단순 가격/거래량)", "Advanced (보조지표 추가)"])

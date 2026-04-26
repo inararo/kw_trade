@@ -167,8 +167,8 @@ class AsyncInfluxDBClient:
             e_str = end_date.replace("-", "").replace("/", "").strip()
             
             s_dt = datetime.datetime.strptime(s_str, "%Y%m%d")
-            # 종료일은 해당 날짜의 마지막 순간(23:59:59)까지 포함
-            e_dt = datetime.datetime.strptime(e_str, "%Y%m%d").replace(hour=23, minute=59, second=59)
+            # 종료일은 해당 날짜를 완벽히 포함하기 위해 다음날 자정(00:00:00)으로 설정 (InfluxDB stop은 exclusive임)
+            e_dt = datetime.datetime.strptime(e_str, "%Y%m%d") + datetime.timedelta(days=1)
             
             # [방어 로직] InfluxDB의 "cannot query an empty range" 에러 방지
             if s_dt >= e_dt:

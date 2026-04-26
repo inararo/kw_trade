@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter)
+                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter, QComboBox)
 from PyQt6.QtCore import QDate, Qt, pyqtSlot
 import pyqtgraph as pg
 
@@ -18,32 +18,52 @@ class BacktestStudioTab(QWidget):
         # --- 1. Top Control Panel ---
         ctrl_group = QGroupBox("백테스트 설정")
         ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(10, 5, 10, 5)
+        ctrl_layout.setSpacing(5) # [핵심] 레이블과 컨트롤은 서로 밀착
 
+        # 그룹 1: 종목 선택
         ctrl_layout.addWidget(QLabel("종목 선택:"))
-        self.combo_symbol = pg.ComboBox() # pyqtgraph's ComboBox is fine, or QComboBox
-        from PyQt6.QtWidgets import QComboBox
         self.combo_symbol = QComboBox()
+        self.combo_symbol.setMinimumWidth(120) # 150 -> 120으로 소폭 축소
         self._populate_symbols()
         ctrl_layout.addWidget(self.combo_symbol)
+        
+        ctrl_layout.addSpacing(25)
 
+        # 그룹 2: 시작일
         ctrl_layout.addWidget(QLabel("시작일:"))
         self.date_start = QDateEdit(QDate.currentDate().addMonths(-1))
         self.date_start.setCalendarPopup(True)
+        self.date_start.setMinimumWidth(110) # 110px로 확장하여 날짜 가독성 확보
         ctrl_layout.addWidget(self.date_start)
+        
+        ctrl_layout.addSpacing(25)
 
+        # 그룹 3: 종료일
         ctrl_layout.addWidget(QLabel("종료일:"))
         self.date_end = QDateEdit(QDate.currentDate())
         self.date_end.setCalendarPopup(True)
+        self.date_end.setMinimumWidth(110) # 110px로 확장하여 날짜 가독성 확보
         ctrl_layout.addWidget(self.date_end)
+        
+        ctrl_layout.addSpacing(25) # [그룹 간격]
 
+        # 그룹 4: 모델 로드
         self.btn_load_model = QPushButton("모델 로드 (.zip)")
         self.btn_load_model.clicked.connect(self._on_load_model)
         ctrl_layout.addWidget(self.btn_load_model)
+        
         self.lbl_model_path = QLabel("선택된 모델: 없음")
+        self.lbl_model_path.setStyleSheet("color: #888888; font-size: 11px;")
         ctrl_layout.addWidget(self.lbl_model_path)
+        
+        ctrl_layout.addStretch(1) # [유연한 공간]
 
+        # 그룹 5: 실행 버튼
         self.btn_start = QPushButton("백테스트 시작")
-        self.btn_start.setStyleSheet("background-color: #2b5b84; color: white;")
+        self.btn_start.setMinimumWidth(120)
+        self.btn_start.setFixedHeight(30)
+        self.btn_start.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
         self.btn_start.clicked.connect(self._on_start_backtest)
         ctrl_layout.addWidget(self.btn_start)
 
@@ -108,7 +128,11 @@ class BacktestStudioTab(QWidget):
         self.view_model.sig_bt_chart_data.connect(self.on_bt_chart_data)
 
     def _on_load_model(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "학습 모델 선택", "", "Zip Files (*.zip)")
+        # [FIX] 파일 다이얼로그 시작 경로를 saved_models 폴더로 고정
+        base_dir = os.path.join(os.getcwd(), "saved_models")
+        if not os.path.exists(base_dir): os.makedirs(base_dir, exist_ok=True)
+        
+        file_path, _ = QFileDialog.getOpenFileName(self, "학습 모델 선택", base_dir, "Zip Files (*.zip)")
         if file_path:
             self.lbl_model_path.setText(f"선택된 모델: {os.path.basename(file_path)}")
             self.view_model.set_model_path(file_path)
