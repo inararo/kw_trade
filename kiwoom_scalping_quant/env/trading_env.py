@@ -166,7 +166,14 @@ class ScalpingTradingEnv(gym.Env):
         return np.concatenate([features, stock_onehot])
 
     def _get_info(self):
-        return {"balance": self.balance, "holdings": self.holdings, "current_step": self.current_step}
+        current_price = self._get_current_price()
+        net_worth = self.balance + (self.holdings * current_price)
+        return {
+            "balance": self.balance, 
+            "holdings": self.holdings, 
+            "net_worth": net_worth, 
+            "current_step": self.current_step
+        }
 
     def action_masks(self):
         """인위적인 마스킹 없이 잔고/보유량 기반 기본 마스킹만 수행"""
@@ -188,27 +195,37 @@ class ScalpingTradingEnv(gym.Env):
         
         # 1. Action Execution
         if action == 1: # Buy
-            cost = current_price * (1 + slippage)
-            if self.balance >= cost and self.holdings == 0:
-                self.balance -= cost
-                self.holdings += 1
-                self.avg_entry_price = cost
-                self.steps_since_buy = 0
+            if self.balance > 0 and self.holdings == 0:
+                # [FIX] 풀베팅 로직: 잔고의 99%를 사용하여 최대 수량 매수
+                invest_amount = self.balance * 0.99
+                buy_price = current_price * (1 + slippage)
+                shares = int(invest_amount / buy_price)
+                
+                if shares > 0:
+                    total_cost = shares * buy_price
+                    self.balance -= total_cost
+                    self.holdings = shares
+                    self.avg_entry_price = buy_price
+                    self.steps_since_buy = 0
+                else:
+                    action_executed = 0
             else:
                 action_executed = 0
                 
         elif action == 2: # Sell
             if self.holdings > 0:
-                revenue = current_price * (1 - slippage)
+                # [FIX] 일괄 매도 로직: 보유한 모든 수량 매도
+                sell_price = current_price * (1 - slippage)
+                revenue = self.holdings * sell_price
                 self.balance += revenue
-                self.holdings -= 1
-                self.steps_since_sell = 0
                 
-                # [1] % 수익률 기반 보상 (x10 도파민 가중치)
-                profit_pct = (revenue - self.avg_entry_price) / self.avg_entry_price * 100.0
+                # % 수익률 기반 보상 (x10 도파민 가중치 유지)
+                profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
                 step_reward = profit_pct * 10.0
                 
+                self.holdings = 0
                 self.avg_entry_price = 0.0
+                self.steps_since_sell = 0
             else:
                 action_executed = 0
 
@@ -237,9 +254,13 @@ class ScalpingTradingEnv(gym.Env):
             truncated = True
             # 장 마감 시(학습 중) 또는 데이터 종료 시(백테스트) 강제 청산 보상 처리
             if self.holdings > 0:
-                revenue = current_price * (1 - slippage)
-                profit_pct = (revenue - self.avg_entry_price) / self.avg_entry_price * 100.0
+                sell_price = current_price * (1 - slippage)
+                revenue = self.holdings * sell_price
+                
+                # [FIX] 보상 폭발 버그 수정 (총액 revenue 대신 단가 sell_price 사용)
+                profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
                 step_reward += profit_pct * 10.0
+                
                 self.balance += revenue
                 self.holdings = 0
 

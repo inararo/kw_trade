@@ -30,7 +30,8 @@ class BacktestEngine:
         step = 0
         total_steps = len(df)
 
-        initial_balance = info.get('balance', 10000000)
+        # [FIX] 초기 자본금 기준을 현금이 아닌 '총자산 가치'로 선언
+        initial_balance = info.get('net_worth', info.get('balance', 10000000))
 
         # UI 업데이트용 콜백
         def _notify_progress(s: int, tot: int, pnl: float):
@@ -58,7 +59,7 @@ class BacktestEngine:
                 "price": current_price,
                 "action": action_map.get(action_executed, "Hold"),
                 "reward": reward,
-                "balance": info.get('balance', initial_balance)
+                "balance": info.get('net_worth', initial_balance)
             })
 
             # [FIX] 백테스트 시 시계열 연속성을 위해 중간 리셋 로직 제거
@@ -68,7 +69,7 @@ class BacktestEngine:
             step += 1
 
             if step % 100 == 0:
-                _notify_progress(step, total_steps, info.get('balance', initial_balance) - initial_balance)
+                _notify_progress(step, total_steps, info.get('net_worth', initial_balance) - initial_balance)
                 await asyncio.sleep(0) # 이벤트 루프 양보
 
         self.is_running = False
