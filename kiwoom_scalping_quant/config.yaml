@@ -36,8 +36,6 @@ symbols:
   name: 흥아해운
 - code: 006340_AL
   name: 대원전선
-- code: 006910_AL
-  name: 보성파워텍
 - code: 008350_AL
   name: 남선알미늄
 - code: 009830_AL
@@ -54,8 +52,6 @@ symbols:
   name: 에코플라스틱
 - code: 047040_AL
   name: 대우건설
-- code: 051980_AL
-  name: 중앙첨단소재
 - code: 077360_AL
   name: 덕산하이메탈
 - code: 080220_AL
@@ -70,8 +66,6 @@ symbols:
   name: 이브이첨단소재
 - code: 137950_AL
   name: 제이씨케미칼
-- code: 460860_AL
-  name: 동국제강
 telegram_chat_id: '8338432975'
 universe:
 - code: 3296

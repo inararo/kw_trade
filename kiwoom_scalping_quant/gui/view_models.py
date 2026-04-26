@@ -351,6 +351,46 @@ class AssetDataViewModel(QObject):
                     "volume": stock.get("volume", 0.0)
                 })
 
+        # =========================================================================
+        # 1. 보유 종목 우선 편입(Mandatory Retention) 로직 추가
+        # 새로운 감시 리스트 갱신 시, 보유 중인 종목(Balance > 0) 혹은 미체결 주문이 
+        # 있는 종목은 새로운 감시 리스트에 무조건 강제로 포함시킵니다.
+        # =========================================================================
+        try:
+            strategy_manager = getattr(self.config_manager, '_injected_strategy_manager', None)
+            if strategy_manager and hasattr(strategy_manager, 'order_manager'):
+                holdings = strategy_manager.order_manager.holdings
+                new_codes = set([s["code"] for s in new_symbols])
+                
+                # 기존 유니버스 데이터(price, name 등 복원용) 매핑
+                old_symbols = self.config_manager.get_symbols()
+                old_sym_map = {s.get("code"): s for s in old_symbols}
+
+                for code, qty in holdings.items():
+                    # 미체결 여부도 확인 (보유 수량이 없더라도 미체결 매수가 있을 수 있음)
+                    has_unexecuted = False
+                    if hasattr(strategy_manager.order_manager, 'has_unexecuted_orders'):
+                        has_unexecuted = strategy_manager.order_manager.has_unexecuted_orders(code)
+
+                    # 1주 이상 보유 중이거나 미체결 물량이 있는 종목 강제 편입
+                    if (qty > 0 or has_unexecuted) and code not in new_codes:
+                        old_s = old_sym_map.get(code, {})
+                        name = old_s.get("name", self.universe_manager.get_stock_name_from_cache(code) if hasattr(self, 'universe_manager') else f"Held_{code}")
+                        if not name:
+                            name = f"Held_{code}"
+
+                        self.logger.warning(f"[Zombie Position 방어] {name}({code}) 종목이 유니버스 조건에서 탈락했으나, 잔고({qty}주) 또는 미체결로 인해 강제 유지됩니다.")
+                        
+                        new_symbols.append({
+                            "code": code,
+                            "name": name,
+                            "price": old_s.get("price", 0.0),
+                            "flu_rt": old_s.get("flu_rt", 0.0),
+                            "volume": old_s.get("volume", 0.0)
+                        })
+        except Exception as e:
+            self.logger.error(f"보유 종목 강제 유지 로직 실행 에러: {e}")
+
         # [버그 수정] 장외 시간이거나 API 응답이 없어 리스트가 비어있을 경우 덮어쓰지 않음
         if not new_symbols:
             existing_symbols = self.config_manager.get_symbols()
@@ -367,7 +407,7 @@ class AssetDataViewModel(QObject):
 
         self.sig_progress_updated.emit(100)
 
-        msg = f"상위 {len(top_stocks)}개 유니버스 생성 완료!"
+        msg = f"상위 {len(top_stocks)}개(+유지 종목) 유니버스 생성 완료!"
         if is_auto:
             msg = "[POST-MARKET COLLECTION] " + msg
 
