@@ -986,8 +986,69 @@ class BacktestViewModel(QObject):
             # 4. 결과 처리 및 UI 전송
             kpi = KPICalculator.calculate(trades_df, 10000000)
 
+            # [신규] 백테스트 결과 자동 Export (CSV)
+            self._export_backtest_results(kpi, trades_df, symbol, start_date, end_date)
+
             self.sig_bt_chart_data.emit(trades_df)
             self.sig_bt_finished.emit(kpi)
 
         except Exception as e:
             self.sig_bt_error.emit(str(e))
+
+    def _export_backtest_results(self, kpi, trades_df, symbol, start_date, end_date):
+        """백테스트 결과를 CSV 파일로 자동 저장합니다."""
+        try:
+            import datetime
+            import pandas as pd
+            import os
+
+            # 1. 폴더 생성
+            results_dir = "./backtest_results"
+            if not os.path.exists(results_dir):
+                os.makedirs(results_dir)
+
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            file_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_name = os.path.basename(self.model_path) if self.model_path else "unknown"
+
+            # 2. KPI Summary 저장 (누적 모드)
+            summary_path = os.path.join(results_dir, "backtest_summary.csv")
+            
+            # 매매 횟수 계산 (Hold 제외)
+            total_trades = len(trades_df[trades_df['action'].isin(['Buy', 'Sell'])])
+
+            summary_row = {
+                "Timestamp": timestamp,
+                "Model Name": model_name,
+                "Symbol": symbol,
+                "Start Date": start_date,
+                "End Date": end_date,
+                "Total Return (%)": round(kpi.get("Total Return", 0), 2),
+                "Win Rate (%)": round(kpi.get("Win Rate", 0), 2),
+                "MDD (%)": round(kpi.get("MDD", 0), 2),
+                "Profit Factor": round(kpi.get("Profit Factor", 0), 3),
+                "Total Trades": total_trades
+            }
+            summary_df = pd.DataFrame([summary_row])
+            
+            # 파일이 없으면 헤더 포함 저장, 있으면 Append
+            if not os.path.exists(summary_path):
+                summary_df.to_csv(summary_path, index=False, encoding='utf-8-sig')
+            else:
+                summary_df.to_csv(summary_path, index=False, header=False, mode='a', encoding='utf-8-sig')
+
+            # 3. 상세 매매 내역(Trade Log) 저장 (개별 파일)
+            # 수동 분석을 위해 'Hold'를 제외한 실제 액션만 추출
+            trade_log = trades_df[trades_df['action'].isin(['Buy', 'Sell'])].copy()
+            if not trade_log.empty:
+                # 파일명: trade_log_모델명_시간.csv
+                clean_model_name = model_name.replace(".zip", "").replace(" ", "_")
+                log_filename = f"trade_log_{clean_model_name}_{file_ts}.csv"
+                log_path = os.path.join(results_dir, log_filename)
+                trade_log.to_csv(log_path, index=False, encoding='utf-8-sig')
+                self.logger.info(f"Backtest: 상세 매매 내역 저장 완료 ({log_path})")
+
+            self.logger.info(f"Backtest: 결과 요약 저장 완료 ({summary_path})")
+
+        except Exception as export_e:
+            self.logger.error(f"Backtest 결과 Export 중 오류 발생: {export_e}")
