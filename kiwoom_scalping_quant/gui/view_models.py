@@ -407,6 +407,30 @@ class AssetDataViewModel(QObject):
         else:
             self.symbol_update_failed.emit(str(result.failure()))
 
+    def delete_db_data(self, codes: List[str]):
+        """선택된 종목들의 모든 DB 데이터를 삭제 요청 (영구 삭제)"""
+        asyncio.create_task(self._delete_db_data_task(codes))
+
+    async def _delete_db_data_task(self, codes: List[str]):
+        self.sig_status_updated.emit(f"종목 {len(codes)}개의 DB 데이터 삭제 중...")
+        success_count = 0
+        deleted_successfully = []
+        
+        for code in codes:
+            res = await self.influx_client.delete_symbol_data(code)
+            if res:
+                success_count += 1
+                deleted_successfully.append(code)
+        
+        self.sig_status_updated.emit("대기 중")
+        if success_count > 0:
+            # [추가] DB 삭제 성공 시 화면 리스트(Universe)에서도 해당 종목 제거
+            self.config_manager.remove_symbols(deleted_successfully)
+            self.load_symbols() # UI 리스트 갱신
+            self.symbol_update_success.emit(f"{success_count}개 종목의 DB 데이터 삭제 및 리스트 갱신 완료.")
+        else:
+            self.symbol_update_failed.emit("DB 데이터 삭제에 실패했거나 삭제할 데이터가 없습니다.")
+
     def start_historical_fetch(self, symbols: Any, start_date: str):
         """특정 종목(들)에 대한 수집 시작"""
         if isinstance(symbols, str):

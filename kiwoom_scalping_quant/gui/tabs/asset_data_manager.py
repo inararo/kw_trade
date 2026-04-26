@@ -117,6 +117,21 @@ class AssetDataManagerTab(QWidget):
         self.btn_collect_all.clicked.connect(self._on_btn_collect_all_clicked)
         data_layout.addWidget(self.btn_collect_all)
 
+        # [신규] DB 데이터 삭제 버튼 (빨간색 계열)
+        self.btn_delete_db = QPushButton("선택 종목 DB 데이터 삭제")
+        self.btn_delete_db.setStyleSheet("""
+            QPushButton {
+                background-color: #c62828; 
+                color: white; 
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #e53935;
+            }
+        """)
+        self.btn_delete_db.clicked.connect(self._on_btn_delete_db_clicked)
+        data_layout.addWidget(self.btn_delete_db)
+
         self.lbl_progress_msg = QLabel("대기 중")
         data_layout.addWidget(self.lbl_progress_msg)
 
@@ -225,6 +240,36 @@ class AssetDataManagerTab(QWidget):
         self.btn_collect_all.setEnabled(False)
         start_date = self.date_start.date().toString("yyyyMMdd")
         self.view_model.start_bulk_historical_fetch(start_date)
+
+    def _on_btn_delete_db_clicked(self):
+        """선택된 종목의 DB 데이터를 영구 삭제합니다."""
+        checked_symbols = []
+        for r in range(self.table.rowCount()):
+            chk_item = self.table.item(r, 0)
+            if chk_item and chk_item.checkState() == Qt.CheckState.Checked:
+                checked_symbols.append(self.table.item(r, 1).text())
+
+        if not checked_symbols:
+            current_row = self.table.currentRow()
+            if current_row >= 0:
+                checked_symbols.append(self.table.item(current_row, 1).text())
+
+        if not checked_symbols:
+            QMessageBox.warning(self, "경고", "먼저 DB 데이터를 삭제할 종목의 체크박스를 선택해주세요.")
+            return
+
+        # 최종 확인 (매우 중요)
+        reply = QMessageBox.critical(
+            self, 
+            "데이터 영구 삭제 경고", 
+            f"선택한 {len(checked_symbols)}개 종목의 모든 과거 및 틱 데이터를 DB에서 영구히 삭제합니다.\n\n"
+            "이 작업은 되돌릴 수 없습니다. 정말 진행하시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            self.view_model.delete_db_data(checked_symbols)
 
     # --- Slots (ViewModel -> View) ---
     @pyqtSlot(list)

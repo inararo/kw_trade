@@ -149,6 +149,34 @@ class AsyncInfluxDBClient:
             self.logger.error(f"   [에러] InfluxDB [{symbol}] 조회 실패: {type(e).__name__} - {str(e)}")
             return []
 
+    async def delete_symbol_data(self, symbol_code: str):
+        """특정 종목의 모든 데이터를 DB에서 영구 삭제합니다."""
+        try:
+            import datetime
+            delete_api = self.client.delete_api()
+            s_iso = "1970-01-01T00:00:00Z"
+            e_iso = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            
+            clean_code = symbol_code.split('_')[0].strip()
+            
+            # [버그 수정] InfluxDB 2.x delete API는 Predicate에서 'OR' 연산자를 지원하지 않음.
+            # 따라서 두 조건을 각각 별도의 요청으로 나누어 실행해야 함.
+            
+            # 1. 원본 코드(예: 005930_AL) 삭제
+            predicate1 = f'symbol="{symbol_code}"'
+            await delete_api.delete(s_iso, e_iso, predicate1, bucket=self.bucket, org=self.org)
+            
+            # 2. 정규화된 코드(예: 005930) 삭제
+            if clean_code != symbol_code:
+                predicate2 = f'symbol="{clean_code}"'
+                await delete_api.delete(s_iso, e_iso, predicate2, bucket=self.bucket, org=self.org)
+            
+            self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 및 [{clean_code}] 데이터 삭제 완료.")
+            return True
+        except Exception as e:
+            self.logger.error(f"InfluxDB 데이터 삭제 실패 ({symbol_code}): {e}")
+            return False
+
     async def fetch_data_by_range(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
         특정 기간(시작일~종료일)의 데이터를 InfluxDB에서 조회합니다.
