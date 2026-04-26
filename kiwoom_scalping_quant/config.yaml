@@ -40,18 +40,36 @@ symbols:
   name: 보성파워텍
 - code: 008350_AL
   name: 남선알미늄
+- code: 009830_AL
+  name: 한화솔루션
 - code: 010140_AL
   name: 삼성중공업
+- code: 010820_AL
+  name: 퍼스텍
+- code: 011930_AL
+  name: 신성이엔지
+- code: 036930_AL
+  name: 주성엔지니어링
+- code: 038110_AL
+  name: 에코플라스틱
 - code: 047040_AL
   name: 대우건설
 - code: 051980_AL
   name: 중앙첨단소재
+- code: 077360_AL
+  name: 덕산하이메탈
 - code: 080220_AL
   name: 제주반도체
 - code: 090710_AL
   name: 휴림로봇
 - code: 093370_AL
   name: 후성
+- code: 097230_AL
+  name: 에이치제이중공업
+- code: 131400_AL
+  name: 이브이첨단소재
+- code: 137950_AL
+  name: 제이씨케미칼
 - code: 460860_AL
   name: 동국제강
 telegram_chat_id: '8338432975'

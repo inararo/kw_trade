@@ -19,7 +19,7 @@ class MainWindow(QMainWindow):
         self.system = system
         self.view_model = view_model
 
-        self.setWindowTitle("키움 스캘핑 퀀트 - 전문가용 HTS")
+        self.setWindowTitle("스캘핑 퀀트")
         self.setGeometry(100, 100, 1200, 800)
 
         self._init_menu_bar()
@@ -154,7 +154,7 @@ class MainWindow(QMainWindow):
             asset_vm.symbols_loaded.connect(self.tab_bt._populate_symbols)
 
         self.tabs.addTab(self.tab_live, "라이브 대시보드")
-        self.tabs.addTab(self.tab_asset, "종목 및 데이터 관리")
+        self.tabs.addTab(self.tab_asset, "데이터 관리")
         self.tabs.addTab(self.tab_ai, "AI 학습 스튜디오")
         self.tabs.addTab(self.tab_bt, "Backtest Studio")
         self.tabs.addTab(self.tab_settings, "환경 설정")

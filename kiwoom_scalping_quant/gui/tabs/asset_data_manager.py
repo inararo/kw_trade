@@ -3,7 +3,7 @@ from PyQt6.QtCore import QDate, pyqtSlot, Qt
 
 class AssetDataManagerTab(QWidget):
     """
-    탭 B: 종목 및 데이터 관리
+    탭 B: 데이터 관리
     종목 리스트 편집(CRUD) 및 과거 데이터 수집 기능.
     """
     def __init__(self, view_model):
