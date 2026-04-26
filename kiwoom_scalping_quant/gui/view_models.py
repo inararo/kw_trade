@@ -540,7 +540,7 @@ class AITrainingViewModel(QObject):
         self.worker = None
         self.prep_task = None # [신규] 데이터 조회 및 준비 태스크 추적용
 
-    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, feature_mode: str = "basic"):
+    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, feature_mode: str = "basic", use_smart_sampling: bool = False):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
@@ -550,9 +550,9 @@ class AITrainingViewModel(QObject):
         if self.prep_task and not self.prep_task.done():
             self.prep_task.cancel()
 
-        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records, feature_mode))
+        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling))
 
-    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, feature_mode: str):
+    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, feature_mode: str, use_smart_sampling: bool = False):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
         # [안정성 강화] 동시 조회 개수를 3개로 제한
         sem = asyncio.Semaphore(3)
@@ -606,53 +606,60 @@ class AITrainingViewModel(QObject):
         from models.agent import TradingAgentWrapper
         from gui.training_worker import TrainingWorker, TrainingSignals
 
-        self.sig_training_log.emit(f"2. RL Environment 생성 및 Agent 초기화 (Feature Mode: {feature_mode})...")
+        sampling_desc = "활황장 집중(Smart)" if use_smart_sampling else "순수 랜덤(Random)"
+        self.sig_training_log.emit(f"2. RL Environment 생성 (Mode: {feature_mode}, Sampling: {sampling_desc})...")
         env_config = {
             "historical_data_dict": historical_data_dict,
             "initial_balance": 10000000,
-            "feature_mode": feature_mode
+            "feature_mode": feature_mode,
+            "use_smart_sampling": use_smart_sampling,  # [핵심] 스마트 샘플링 플래그 주입
         }
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
-        # 설정 업데이트 (LR, Ent_Coef 반영 등)
-        # [FIX] 불필요한 뇌동매매 억제를 위해 탐험 계수 하향 (0.03 -> 0.005)
+        # [핵심] 스마트 샘플링 여부에 따라 모델명/폴더명에 태그 부여
+        sampling_tag = "smart" if use_smart_sampling else "random"
+        model_save_dir = f"./saved_models/{sampling_tag}/"
+        tb_log_dir    = f"./tensorboard_logs/{sampling_tag}/"
+
         ent_coef = 0.005
         agent_config = {
             "seq_len": 10,
             "learning_rate": lr,
             "ent_coef": ent_coef,
-            "feature_mode": feature_mode  # 에이전트에서도 모드 식별 가능하도록 패스스루
+            "feature_mode": feature_mode,
+            "model_save_dir": model_save_dir,   # 샘플링 방식별 독립 경로
+            "tensorboard_log": tb_log_dir,       # 텐서보드 로그도 분리
+            "model_name_suffix": sampling_tag,   # 모델 파일명에 _smart / _random 태그
         }
         
-        self.sig_training_log.emit(f"   => 탐험 강도(Entropy Coefficient)를 {ent_coef}로 설정하여 관망 편향을 억제합니다.")
+        self.sig_training_log.emit(
+            f"   => 모델 저장 경로: [{model_save_dir}] | 학습 태그: [{sampling_tag}]"
+        )
         agent = TradingAgentWrapper(env, agent_config)
 
-        # 3. 최신 모델 가중치 자동 로드 (연속 학습 지원)
-        save_dir = agent_config.get("model_save_dir", "./saved_models/")
+        # 3. 최신 모델 가중치 자동 로드 - 같은 sampling_tag + feature_mode 범주 내에서만 콜렉션
+        save_dir = model_save_dir
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
 
-        # 현재 feature_mode에 해당하는 모델만 검색 (예: model_advanced_*.zip)
-        model_prefix = f"model_{feature_mode}"
+        # 현재 feature_mode + sampling_tag에 해당하는 모델만 검색 (예: model_advanced_smart_*.zip)
+        model_prefix = f"model_{feature_mode}_{sampling_tag}"
         model_files = glob.glob(os.path.join(save_dir, f"{model_prefix}_*.zip"))
-        
-        # 구버전 호환성 체크 (기존 model_2024...zip 파일들도 basic 모드일 땐 같이 검색)
-        if feature_mode == 'basic':
-            # 정규표현식으로 과거 model_YYYY 패턴 매칭
-            legacy_files = [f for f in glob.glob(os.path.join(save_dir, "model_*.zip")) if not "advanced" in f]
-            model_files = list(set(model_files + legacy_files))
 
         if model_files:
-            # 파일명을 기준으로 정렬하여 가장 최신(문자열 순서상 뒤) 파일을 선택
             latest_model_zip = sorted(model_files)[-1]
             load_path = latest_model_zip.replace(".zip", "")
             try:
                 agent.load_weights(load_path)
-                self.sig_training_log.emit(f"   => 발견된 최신 {feature_mode} 모델({os.path.basename(latest_model_zip)})의 지식을 계승합니다.")
+                self.sig_training_log.emit(
+                    f"   => [{sampling_tag}] 최신 모델 계승: {os.path.basename(latest_model_zip)}"
+                )
             except Exception as e:
-                self.sig_training_log.emit(f"   => [주의] {feature_mode} 모델 로드 중 충돌 (초기화): {e}")
+                self.sig_training_log.emit(f"   => [주의] [{sampling_tag}] 모델 로드 중 충돌 (초기화): {e}")
         else:
-            self.sig_training_log.emit(f"   => 기존 {feature_mode} 학습 모델이 없습니다. 백지상태에서 학습을 시작합니다.")
+            self.sig_training_log.emit(
+                f"   => [{sampling_tag}] 모드의 기존 모델이 없습니다. 백지상태에서 학습을 시작합니다."
+            )
 
         # 3. Worker 생성 및 실행
         self.sig_training_log.emit("3. QThread 학습 워커 실행...")

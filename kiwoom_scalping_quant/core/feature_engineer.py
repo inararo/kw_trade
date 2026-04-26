@@ -41,19 +41,20 @@ class AdvancedFeatureEngineer:
         # 4. 거래량 MA 대비 비율
         df['vol_activity'] = df['volume'] / (df['volume'].rolling(window=20).mean() + 1e-9)
 
-        # 11차원 스케일 불변 지표 구성
+        # 11차원 스케일 불변 지표 구성 (컬럼 인덱스 직접 모니터링하는 코드는 이 순서에 의존)
         features = pd.DataFrame()
-        features['disparity_ma5'] = (df['price'] / ma5 - 1) * 100.0
-        features['disparity_ma20'] = (df['price'] / ma20 - 1) * 100.0
-        features['disparity_vwap'] = (df['price'] / vwap - 1) * 100.0
-        features['bb_pos'] = df['bb_pos']
-        features['rsi'] = AdvancedFeatureEngineer._calc_rsi(df['price']) / 100.0
-        features['v_activity'] = df['vol_activity']
-        features['ret_1'] = df['ret_1']
-        features['ret_5'] = df['ret_5']
-        features['oir'] = df.get('OIR', 0.5)
-        features['volatility'] = df.get('Volatility', 0.1)
-        features['vol_change'] = df['volume'].pct_change().fillna(0)
+        features['disparity_ma5']  = (df['price'] / ma5 - 1) * 100.0   # idx 0
+        features['disparity_ma20'] = (df['price'] / ma20 - 1) * 100.0  # idx 1
+        features['disparity_vwap'] = (df['price'] / vwap - 1) * 100.0  # idx 2
+        features['bb_pos']         = df['bb_pos']                        # idx 3
+        features['rsi']            = AdvancedFeatureEngineer._calc_rsi(df['price']) / 100.0  # idx 4
+        # idx 5: 상대 거래량(Relative Volume) - 스마트 샘플링의 Volume Spike 후보군 탐지 기준
+        features['rel_vol_20']     = df['volume'] / (df['volume'].rolling(window=20).mean() + 1e-9)  # idx 5
+        features['ret_1']          = df['ret_1']                         # idx 6
+        features['ret_5']          = df['ret_5']                         # idx 7
+        features['oir']            = df.get('OIR', 0.5)                  # idx 8
+        features['volatility']     = df.get('Volatility', 0.1)           # idx 9
+        features['vol_change']     = df['volume'].pct_change().fillna(0) # idx 10
 
         final_array = features.fillna(0).values
         return np.clip(final_array, -10.0, 10.0).astype(np.float32)

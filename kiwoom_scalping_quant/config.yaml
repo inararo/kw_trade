@@ -1,7 +1,7 @@
 account_number: ''
 ai_confidence_threshold: 0.5
 cb_timeout_sec: 3
-cutoff_time: '13:00'
+cutoff_time: '14:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
 enable_cutoff: false
@@ -17,6 +17,7 @@ kiwoom:
   ws_url:
     real: wss://api.kiwoom.com:10000/api/dostk/websocket
     virtual: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
+live_trading_model_type: smart
 log_level: DEBUG
 max_buffer_size: 100000
 max_invest_per_symbol: 300000.0

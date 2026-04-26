@@ -53,8 +53,10 @@ class TradingAgentWrapper:
         self.config = config
         self.feature_mode = config.get("feature_mode", "basic")
         
-        # 모델 저장/로드 시 모드 분기를 위한 prefix 생성
-        self.model_prefix = f"model_{self.feature_mode}"
+        # 모델 저장/로드 시 샘플링 방식에 따른 prefix 생성
+        # 예: model_advanced_smart, model_advanced_random, model_basic_smart ...
+        sampling_suffix = config.get("model_name_suffix", "random")
+        self.model_prefix = f"model_{self.feature_mode}_{sampling_suffix}"
         self.model = None
         self.seq_len = config.get("seq_len", 10)
 

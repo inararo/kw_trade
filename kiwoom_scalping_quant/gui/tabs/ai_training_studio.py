@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget, QComboBox, QAbstractSpinBox
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QGroupBox, QSpinBox, QDoubleSpinBox, QFormLayout, QListWidget, QComboBox, QAbstractSpinBox, QCheckBox
 from PyQt6.QtCore import pyqtSlot, Qt
 import pyqtgraph as pg
 
@@ -107,6 +107,22 @@ class AITrainingStudioTab(QWidget):
         self.combo_feature_mode.setCurrentIndex(1)  # [추가] 기본값을 Advanced로 설정
         form_layout.addRow("데이터 분석 모드:", self.combo_feature_mode)
 
+        # [스마트 샘플링 토글] 데이터 분석 모드 바로 아래
+        self.chk_smart_sampling = QCheckBox("활황장(Volume Spike) 구간 집중 학습")
+        self.chk_smart_sampling.setChecked(False)  # 기본값: OFF (Pure Random)
+        self.chk_smart_sampling.setToolTip(
+            "ON: 거래량이 폭발하는 활황장 구간(20봉 평균의 1.5배 이상)에서 80%의 확률로\n"
+            "에피소드 시작점을 선택합니다. 스캘핑 타점 학습 가속화에 효과적입니다.\n"
+            "OFF: 전체 구간에서 순수 무작위(Pure Random)로 시작점을 선택합니다. (기본값)"
+        )
+        self.chk_smart_sampling.setStyleSheet("""
+            QCheckBox { color: #dcdcdc; font-size: 12px; }
+            QCheckBox::indicator { width: 14px; height: 14px; }
+            QCheckBox::indicator:checked { background-color: #007acc; border: 1px solid #0098ff; border-radius: 2px; }
+            QCheckBox::indicator:unchecked { background-color: #383838; border: 1px solid #4d4d4d; border-radius: 2px; }
+        """)
+        form_layout.addRow("스마트 샘플링:", self.chk_smart_sampling)
+
         self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
         self.btn_start.clicked.connect(self._on_start_clicked)
@@ -181,12 +197,15 @@ class AITrainingStudioTab(QWidget):
         
         # [신규] 분석 모드 변경 시 정보 패널 즉시 갱신
         self.combo_feature_mode.currentIndexChanged.connect(self._update_info_summary)
+        # [신규] 스마트 샘플링 토글 변경 시 정보 패널 즉시 갱신
+        self.chk_smart_sampling.stateChanged.connect(self._update_info_summary)
 
     def _on_start_clicked(self):
         timesteps = self.spin_steps.value()
         lr = self.spin_lr.value()
         max_records = self.spin_max_records.value()
         feature_mode = "advanced" if self.combo_feature_mode.currentIndex() == 1 else "basic"
+        use_smart_sampling = self.chk_smart_sampling.isChecked()
 
         # [즉각 반응] 시작 버튼을 먼저 비활성화하여 중복 클릭 방지
         self.btn_start.setEnabled(False)
@@ -197,7 +216,7 @@ class AITrainingStudioTab(QWidget):
         self.reward_curve.setData([], [])
         self.log_list.clear()
 
-        self.view_model.start_training(timesteps, lr, max_records, feature_mode=feature_mode)
+        self.view_model.start_training(timesteps, lr, max_records, feature_mode=feature_mode, use_smart_sampling=use_smart_sampling)
 
     def _on_stop_clicked(self):
         self.btn_stop.setEnabled(False) # 중복 중단 요청 방지
@@ -234,6 +253,7 @@ class AITrainingStudioTab(QWidget):
     def _update_info_summary(self):
         """현재 UI 설정 및 환경 상수를 기반으로 AI 모델 명세서를 생성합니다."""
         is_advanced = self.combo_feature_mode.currentIndex() == 1
+        is_smart = self.chk_smart_sampling.isChecked()
         
         # 하드코딩된 환경 상수 (TradingEnv와 동기화된 정보)
         window_size = 10

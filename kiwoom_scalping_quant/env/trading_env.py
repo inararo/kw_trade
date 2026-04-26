@@ -23,6 +23,8 @@ class ScalpingTradingEnv(gym.Env):
 
         self.feature_mode = config.get('feature_mode', 'basic')
         self.window_size = config.get('window_size', 10)
+        # [스마트 샘플링] Volume Spike 구간 우선 에피소드 시작 옵션 (기본값: False)
+        self.use_smart_sampling = config.get('use_smart_sampling', False)
         
         # [모드 분기] 
         self.single_feature_dim = 11 if self.feature_mode == 'advanced' else 5
@@ -98,20 +100,8 @@ class ScalpingTradingEnv(gym.Env):
         if self.historical_data is not None:
             data_len = len(self.historical_data)
             
-            # [FIX] 백테스트 모드: options['start_step']이 있으면 해당 위치부터, 없으면 0부터 시작
-            if self.config.get("mode") == "backtest":
-                self.current_step = options.get('start_step', 0)
-                self.end_step = data_len - 1
-                self.logger.info(f"Backtest Reset: Starting at {self.current_step} / End at {self.end_step}")
-            else:
-                # 학습 모드: 다양성을 위해 랜덤 샘플링 유지
-                max_start = max(0, data_len - self.max_steps - 1)
-                self.current_step = options.get('start_step', random.randint(0, max_start))
-                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
-            
-            self.initial_price = self._get_current_price()
-            
-            # Advanced 캐시 초기화
+            # [순서 중요] Advanced 상태 캐시를 먼저 초기화해야
+            # _get_smart_start_step()이 precomputed_features를 참조할 수 있음
             if self.feature_mode == 'advanced':
                 from core.feature_engineer import AdvancedFeatureEngineer
                 if not hasattr(self, '_feature_cache'): self._feature_cache = {}
@@ -120,12 +110,79 @@ class ScalpingTradingEnv(gym.Env):
                     self._feature_cache[sym] = AdvancedFeatureEngineer.process_historical_data(self.historical_data)
                 self.precomputed_features = self._feature_cache[sym]
 
+            if self.config.get("mode") == "backtest":
+                self.current_step = options.get('start_step', 0)
+                self.end_step = data_len - 1
+                self.logger.info(f"Backtest Reset: Starting at {self.current_step} / End at {self.end_step}")
+            else:
+                # 학습 모드: 스마트 샘플링 or 순수 랜덤 분기
+                max_start = max(0, data_len - self.max_steps - 1)
+                if 'start_step' in options:
+                    self.current_step = options['start_step']
+                elif self.use_smart_sampling:
+                    self.current_step = self._get_smart_start_step(max_start)
+                else:
+                    # [기존 유지] 순수 랜덤 샘플링
+                    self.current_step = random.randint(0, max_start)
+                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
+            
+            self.initial_price = self._get_current_price()
+
         # 버퍼 초기화
         self.lookback_buffer.clear()
         for _ in range(self.window_size):
             self.lookback_buffer.append(self._extract_single_feature(self.current_step))
 
         return self._get_observation(), self._get_info()
+
+    def _get_smart_start_step(self, max_start: int) -> int:
+        """
+        [스마트 에피소드 샘플링]
+        - 80%: Volume Spike 구간(vol_activity > 1.5)에서 우선 샘플링
+        - 20%: 과적합 방지를 위한 순수 랜덤 샘플링
+        Volume Spike 후보군이 없으면 자동으로 순수 랜덤으로 폴백.
+        """
+        if max_start <= 0:
+            return 0
+
+        # Advanced 모드에서는 precomputed_features의 vol_activity 컬럼 활용
+        # Basic 모드에서는 raw historical_data의 volume 직접 계산
+        vol_activity = None
+        try:
+            if self.feature_mode == 'advanced' and hasattr(self, 'precomputed_features') and self.precomputed_features is not None:
+                # vol_activity는 index 5 (AdvancedFeatureEngineer 컬럼 순서 기준)
+                # ['disparity_ma5', 'disparity_ma20', 'disparity_vwap', 'bb_pos', 'rsi', 'v_activity', ...]
+                V_ACTIVITY_IDX = 5
+                if self.precomputed_features.shape[1] > V_ACTIVITY_IDX:
+                    vol_activity = self.precomputed_features[:, V_ACTIVITY_IDX]
+            else:
+                # Basic 모드: raw volume에서 20봉 이동평균 대비 비율 직접 계산
+                volumes = np.array([d.get('volume', 0) for d in self.historical_data], dtype=np.float32)
+                rolling_mean = pd.Series(volumes).rolling(window=20).mean().fillna(volumes.mean()).values
+                vol_activity = volumes / (rolling_mean + 1e-9)
+        except Exception as e:
+            self.logger.warning(f"[스마트 샘플링] vol_activity 계산 실패, 랜덤 폴백: {e}")
+
+        # 80% 확률로 Volume Spike 구간에서 샘플링
+        if vol_activity is not None and random.random() < 0.8:
+            SPIKE_THRESHOLD = 1.5  # 20봉 평균 대비 1.5배 이상을 Volume Spike로 판단
+            # max_start 이내의 인덱스만 후보로 (에피소드가 끝까지 실행될 수 있도록)
+            candidate_indices = np.where(
+                (vol_activity[:max_start + 1] > SPIKE_THRESHOLD)
+            )[0]
+
+            if len(candidate_indices) > 0:
+                chosen = int(random.choice(candidate_indices))
+                self.logger.debug(
+                    f"[스마트 샘플링] Volume Spike 구간 선택: step={chosen}, "
+                    f"vol_activity={vol_activity[chosen]:.2f}x (후보 {len(candidate_indices)}개)"
+                )
+                return chosen
+            else:
+                self.logger.debug("[스마트 샘플링] Volume Spike 후보 없음 → 랜덤 폴백")
+
+        # 20% 확률 or 후보 없을 때: 순수 랜덤
+        return random.randint(0, max_start)
 
     def _extract_single_feature(self, idx):
         """[3] 스케일 불변 피처 추출 로직 (Basic/Advanced 통합)"""

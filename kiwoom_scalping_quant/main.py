@@ -167,19 +167,10 @@ class QuantSystem:
         except asyncio.TimeoutError:
             print("시스템: [Step 3] 웹소켓 데이터 수신 타임아웃! (장이 닫혔거나 구독 실패일 수 있습니다)")
 
-        # Step 4: saved_models/ 에서 베스트 모델 혹은 최신 학습 모델을 자동 탐색하여 로드
-        print("시스템: [Step 4] Agent 루프(StrategyManager) 및 Watchdog 가동 시작.")
-        import glob as _glob
-        _save_dir = "./saved_models/"
-
-        _model_files = sorted(_glob.glob(f"{_save_dir}model_*.zip"))
-        if _model_files:
-            _latest = _model_files[-1].replace(".zip", "")
-            print(f"시스템: [Step 4] 학습된 모델 발견 → 로드: {_model_files[-1]}")
-            self.strategy_manager.load_model(_latest)
-        else:
-            print("시스템: [Step 4] 저장된 모델이 없습니다. 랜덤 초기 가중치로 실행합니다. (AI 학습 스튜디오에서 학습을 먼저 실행하세요)")
-            self.strategy_manager.load_model("")
+        # Step 4: config.yaml의 live_trading_model_type에 의한 Config 라우팅으로 모델 자동 로드
+        #         코드 수정 없이 config 값만으로 100% 멘지스(Headless) 실행 보장
+        print("시스템: [Step 4] Config 기반 Agent 매매 로드 시작...")
+        self.strategy_manager.load_model_from_config()
 
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())

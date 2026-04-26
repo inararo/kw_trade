@@ -1,5 +1,7 @@
 import asyncio
+import glob
 import logging
+import os
 import time
 from typing import List, Dict, Any
 import numpy as np
@@ -27,6 +29,13 @@ class StrategyManager:
 
         self.envs: Dict[str, ScalpingTradingEnv] = {}
         self.shared_agent: TradingAgentWrapper = None
+
+        # [Multi-Model] Regime-Switching 대비 두 모델을 독립적으로 유지 — dual 모드사용
+        self.model_random: TradingAgentWrapper = None  # random 샘플링 모델
+        self.model_smart: TradingAgentWrapper  = None  # smart  샘플링 모델
+        # active_model: shared_agent의 별칭으로, Regime-Switching 시 여기를 스와프하면 됨
+        # (dual 모드에서는 shared_agent = model_random으로 초기화)
+
         self.is_running = False
 
         # 쿨다운 및 락 관리 (중복 주문 방지)
@@ -43,55 +52,150 @@ class StrategyManager:
         """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개합니다."""
         self.is_ai_paused = paused
         self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
-        
-        # [제어] AI 매매 판단 일시정지 플래그
-        self.is_ai_paused = False
 
-    def set_ai_paused(self, paused: bool):
-        """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개합니다."""
-        self.is_ai_paused = paused
-        self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
+    # ------------------------------------------------------------------
+    # [Private] 단일 모델 로드 헬퍼 — 특정 폴더에서 최신 .zip을 자동 탐색하여 로드
+    # ------------------------------------------------------------------
+    def _load_single_model(self, folder: str) -> TradingAgentWrapper:
+        """
+        folder: 'random' 또는 'smart'
+        ./saved_models/{folder}/ 내에서 model_*_{folder}_*.zip 파일을 탐색하여
+        가장 최신 파일을 로드하지 못하면 None 반환.
+        """
+        save_dir = f"./saved_models/{folder}/"
+        # 파일명 패턴: model_{feature_mode}_{tag}_{timestamp}.zip
+        pattern   = os.path.join(save_dir, f"model_*_{folder}_*.zip")
+        files = sorted(glob.glob(pattern))
 
-    def load_model(self, model_path: str):
-        """초기 통합 모델 생성 및 가중치 로드 (차원 자동 감지 로직 포함)"""
-        try:
-            # 1. 모델 파일에서 차원 정보 추출
-            model_dim = TradingAgentWrapper.get_model_dimension(model_path) if model_path else 0
-            
-            # [혁신] 감지된 차원에 따라 분석 모드 자동 결정
-            detected_mode = "basic"
-            if model_dim >= 100:
-                detected_mode = "advanced"
-                self.logger.info(f"StrategyManager: 100차원 모델 감지 => 'Advanced' 분석 모드로 자동 전환")
+        # 취점 타입이 없으면 폴더 내 모든 zip 탐색 (하위 호환성)
+        if not files:
+            files = sorted(glob.glob(os.path.join(save_dir, "*.zip")))
+
+        if not files:
+            self.logger.warning(f"StrategyManager: [{folder}] 모델이 {save_dir}에 없습니다.")
+            return None
+
+        latest_zip = files[-1]
+        model_path = latest_zip.replace(".zip", "")
+        self.logger.info(f"StrategyManager: [{folder}] 모델 탐색 완료 → {latest_zip}")
+
+        # 모델 차원 자동 감지 후 더미 환경 생성
+        model_dim    = TradingAgentWrapper.get_model_dimension(model_path)
+        detected_mode = "advanced" if model_dim >= 100 else "basic"
+        dummy_config  = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
+        dummy_env     = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
+
+        config_dict  = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+        agent_config = {"seq_len": config_dict.get("seq_len", 10)}
+        agent        = TradingAgentWrapper(dummy_env, agent_config)
+        agent.load_weights(model_path)
+        self.logger.info(
+            f"StrategyManager: [{folder}] 로드 완료 — 차원={model_dim}, 모드={detected_mode}"
+        )
+        return agent
+
+    # ------------------------------------------------------------------
+    # [Public] Config 라우팅 — live_trading_model_type에 따라 모델 선택
+    # ------------------------------------------------------------------
+    def load_model_from_config(self):
+        """
+        config.yaml의 live_trading_model_type 값을 읽어
+        random / smart / dual 중 하나를 선택하여 모델을 로드합니다.
+        GUI 입력이나 코드 수정 없이 실행 시 config 설정만으로 100% 자동화됩니다.
+        """
+        config_dict   = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+        model_type    = config_dict.get("live_trading_model_type", "random").lower().strip()
+
+        self.logger.info(f"StrategyManager: Config 모델 타입 = [{model_type}]")
+        print(f"시스템: [Step 4] 모델 라우팅 모드 = '{model_type}'")
+
+        if model_type == "smart":
+            agent = self._load_single_model("smart")
+            if agent:
+                self.shared_agent = agent
+                self.model_smart  = agent
             else:
-                detected_mode = "basic"
-                self.logger.info(f"StrategyManager: {model_dim}차원 모델 감지 => 'Basic' 분석 모드 유지")
+                self._fallback_empty_model()
 
-            # 2. 감지된 모드로 더미 환경 생성 (Agent 초기화용)
-            # [FIX] target_dim 주입하여 더미 환경부터 차원을 맞춤
-            dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
-            dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
-            
-            config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
-            agent_config = {"seq_len": config_dict.get("seq_len", 10)}
+        elif model_type == "dual":
+            # [Regime-Switching 뼈대] 두 모델을 모두 메모리에 로드
+            self.model_random = self._load_single_model("random")
+            self.model_smart  = self._load_single_model("smart")
 
+            # 활성 모델: random 모델을 기본 활성으로 설정 (추후 스와프 가능)
+            self.shared_agent = self.model_random or self.model_smart
+            if not self.shared_agent:
+                self._fallback_empty_model()
+            else:
+                print(
+                    f"시스템: [Step 4] Dual 모드 — random={bool(self.model_random)}, "
+                    f"smart={bool(self.model_smart)}, active=random"
+                )
+
+        else:  # 'random' 또는 미지정 기본값
+            agent = self._load_single_model("random")
+            if agent:
+                self.shared_agent = agent
+                self.model_random = agent
+            else:
+                self._fallback_empty_model()
+
+        # 종목별 환경 동기화 (선택된 shared_agent의 모드/차원 기준)
+        if self.shared_agent:
+            self._sync_envs_with_agent(self.shared_agent)
+
+    def _fallback_empty_model(self):
+        """모델 파일이 없을 때 랜덤 가중치로 실행하는 폴백 처리."""
+        print("시스템: [Step 4] 저장된 모델이 없습니다. 랜덤 초기 가중치로 실행합니다. (AI 학습 스튜디오에서 학습이 필요합니다)")
+        config_dict  = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+        dummy_config = {"symbol": "DUMMY", "feature_mode": "advanced"}
+        dummy_env    = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
+        agent_config = {"seq_len": config_dict.get("seq_len", 10)}
+        self.shared_agent = TradingAgentWrapper(dummy_env, agent_config)
+
+    def _sync_envs_with_agent(self, agent: TradingAgentWrapper):
+        """shared_agent의 모드/차원에 맞춰 종목별 환경을 재초기화."""
+        config_dict  = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+        try:
+            detected_mode = agent.env.feature_mode
+            obs_shape     = agent.env.observation_space.shape
+            model_dim     = obs_shape[0] if obs_shape else 0
+        except Exception:
+            detected_mode = "advanced"
+            model_dim     = 0
+
+        for sym in self.symbols:
+            clean_sym = sym.split('_')[0]
+            env_config = {
+                "symbol":          clean_sym,
+                "initial_balance": config_dict.get("initial_balance", 10000000),
+                "feature_mode":    detected_mode,
+                "target_dim":      model_dim,
+            }
+            self.envs[clean_sym]              = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+            self.last_action_times[clean_sym] = 0.0
+            self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}/{model_dim}차원) 동기화 완료.")
+
+    # ------------------------------------------------------------------
+    # [Legacy] 기존 load_model() 단일 경로 직접 지정 호환 유지
+    # 주로 BacktestStudio나 수동 지정 시나리오에서 사용
+    # ------------------------------------------------------------------
+    def load_model(self, model_path: str):
+        """[Legacy] 주어진 경로에서 단일 모델을 로드합니다."""
+        try:
+            model_dim     = TradingAgentWrapper.get_model_dimension(model_path) if model_path else 0
+            detected_mode = "advanced" if model_dim >= 100 else "basic"
+            self.logger.info(f"StrategyManager: [{model_dim}차원] → '{detected_mode}' 모드 자동 전환")
+
+            dummy_config  = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
+            dummy_env     = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
+            config_dict   = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+            agent_config  = {"seq_len": config_dict.get("seq_len", 10)}
             self.shared_agent = TradingAgentWrapper(dummy_env, agent_config)
 
             if model_path:
                 self.shared_agent.load_weights(model_path)
                 self.logger.info(f"StrategyManager: Shared model weights loaded from {model_path}")
-            else:
-                self.logger.info("StrategyManager: Running with initialized untrained weights.")
-
-            # 3. [동기화] 종목별 실제 환경도 감지된 모드 및 차원으로 초기화
-            for sym in self.symbols:
-                clean_sym = sym.split('_')[0]
-                env_config = {
-                    "symbol": clean_sym, 
-                    "initial_balance": config_dict.get("initial_balance", 10000000),
-                    "feature_mode": detected_mode, # 분석 모드 강제 동기화
-                    "target_dim": model_dim        # [FIX] 실전 환경 차원 강제 일치
-                }
                 self.envs[clean_sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
                 self.last_action_times[clean_sym] = 0.0
                 self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}/{model_dim}차원) 초기화 완료.")
