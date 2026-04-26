@@ -68,7 +68,8 @@ class StrategyManager:
                 self.logger.info(f"StrategyManager: {model_dim}차원 모델 감지 => 'Basic' 분석 모드 유지")
 
             # 2. 감지된 모드로 더미 환경 생성 (Agent 초기화용)
-            dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode}
+            # [FIX] target_dim 주입하여 더미 환경부터 차원을 맞춤
+            dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
             dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
             
             config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
@@ -82,17 +83,18 @@ class StrategyManager:
             else:
                 self.logger.info("StrategyManager: Running with initialized untrained weights.")
 
-            # 3. [동기화] 종목별 실제 환경도 감지된 모드로 초기화
+            # 3. [동기화] 종목별 실제 환경도 감지된 모드 및 차원으로 초기화
             for sym in self.symbols:
                 clean_sym = sym.split('_')[0]
                 env_config = {
                     "symbol": clean_sym, 
                     "initial_balance": config_dict.get("initial_balance", 10000000),
-                    "feature_mode": detected_mode # 분석 모드 강제 동기화
+                    "feature_mode": detected_mode, # 분석 모드 강제 동기화
+                    "target_dim": model_dim        # [FIX] 실전 환경 차원 강제 일치
                 }
                 self.envs[clean_sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
                 self.last_action_times[clean_sym] = 0.0
-                self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}) 초기화 완료.")
+                self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}/{model_dim}차원) 초기화 완료.")
 
         except Exception as e:
             self.logger.error(f"StrategyManager 초기화 중 에러: {e}")
