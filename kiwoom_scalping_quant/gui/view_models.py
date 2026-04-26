@@ -646,14 +646,18 @@ class AITrainingViewModel(QObject):
         tb_log_dir    = f"./tensorboard_logs/{sampling_tag}/"
 
         ent_coef = 0.005
+        # [안정화] seq_len을 하드코딩하지 않고 설정 파일에서 직접 가져옴
+        config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+        current_seq_len = config_dict.get("seq_len", 10)
+
         agent_config = {
-            "seq_len": 10,
+            "seq_len": current_seq_len,
             "learning_rate": lr,
             "ent_coef": ent_coef,
             "feature_mode": feature_mode,
-            "model_save_dir": model_save_dir,   # 샘플링 방식별 독립 경로
-            "tensorboard_log": tb_log_dir,       # 텐서보드 로그도 분리
-            "model_name_suffix": sampling_tag,   # 모델 파일명에 _smart / _random 태그
+            "model_save_dir": model_save_dir,
+            "tensorboard_log": tb_log_dir,
+            "model_name_suffix": sampling_tag,
         }
         
         self.sig_training_log.emit(
