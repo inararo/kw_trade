@@ -149,12 +149,13 @@ class AssetDataManagerTab(QWidget):
         main_splitter.setSizes([600, 400])
 
     def _connect_signals(self):
-        self.view_model.symbols_loaded.connect(self.on_symbols_loaded)
+        # UI 업데이트 시그널들을 모두 QueuedConnection으로 설정하여 쓰레드/비동기 안전성 확보
+        self.view_model.symbols_loaded.connect(self.on_symbols_loaded, Qt.ConnectionType.QueuedConnection)
         self.view_model.symbol_update_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
         self.view_model.symbol_update_success.connect(self.on_success, Qt.ConnectionType.QueuedConnection)
 
-        self.view_model.sig_progress_updated.connect(self.on_progress_updated)
-        self.view_model.sig_status_updated.connect(self.on_status_updated)
+        self.view_model.sig_progress_updated.connect(self.on_progress_updated, Qt.ConnectionType.QueuedConnection)
+        self.view_model.sig_status_updated.connect(self.on_status_updated, Qt.ConnectionType.QueuedConnection)
         self.view_model.fetch_completed.connect(self.on_fetch_completed, Qt.ConnectionType.QueuedConnection)
         self.view_model.fetch_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
 

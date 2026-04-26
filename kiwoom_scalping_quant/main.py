@@ -356,8 +356,13 @@ def main():
     if not hasattr(app, "exec_"):
         app.exec_ = app.exec
 
-    loop = QEventLoop(app)
-    asyncio.set_event_loop(loop)
+    # [안정화] qasync 루프가 가비지 컬렉션되는 것을 방지하기 위해 app 객체에 강한 참조로 고정
+    app.loop = QEventLoop(app)
+    asyncio.set_event_loop(app.loop)
+    
+    # 윈도우 Proactor 관련 Mutex 삭제 오류 방지를 위해 전역 참조 유지
+    global_loop_reference = app.loop
+    loop = app.loop
 
     system = QuantSystem()
 
