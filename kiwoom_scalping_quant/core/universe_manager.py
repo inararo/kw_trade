@@ -122,6 +122,12 @@ class UniverseManager:
             self.logger.debug(f"필터링 제외: {name}({code}) - 우선주/파생상품 코드({clean_code})")
             return False
 
+        # 4. 사용자 요청 기반 특정 종목 제외 (삼성전자, SK하이닉스 등 대형주)
+        blacklisted_codes = {"005930", "000660"}
+        if clean_code in blacklisted_codes:
+            self.logger.info(f"필터링 제외: {name}({code}) - 사용자 요청 블랙리스트 종목")
+            return False
+
         return True
 
     @future_safe
