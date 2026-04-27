@@ -53,6 +53,18 @@ class DataCollector:
         
         # [안정화] 관리되지 않는 비동기 태스크 추적용 (종료 시 정리)
         self._pending_tasks = set()
+        
+        # [최적화] 실시간 코드 매칭용 맵 (clean_code -> full_symbol)
+        self._symbol_map = {}
+        self._update_symbol_map()
+
+    def _update_symbol_map(self):
+        """구독 관리자의 최신 심볼 리스트를 바탕으로 고속 조회용 맵 갱신"""
+        new_map = {}
+        for sym in self.subscription_manager.get_symbols():
+            clean = sym.split('_')[0].strip()
+            new_map[clean] = sym
+        self._symbol_map = new_map
 
     def set_ui_callback(self, callback):
         self._ui_callback = callback
@@ -61,6 +73,8 @@ class DataCollector:
         """새로운 종목을 구독하고 버퍼를 동적 할당합니다."""
         if not self.subscription_manager.add_symbol(symbol):
             return False
+        
+        self._update_symbol_map()
 
         # 종목 코드 정규화 (_AL 접미사 제거)
         clean_symbol = symbol.split('_')[0].strip()
@@ -77,7 +91,7 @@ class DataCollector:
             msg = json.dumps({
                 "trnm": "REG",
                 "grp_no": "1",
-                "refresh": "1",
+                "refresh": "0", # 0: 실시간 추가 구독, 1: 기존 구독 해제 후 신규 구독
                 "data": [
                     {"type": ["0B"], "item": [clean_symbol]}, # 0B: 주식체결
                     {"type": ["0D"], "item": [clean_symbol]}  # 0D: 호가잔량
@@ -92,6 +106,7 @@ class DataCollector:
     async def unsubscribe_symbol(self, symbol: str):
         """구독을 해제합니다."""
         self.subscription_manager.remove_symbol(symbol)
+        self._update_symbol_map()
         clean_symbol = symbol.split('_')[0]
 
         # 백그라운드 웹소켓이 동작 중이면 실시간 구독 해제 메시지 발송
@@ -105,99 +120,6 @@ class DataCollector:
             })
             await self.ws_connection.send(msg)
             await asyncio.sleep(0.1)
-
-    async def start_mock_stream(self):
-        """장외 시간/주말 UI 테스트용 가상 데이터 생성기 (다중 종목)"""
-        import random
-        symbols = self.subscription_manager.get_symbols()
-        self.logger.info(f"Mock Stream Started for {len(symbols)} symbols.")
-        base_prices = {sym: 50000 + random.randint(-10000, 10000) for sym in symbols}
-
-        try:
-            while self.is_running:
-                current_symbols = self.subscription_manager.get_symbols()
-                for symbol in current_symbols:
-                    if symbol not in base_prices:
-                        base_prices[symbol] = 50000 + random.randint(-10000, 10000)
-
-                    # 가상 가격 변동
-                    base_prices[symbol] += random.choice([-100, 0, 100])
-                    price = base_prices[symbol]
-                    volume = random.randint(10, 500)
-
-                    # 10호가 가상 매수/매도 잔량 생성
-                    asks = [{"price": price + (i * 100), "qty": random.randint(100, 5000)} for i in range(1, 11)]
-                    bids = [{"price": price - (i * 100), "qty": random.randint(100, 5000)} for i in range(1, 11)]
-
-                    orderbook = {"asks": asks, "bids": bids}
-
-                    # 피처 계산
-                    self.feature_engineers[symbol].update_orderbook(orderbook)
-                    features = self.feature_engineers[symbol].update_tick(price, volume)
-
-                    # [Price, Volume, OIR, Volatility, Aggressiveness]
-                    raw_state = np.array([
-                        price,
-                        volume,
-                        features["OIR"],
-                        features["Volatility"],
-                        features["Aggressiveness"]
-                    ], dtype=np.float32)
-
-                    # 정규화
-                    normalized_state = self.normalizers[symbol].update_and_normalize(raw_state)
-                    self.state_buffers[symbol].append(normalized_state)
-
-                    # AI 확률 임의 생성
-                    hold_prob = random.randint(40, 80)
-                    buy_prob = random.randint(0, 100 - hold_prob)
-                    sell_prob = 100 - hold_prob - buy_prob
-
-                    mock_data = {
-                        "symbol": symbol,
-                        "price": price,
-                        "orderbook": orderbook,
-                        "ai_confidence": {"Hold": hold_prob, "Buy": buy_prob, "Sell": sell_prob}
-                    }
-
-                    if self._ui_callback:
-                        self._ui_callback(mock_data)
-
-                await asyncio.sleep(0.1) # 0.1초(100ms) 간격 업데이트
-        except asyncio.CancelledError:
-            self.logger.info("Mock Stream Cancelled.")
-
-    def get_latest_state(self, symbol: str, seq_len=1):
-        """환경(Env)이 특정 종목의 현재 상태를 가져가기 위한 메서드 (시퀀스 길이 지원)"""
-        dim = 5
-        buffer = self.state_buffers.get(symbol, [])
-        if len(buffer) == 0:
-            return np.zeros(dim * seq_len, dtype=np.float32)
-
-        n_avail = len(buffer)
-        if n_avail < seq_len:
-            # Not enough data: pad with the first available state
-            pad_len = seq_len - n_avail
-            first_state = buffer[0]
-            padded = [first_state] * pad_len
-            actual = list(buffer)
-            seq = padded + actual
-        else:
-            # Take the last seq_len states
-            seq = list(buffer)[-seq_len:]
-
-        # Flatten sequence: [t-n_1, t-n_2, ..., t_1, t_2, ...]
-        return np.concatenate(seq).astype(np.float32)
-
-    def get_latest_price(self, symbol: str) -> float:
-        """스마트 주문 등을 위해 정규화되지 않은 최신 가격 반환"""
-        if symbol in self.feature_engineers:
-            fe = self.feature_engineers[symbol]
-            if len(fe.price_buffer) > 0 and fe.count > 0:
-                # 링 버퍼에서 가장 최근 입력된 가격 반환 (head-1)
-                idx = (fe.head - 1) % fe.max_ticks
-                return float(fe.price_buffer[idx])
-        return 0.0
 
     async def start(self):
         self.is_running = True
@@ -270,7 +192,7 @@ class DataCollector:
             try:
                 first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                 login_res = json.loads(first_msg)
-                if login_res.get("return_code") == 0:
+                if str(login_res.get("return_code")) == "0" or login_res.get("return_code") == 0:
                     self.logger.error(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
                     login_success = True
                 else:
@@ -339,6 +261,7 @@ class DataCollector:
             finally:
                 # [안정화] 연결이 끊기면 관련 상태를 명확히 초기화
                 self.ws_connected_event.clear()
+                self.first_data_received_event.clear()
                 self.ws_connection = None
                 self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
 
@@ -357,53 +280,41 @@ class DataCollector:
             entries = [message_data]
 
         for entry in entries:
-            # 종목 코드 추출 순서 보강 (trnm 필드 추가)
-            raw_code = entry.get("item") or entry.get("stk_cd") or entry.get("symbol") or entry.get("tr_key") or \
-                       message_data.get("item") or message_data.get("stk_cd") or message_data.get("tr_key") or \
-                       message_data.get("trnm") # trnm이 종목 코드인 경우 대응
+            # 2. 실시간 데이터 타입 식별 (0B: 체결, 0D: 호가)
+            msg_type = entry.get("type") or message_data.get("type") or message_data.get("tr_id") or message_data.get("trnm")
             
-            # values 내부에서도 코드 탐색 (일부 규격 대응)
-            values = entry.get("values", entry)
-            if not raw_code and isinstance(values, dict):
-                raw_code = values.get("item") or values.get("stk_cd") or values.get("tr_key") or values.get("stk_code")
-
-            # 리스트/딕셔너리로 들어오는 경우 정제
-            if isinstance(raw_code, list) and len(raw_code) > 0:
-                raw_code = raw_code[0]
-            elif isinstance(raw_code, dict):
-                raw_code = raw_code.get("code") or raw_code.get("item")
+            # [수정] raw_code 추출 로직 강화
+            # Kiwoom Websocket entries usually have the stock code in 'item' or 'stk_cd'
+            raw_code = entry.get("item") or entry.get("stk_cd") or entry.get("stk_code") or entry.get("symbol")
             
-            # 타입 식별 (trnm이 '0B' 등인 경우와 종목 코드인 경우 구분)
-            msg_type = entry.get("type") or message_data.get("type") or message_data.get("tr_id")
-            
-            # [수정] PING, PONG, SYSTEM 등 상태 유지용 패킷을 예약어 리스트에 추가
-            reserved_keywords = ["0B", "0D", "REG", "LOGIN", "PING", "PONG", "SYSTEM"]
-            if str(raw_code).upper() in reserved_keywords:
-                msg_type = raw_code
-                raw_code = None
-            
+            # Fallback: Entry에 없으면 상위 message_data에서 찾되, 예약어(0B, 0D 등)는 제외
             if not raw_code:
-                # 진단 로그: 예약어가 아닌데 코드가 없는 경우에만 출력 (로그 노이즈 감소)
-                if str(msg_type).upper() not in reserved_keywords:
-                    self.logger.debug(f"심볼 코드 추출 생략 (System Message): {msg_type}")
+                candidate = message_data.get("item") or message_data.get("stk_cd") or message_data.get("tr_key")
+                reserved = ["0B", "0D", "REG", "LOGIN", "PING", "PONG", "SYSTEM"]
+                if candidate and str(candidate).upper() not in reserved:
+                    raw_code = candidate
+
+            if not raw_code:
                 continue
+
+            # [최적화] O(1) 딕셔너리 기반 타겟 심볼 조회
+            clean_code = str(raw_code).strip()
             
-            # 관리용 심볼 매핑 (005930_AL이더라도 005930와 완전 매칭 지원)
-            target_symbol = None
-            manager_symbols = list(self.subscription_manager.get_symbols())
-            for sym in manager_symbols:
-                clean_sym = sym.split('_')[0].strip()
-                if clean_sym == str(raw_code).strip():
-                    target_symbol = sym
-                    break
+            # [RAW_DEBUG] 특정 종목 원시 데이터 필터링 출력
+            # if clean_code == "005930":
+            #     self.logger.info(f"[RAW_SOCKET] 005930 >> {entry}")
+
+            target_symbol = self._symbol_map.get(clean_code)
             
             if not target_symbol:
-                # [로그 수준 완화] 매칭 실패 로그를 error에서 debug로 낮추어 노이즈 제거
-                self.logger.debug(f"매칭 실패 및 무시: 수신코드=[{raw_code}], 구독리스트={manager_symbols}")
+                # 진단용 로그 (INFO 레벨로 일시적 격상)
+                if random.random() < 0.001:
+                    self.logger.info(f"매칭 대상 아님: {clean_code} (구독: {list(self._symbol_map.keys())[:5]}...)")
                 continue
-
+            
             # 3. FID 기반 정보 추출 (10: 현재가, 15: 체결량, 13: 누적거래량)
             try:
+                values = entry.get("values", entry)
                 # 키움 데이터는 부호(+/-)가 포함된 문자열이므로 abs(float()) 처리
                 raw_price = values.get("10") or values.get("curr_pric") or "0"
                 raw_vol = values.get("15") or values.get("cntg_vol") or "0"
@@ -433,6 +344,12 @@ class DataCollector:
                     # 진단 로그: 1% 확률로 데이터 매칭 성공 출력
                     if random.random() < 0.01:
                         self.logger.info(f"데이터 매칭 성공! [{target_symbol}] 현재가: {price:,.0f} | 타입: {msg_type}")
+                    
+                    # [UI_DEBUG] 200틱마다 한 번씩 VM 전송 로그 출력
+                    if not hasattr(self, "_ui_debug_cnt"): self._ui_debug_cnt = {}
+                    self._ui_debug_cnt[target_symbol] = self._ui_debug_cnt.get(target_symbol, 0) + 1
+                    if self._ui_debug_cnt[target_symbol] % 200 == 0:
+                        self.logger.info(f"[UI_DEBUG] DataCollector -> VM 데이터 전송: {target_symbol}")
 
                     # 5. 이벤트 콜백 실행 (StrategyManager 등 알림)
                     from datetime import datetime
@@ -478,6 +395,9 @@ class DataCollector:
                     if current_display_price <= 0 and target_symbol in self.last_prices:
                         current_display_price = self.last_prices[target_symbol]
 
+                    # orderbook 포맷 변환 (필수 필드 매핑)
+                    # UI에는 최대 10호가를 그려주므로 asks/bids를 추출
+                    
                     ui_data = {
                         "symbol": target_symbol,
                         "price": current_display_price,
@@ -486,14 +406,13 @@ class DataCollector:
 
                     if self._ui_callback:
                         self._ui_callback(ui_data)
-
+                        
             except (ValueError, TypeError, Exception) as e:
-                print(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {type(e).__name__}: {e}")
+                self.logger.error(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {e}")
                 continue
 
-    def _aggregate_bars(self, symbol, data):
-        # 메모리 상에서 틱 데이터를 기반으로 1분/5분봉/60틱봉 등을 업데이트하는 로직
-        pass
+        # [최적화] 개별 틱이 아닌 메시지 한 묶음 처리가 끝난 후 한 번만 양보하여 UI 기회 제공
+        await asyncio.sleep(0)
 
     async def _watchdog(self):
         """3초 이상 데이터 수신이 없으면 Circuit Breaker 발동 및 재연결"""

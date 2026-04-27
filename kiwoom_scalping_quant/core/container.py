@@ -91,15 +91,15 @@ class Container(containers.DeclarativeContainer):
         telegram_bot=telegram_notifier
     )
 
-    # Presentation Layer - ViewModels (팩토리 혹은 싱글톤으로 관리)
-    live_dashboard_view_model = providers.Factory(
+    # Presentation Layer - ViewModels (싱글톤으로 전환하여 상태 및 콜백 일관성 유지)
+    live_dashboard_view_model = providers.Singleton(
         LiveDashboardViewModel,
         data_collector=data_collector,
         order_manager=order_manager,
         config_manager=config_manager
     )
 
-    asset_data_view_model = providers.Factory(
+    asset_data_view_model = providers.Singleton(
         AssetDataViewModel,
         config_manager=config_manager,
         historical_fetcher=historical_fetcher,
@@ -108,13 +108,13 @@ class Container(containers.DeclarativeContainer):
         token_manager=token_manager
     )
 
-    settings_view_model = providers.Factory(
+    settings_view_model = providers.Singleton(
         SettingsViewModel,
         config_manager=config_manager,
         influx_client=influx_client
     )
 
-    ai_training_view_model = providers.Factory(
+    ai_training_view_model = providers.Singleton(
         AITrainingViewModel,
         config_manager=config_manager,
         data_collector=data_collector,
@@ -122,7 +122,7 @@ class Container(containers.DeclarativeContainer):
         influx_client=influx_client
     )
 
-    backtest_view_model = providers.Factory(
+    backtest_view_model = providers.Singleton(
         BacktestViewModel,
         config_manager=config_manager,
         influx_client=influx_client,

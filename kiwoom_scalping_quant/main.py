@@ -13,7 +13,7 @@ from gui.main_window import MainWindow
 import logging
 
 logging.basicConfig(
-    level=logging.ERROR,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
@@ -150,8 +150,11 @@ class QuantSystem:
             universe_len = len(self.asset_vm.config_manager.get_symbols())
             print(f"시스템: [Step 2] 유니버스 준비 완료 (총 {universe_len}개 종목).")
             
-            # 텔레그램 준비 완료 알림 전송
-            await notifier.notify_app_ready(universe_len)
+            # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
+            try:
+                await notifier.notify_app_ready(universe_len)
+            except Exception as e:
+                print(f"시스템: [주의] 텔레그램 알림 전송 실패 (네트워크 확인 필요): {e}")
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 유니버스 로드 타임아웃! 기본 설정으로 진행합니다.")
 
@@ -161,14 +164,15 @@ class QuantSystem:
         self.collector_task = asyncio.create_task(self.data_collector.start())
 
         try:
+            # [안정화] 장 초반 서버 부하 및 네트워크 불안정을 고려하여 대기 시간을 60초로 연장
             if hasattr(self.data_collector, 'first_data_received_event'):
-                await asyncio.wait_for(self.data_collector.first_data_received_event.wait(), timeout=15.0)
-                print("시스템: [Step 3] 최초 웹소켓 틱 데이터 수신 확인 완료.")
+                await asyncio.wait_for(self.data_collector.first_data_received_event.wait(), timeout=60.0)
+                print("시스템: [Step 3] 최초 웹소켓 틱 데이터 수신 확인 완료. 파이프라인 정상.")
         except asyncio.TimeoutError:
-            print("시스템: [Step 3] 웹소켓 데이터 수신 타임아웃! (장이 닫혔거나 구독 실패일 수 있습니다)")
+            print("시스템: [Step 3] 웹소켓 데이터 수신 지연 중... (네트워크 불안정 또는 장외 시간 가능성)")
+            print("         팁: 프로그램은 종료되지 않았으며 백그라운드에서 지속적으로 재연결을 시도합니다.")
 
         # Step 4: config.yaml의 live_trading_model_type에 의한 Config 라우팅으로 모델 자동 로드
-        #         코드 수정 없이 config 값만으로 100% 멘지스(Headless) 실행 보장
         print("시스템: [Step 4] Config 기반 Agent 매매 로드 시작...")
         self.strategy_manager.load_model_from_config()
 

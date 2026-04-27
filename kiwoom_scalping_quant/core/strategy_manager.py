@@ -89,9 +89,10 @@ class StrategyManager:
         agent_config = {"seq_len": config_dict.get("seq_len", 10)}
         agent        = TradingAgentWrapper(dummy_env, agent_config)
         agent.load_weights(model_path)
-        self.logger.info(
-            f"StrategyManager: [{folder}] 로드 완료 — 차원={model_dim}, 모드={detected_mode}"
+        self.logger.error(
+            f"StrategyManager: [{folder}] 모델 로딩 성공 ✅ — 차원={model_dim}, 모드={detected_mode} (Path: {model_path})"
         )
+        print(f"시스템: [SUCCESS] '{folder}' 모델 가중치가 정상적으로 로드되었습니다. (차원: {model_dim})")
         return agent
 
     # ------------------------------------------------------------------
@@ -166,15 +167,11 @@ class StrategyManager:
 
         for sym in self.symbols:
             clean_sym = sym.split('_')[0]
-            env_config = {
-                "symbol":          clean_sym,
-                "initial_balance": config_dict.get("initial_balance", 10000000),
-                "feature_mode":    detected_mode,
-                "target_dim":      model_dim,
-            }
-            self.envs[clean_sym]              = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+            from core.live_trading_engine import LiveTradingEngine
+            engine = LiveTradingEngine(clean_sym, self.config_manager, self.order_manager, agent)
+            self.envs[clean_sym] = engine
             self.last_action_times[clean_sym] = 0.0
-            self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}/{model_dim}차원) 동기화 완료.")
+            self.logger.info(f"StrategyManager: [{clean_sym}] 실시간 엔진(LiveTradingEngine) 초기화 완료.")
 
     # ------------------------------------------------------------------
     # [Legacy] 기존 load_model() 단일 경로 직접 지정 호환 유지
@@ -196,9 +193,12 @@ class StrategyManager:
             if model_path:
                 self.shared_agent.load_weights(model_path)
                 self.logger.info(f"StrategyManager: Shared model weights loaded from {model_path}")
-                self.envs[clean_sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
-                self.last_action_times[clean_sym] = 0.0
-                self.logger.info(f"StrategyManager: [{clean_sym}] 환경({detected_mode}/{model_dim}차원) 초기화 완료.")
+                for sym in self.symbols:
+                    clean_sym = sym.split('_')[0]
+                    from core.live_trading_engine import LiveTradingEngine
+                    self.envs[clean_sym] = LiveTradingEngine(clean_sym, self.config_manager, self.order_manager, self.shared_agent)
+                    self.last_action_times[clean_sym] = 0.0
+                    self.logger.info(f"StrategyManager: [{clean_sym}] 실시간 엔진(LiveTradingEngine) 환경 초기화 완료.")
 
         except Exception as e:
             self.logger.error(f"StrategyManager 초기화 중 에러: {e}")
@@ -211,6 +211,29 @@ class StrategyManager:
 
         self.is_running = True
         self.logger.info(f"StrategyManager: 멀티 종목({len(self.symbols)}개) 이벤트 드리븐 오케스트레이션 시작.")
+
+        # [복구] 부동 속도 향상을 위해 최소 웜업(최근 1시간)만 백그라운드로 실행
+        from core.scheduler import MarketState
+        current_state = getattr(self.scheduler, "current_state", MarketState.OUT_OF_MARKET)
+        
+        if current_state == MarketState.TRADING:
+            self.logger.info("StrategyManager: 최근 1시간 데이터를 백그라운드에서 로드하여 AI 판단 가동을 준비합니다.")
+            
+            token = None
+            if hasattr(self.config_manager, "get"):
+                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+            if not token and hasattr(self.config_manager, "get_dict"):
+                token = self.config_manager.get_dict().get("KIWOOM_ACCESS_TOKEN")
+
+            # 초기 유니버스 종목들에 대해 웜업 개시 (0.2초 간격 분산)
+            for sym, engine in self.envs.items():
+                if token:
+                    asyncio.create_task(engine.warmup(token))
+                    await asyncio.sleep(0.2)
+                else:
+                    self.logger.warning(f"StrategyManager: [{sym}] 토큰 부재로 초기 웜업 생략")
+        else:
+            self.logger.info(f"StrategyManager: 현재 장 상태가 {current_state}이므로 웜업 및 AI 가동을 생략합니다.")
 
         # DataCollector의 상태 업데이트 콜백 리스트에 등록
         if hasattr(self.data_collector, 'on_state_updated_callbacks'):
@@ -260,13 +283,22 @@ class StrategyManager:
                 if sym not in self.symbols:
                     self.logger.info(f"StrategyManager: [{sym}] 신규 유니버스 편입.")
                     self.symbols.append(sym)
-                    env_config = {
-                        "symbol": sym, 
-                        "initial_balance": config_dict.get("initial_balance", 10000000),
-                        "feature_mode": config_dict.get("feature_mode", "basic")
-                    }
-                    self.envs[sym] = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
+                    from core.live_trading_engine import LiveTradingEngine
+                    engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
+                    self.envs[sym] = engine
                     self.last_action_times[sym] = 0.0
+                    
+                    # [복구] 편입 즉시 최소 웜업 시작
+                    token = None
+                    if hasattr(self.config_manager, "get"):
+                        token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                    if not token and hasattr(self.config_manager, "get_dict"):
+                        token = self.config_manager.get_dict().get("KIWOOM_ACCESS_TOKEN")
+                    
+                    if not token:
+                        self.logger.warning(f"StrategyManager: [{sym}] 웜업을 위한 토큰이 없습니다. 추후 틱 데이터로만 축적합니다.")
+                    else:
+                        asyncio.create_task(engine.warmup(token))
 
                     if hasattr(self.data_collector, 'subscribe_symbol'):
                         await self.data_collector.subscribe_symbol(sym)
@@ -274,9 +306,19 @@ class StrategyManager:
                     vm = getattr(self.config_manager, "_injected_live_vm", None)
                     if vm: vm.sig_log_appended.emit(f"[UNIVERSE UPDATE] IN: {sym}")
 
-            # Config 반영
-            updated_dicts = [{"code": s, "name": f"Dynamic_{s}"} for s in self.symbols]
+            # Config 반영 (실제 종목명 보존)
+            name_map = {s.get("code").split('_')[0]: s.get("name") for s in new_universe if s.get("code")}
+            updated_dicts = []
+            for s in self.symbols:
+                real_name = name_map.get(s, f"Stock_{s}")
+                updated_dicts.append({"code": s, "name": real_name})
+            
             self.config_manager.set_symbols(updated_dicts)
+            
+            # UI ViewModel에 실명 캐시 갱신 요청
+            vm = getattr(self.config_manager, "_injected_live_vm", None)
+            if vm and hasattr(vm, "update_symbol_names"):
+                vm.update_symbol_names(updated_dicts)
 
     async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
         """데이터 수신 시 호출되는 핵심 리스너 (Event-Driven)"""
@@ -301,9 +343,16 @@ class StrategyManager:
                 from core.live_trading_engine import LiveTradingEngine
                 engine = LiveTradingEngine(clean_symbol, self.config_manager, self.order_manager, self.shared_agent)
                 self.envs[clean_symbol] = engine
-                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN") or getattr(self.config_manager, "get", lambda x: None)("KIWOOM_ACCESS_TOKEN")
-                # 백그라운드 태스크로 웜업 실행 (블로킹 방지)
-                asyncio.create_task(engine.warmup(token))
+                token = None
+                if hasattr(self.config_manager, "get"):
+                    token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                if not token and hasattr(self.config_manager, "get_dict"):
+                    token = self.config_manager.get_dict().get("KIWOOM_ACCESS_TOKEN")
+                
+                if token:
+                    asyncio.create_task(engine.warmup(token))
+                else:
+                    self.logger.warning(f"[AI-GATE2] [{clean_symbol}] 웜업 토큰 부재로 지연 실행 생략")
 
             # --- GATE 3: 틱 업데이트 (엔진으로 데이터 토스) ---
             if price > 0 and timestamp is not None:

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import glob
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt
+from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QTimer
 from typing import Dict, Any, List
 from returns.result import Success, Failure
 from returns.io import IOSuccess, IOFailure
@@ -38,12 +38,18 @@ class LiveDashboardViewModel(QObject):
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config_manager = config_manager
+        self.logger = logging.getLogger("LiveDashboardViewModel")
         self._is_running = False
         self._mock_task = None
 
         # 현재 화면에 상세를 띄울 대상 종목
         self.selected_symbol = None
         self.symbols_summary = {}
+
+        # [UI 업데이트 최적화] 마지막 호가/가격 임시 저장 (flush 전까지 축적)
+        self._pending_orderbook = None
+        self._pending_price = None
+        self._ui_dirty = False  # 변경이 있을 때만 emit
 
         # 종목명 캐시 (Code -> Name): 접미사(_AL) 제거 후 순수 코드와 매핑
         self._symbol_names = {
@@ -58,15 +64,44 @@ class LiveDashboardViewModel(QObject):
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
         self.data_collector.set_ui_callback(self._on_data_received)
 
+        # [핵심 수정] QTimer로 200ms마다 배치 emit → 매 틱 emit 대신 주기적으로 최신 상태를 한 번에 전송
+        self._ui_flush_timer = QTimer(self)
+        self._ui_flush_timer.setInterval(200)  # 200ms = 초당 5회 갱신
+        self._ui_flush_timer.timeout.connect(self._flush_ui_update)
+        self._ui_flush_timer.start()
+        
+        # 초기 데이터를 유니버스에서 미리 로드하여 화면 빈 채로 시작 방지
+        self._init_summary_data()
+
+    def update_symbol_names(self, symbol_list: list):
+        """StrategyManager에서 유니버스 갱신 시 호출하여 종목명 캐시 업데이트"""
+        for s in symbol_list:
+            code = s.get("code", "").split('_')[0].strip()
+            name = s.get("name", "-")
+            if code:
+                self._symbol_names[code] = name
+                # 기존 요약 정보가 있다면 이름 업데이트
+                if code in self.symbols_summary:
+                    self.symbols_summary[code]["name"] = name
+        self._ui_dirty = True
+
+    def _init_summary_data(self):
+        """부팅 시 유니버스 리스트를 바탕으로 요약 테이블 초기 뼈대 구성"""
+        for s in self.config_manager.get_symbols():
+            code = s.get("code", "").split('_')[0].strip()
+            name = s.get("name", "-")
+            if code and code not in self.symbols_summary:
+                self.symbols_summary[code] = {"name": name, "price": 0, "ai_signal": "-", "holdings": 0}
+        self._ui_dirty = True
+
     def append_log(self, msg: str):
         self.sig_log_appended.emit(msg)
 
     def set_selected_symbol(self, symbol: str):
         self.selected_symbol = symbol
 
-    @pyqtSlot(object)
     def _on_data_received(self, data: dict):
-        """DataCollector에서 호출되는 UI 업데이트 콜백 (qasync: 동일 스레드)"""
+        """DataCollector에서 호출되는 UI 업데이트 콜백 (동기, 빠른 상태 갱신만 수행)"""
         try:
             raw_symbol = data.get("symbol", "")
             if not raw_symbol:
@@ -74,35 +109,64 @@ class LiveDashboardViewModel(QObject):
             symbol = raw_symbol.split('_')[0].strip()
 
             if symbol not in self.symbols_summary:
-                name = self._symbol_names.get(symbol)
-                if not name:
-                    # 캐시에 없으면 config에서 새로 조회 (중간에 추가된 종목 대응)
-                    for s in self.config_manager.get_symbols():
-                        cfg_code = s.get("code", "").split('_')[0]
-                        if cfg_code == symbol:
-                            name = s.get("name")
-                            self._symbol_names[symbol] = name
-                            break
-                
-                name = name or "-"
+                name = self._symbol_names.get(symbol) or "-"
                 self.symbols_summary[symbol] = {"name": name, "price": 0, "ai_signal": "-", "holdings": 0}
 
-            if "price" in data:
+            # 가격 업데이트
+            if "price" in data and data["price"] > 0:
                 self.symbols_summary[symbol]["price"] = data["price"]
 
+            # 보유량 업데이트 (실시간 반영)
             self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)
 
-            self.sig_symbols_summary_updated.emit(self.symbols_summary)
+            # [UI_DEBUG] 100번에 한 번 수신 로그 출력
+            if not hasattr(self, "_rx_cnt"): self._rx_cnt = 0
+            self._rx_cnt += 1
+            if self._rx_cnt % 100 == 0:
+                self.logger.info(f"[UI_DEBUG] VM 데이터 수신 성공: {symbol} ({data.get('price')})")
 
-            if symbol == self.selected_symbol or not self.selected_symbol:
-                if "price" in data:
-                    self.sig_price_updated.emit(float(data["price"]))
-                if "orderbook" in data:
-                    self.sig_orderbook_updated.emit(dict(data["orderbook"]))
+            # [자동 선택] 만약 선택된 종목이 없다면, 첫 번째로 데이터가 들어온 종목을 상세 뷰 대상으로 지정
+            if self.selected_symbol is None:
+                self.selected_symbol = symbol
+                self.sig_log_appended.emit(f"[시스템] 첫 번째 수신 종목({symbol})을 상세 뷰로 자동 선택했습니다.")
+
+            # 선택된 종목의 데이터만 상세 시그널용으로 임시 저장
+            if symbol == self.selected_symbol:
+                if "price" in data and data["price"] > 0:
+                    self._pending_price = float(data["price"])
+                if "orderbook" in data and data["orderbook"]:
+                    self._pending_orderbook = dict(data["orderbook"])
+
+            # 변경 플래그 설정
+            self._ui_dirty = True
 
         except Exception as e:
             import traceback
-            self.sig_log_appended.emit(f"[UI 오류] {e} | {traceback.format_exc()[-300:]}")
+            self.logger.error(f"[VIEWMODEL Error] _on_data_received: {e}\n{traceback.format_exc()}")
+
+    def _flush_ui_update(self):
+        """QTimer 100ms 주기로 호출: 변경이 있을 때만 최신 상태 스냅샷을 UI로 emit"""
+        # [UI_DEBUG] 50번에 한 번(5초) 타이머 동작 로그 출력
+        if not hasattr(self, "_flush_cnt"): self._flush_cnt = 0
+        self._flush_cnt += 1
+        if self._flush_cnt % 50 == 0:
+            self.logger.info(f"[UI_DEBUG] UI Flush 타이머 작동 중 (Dirty={self._ui_dirty})")
+
+        if not self._ui_dirty:
+            return
+        self._ui_dirty = False
+
+        # [안정화] 얕은 복사본을 emit 하여 Qt 렌더링 도중의 데이터 변경 간섭 차단
+        summary_snapshot = {k: v.copy() for k, v in self.symbols_summary.items()}
+        self.sig_symbols_summary_updated.emit(summary_snapshot)
+
+        if self._pending_price is not None:
+            self.sig_price_updated.emit(self._pending_price)
+            self._pending_price = None
+
+        if self._pending_orderbook is not None:
+            self.sig_orderbook_updated.emit(self._pending_orderbook)
+            self._pending_orderbook = None
 
 
     async def start_polling(self):
@@ -720,7 +784,7 @@ class AITrainingViewModel(QObject):
             try:
                 agent.load_weights(load_path)
                 self.sig_training_log.emit(
-                    f"   => [{sampling_tag}] 최신 모델 계승: {os.path.basename(latest_model_zip)}"
+                    f"   => [{sampling_tag}] 최신 모델 로딩 성공 ✅: {os.path.basename(latest_model_zip)}"
                 )
             except Exception as e:
                 self.sig_training_log.emit(f"   => [주의] [{sampling_tag}] 모델 로드 중 충돌 (초기화): {e}")
@@ -1011,6 +1075,7 @@ class BacktestViewModel(QObject):
             # 모델 로드
             try:
                 agent.load_weights(self.model_path)
+                self.logger.info(f"Backtest: 모델 로딩 성공 ✅ ({self.model_path})")
             except FileNotFoundError:
                 self.sig_bt_error.emit(f"모델 파일을 찾을 수 없습니다: {self.model_path}")
                 return

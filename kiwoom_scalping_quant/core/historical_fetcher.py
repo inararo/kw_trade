@@ -13,6 +13,10 @@ class HistoricalFetcher:
     키움 REST API를 통해 과거 분봉/틱 데이터를 비동기적으로 수집.
     엄격한 시간당 호출 제한(Throttling) 회피 및 로컬 Checkpoint 기반 Resume를 지원합니다.
     """
+    # [전역 스로틀링] 모든 인스턴스가 공유하는 클래스 변수
+    _global_throttle_lock = asyncio.Lock()
+    _request_timestamps = []
+
     def __init__(self, config_manager=None):
         self.config_manager = config_manager
         self.base_url = "https://api.kiwoom.com"
@@ -26,25 +30,29 @@ class HistoricalFetcher:
         self.logger = logging.getLogger("HistoricalFetcher")
 
         # API 제약 회피용 세마포어 (초당 최대 N회, 시간당 최대 M회)
-        self.throttle_limit_per_sec = 5
-        self.semaphore = asyncio.Semaphore(self.throttle_limit_per_sec)
-        self.request_timestamps = []
-
+        self.throttle_limit_per_sec = 4 # 더욱 안전하게 초당 4회로 변경
+        
         self.checkpoint_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "checkpoints")
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
 
     async def _throttle(self):
-        """초당 호출 횟수 제한 회피 큐잉"""
-        now = time.time()
-        self.request_timestamps = [t for t in self.request_timestamps if now - t < 1.0]
+        """전역 호출 횟수 제한 회피 큐잉 (클래스 레벨 Lock 사용)"""
+        async with self._global_throttle_lock:
+            now = time.time()
+            # 1초 이내의 스탬프만 유지
+            HistoricalFetcher._request_timestamps = [t for t in HistoricalFetcher._request_timestamps if now - t < 1.0]
 
-        if len(self.request_timestamps) >= self.throttle_limit_per_sec:
-            wait_time = 1.0 - (now - self.request_timestamps[0])
-            if wait_time > 0:
-                self.logger.debug(f"API Rate Limit 방어 대기 ({wait_time:.2f}s)")
-                await asyncio.sleep(wait_time)
-        self.request_timestamps.append(time.time())
+            if len(HistoricalFetcher._request_timestamps) >= self.throttle_limit_per_sec:
+                wait_time = 1.0 - (now - HistoricalFetcher._request_timestamps[0]) + 0.1
+                if wait_time > 0:
+                    self.logger.debug(f"전역 API Rate Limit 방어 대기 ({wait_time:.2f}s)")
+                    await asyncio.sleep(wait_time)
+                # sleep 동안 시간이 지났으므로 다시 갱신
+                now = time.time()
+                HistoricalFetcher._request_timestamps = [t for t in HistoricalFetcher._request_timestamps if now - t < 1.0]
+            
+            HistoricalFetcher._request_timestamps.append(time.time())
 
     def _load_checkpoint(self, symbol: str) -> str:
         """이전 수집 이력(마지막 수집된 기준일 또는 next_token)을 로드"""
@@ -67,23 +75,24 @@ class HistoricalFetcher:
                                     start_date: str,
                                     access_token: str,
                                     progress_callback: Optional[Callable[[int, str], None]] = None,
-                                    stop_timestamp: str = None) -> List[Dict[str, Any]]:
+                                    stop_timestamp: str = None,
+                                    max_pages: int = 100) -> List[Dict[str, Any]]:
         """
         특정 종목의 과거 데이터를 키움 REST API (ka10080) 명세에 맞춰 수집합니다.
         """
         all_data = []
         next_key = ""
         cont_yn = "N"
-
+        
         # 1. Resume Check (마지막 수집 시점보다 과거 데이터를 더 받고 싶을 때 사용)
         last_fetched = self._load_checkpoint(symbol)
         
         # 증분 수집을 위해 target_start_date는 항상 start_date(오늘 등)를 기준으로 하되
         # 과거에 어디까지 받았었는지는 stop_timestamp로 판단합니다.
         target_start_date = start_date
-
+        
         endpoint = f"{self.base_url}/api/dostk/chart"
-        total_pages = 100  # 수집 페이지 제한
+        total_pages = max_pages  # 수집 페이지 제한 (기본 100, 웜업 시 1)
         current_page = 0
 
         # 2. 시도할 종목코드 형식 목록 생성 (SOR 데이터 수집 최적화)
@@ -104,7 +113,7 @@ class HistoricalFetcher:
                 cont_yn = "N"
                 current_page = 0
                 
-                self.logger.error(f"[{symbol}] 수집 시도 (Format: {formatted_symbol}, API-ID: ka10080)")
+                self.logger.info(f"[{symbol}] 수집 시도 (Format: {formatted_symbol}, Page {current_page+1})")
 
                 while current_page < total_pages:
                     # 3. Throttling 방지
@@ -135,21 +144,22 @@ class HistoricalFetcher:
                             next_key = resp_headers.get("next-key", "")
                             
                             if response.status != 200:
+                                self.logger.error(f"[HistoricalFetcher] HTTP {response.status} 오류 ({formatted_symbol})")
                                 break
 
                             data = await response.json()
                             
-                            if data.get("return_code") == 3 or "Token이 유효하지 않습니다" in data.get("return_msg", ""):
+                            if str(data.get("return_code")) == "3" or "Token이 유효하지 않습니다" in data.get("return_msg", ""):
                                 return Failure("TOKEN_EXPIRED")
 
                             # 리스트 추출
-                            items = data.get("stk_min_pole_chart_qry")
-                            if items is None: items = data.get("output2")
-                            if items is None: items = data.get("grid")
-                            if items is None: items = data.get("output")
+                            items = data.get("stk_min_pole_chart_qry") or data.get("output2") or data.get("grid") or data.get("output")
                             
                             if not items or not isinstance(items, list):
+                                self.logger.debug(f"[HistoricalFetcher] {formatted_symbol} 결과 없음 ({data.get('return_msg')})")
                                 break
+                            
+                            self.logger.info(f"[HistoricalFetcher] {formatted_symbol} 수집 성공: {len(items)}개")
 
                             batch_data = []
                             last_timestamp_in_batch = ""
@@ -157,22 +167,29 @@ class HistoricalFetcher:
                             
                             stop_reached = False
                             for item in items:
-                                # 유효성 검사: 핵심 필드가 모두 빈 값인지 확인
-                                raw_time = item.get("cntr_tm") or item.get("stck_cntg_hour") or ""
+                                # 유효성 검사: 날짜와 시간 필드 조합 (REST API 특화)
+                                date_part = item.get("stck_bsop_date") or item.get("base_dt") or ""
+                                time_part = item.get("cntr_tm") or item.get("stck_cntg_hour") or ""
                                 cur_prc = item.get("cur_prc") or item.get("stck_prpr") or ""
                                 
-                                if not raw_time or not cur_prc:
-                                    continue # 빈 데이터 스킵
+                                if not time_part or not cur_prc:
+                                    continue # 필수 데이터 부재 시 스킵
                                 
                                 valid_item_found = True
                                 
-                                # 시간 포맷팅
-                                if len(raw_time) >= 14:
-                                    formatted_ts = f"{raw_time[:4]}-{raw_time[4:6]}-{raw_time[6:8]} {raw_time[8:10]}:{raw_time[10:12]}:{raw_time[12:14]}"
-                                elif len(raw_time) == 12: 
-                                    formatted_ts = f"20{raw_time[:2]}-{raw_time[2:4]}-{raw_time[4:6]} {raw_time[6:8]}:{raw_time[8:10]}:{raw_time[10:12]}"
+                                # 타임스탬프 정규화 (YYYY-MM-DD HH:MM:SS)
+                                if len(date_part) == 8 and len(time_part) >= 6:
+                                    # YYYYMMDD + HHMMSS 조합
+                                    formatted_ts = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                                elif len(time_part) >= 12:
+                                    # YYYYMMDDHHMMSS 형태
+                                    formatted_ts = f"{time_part[:4]}-{time_part[4:6]}-{time_part[6:8]} {time_part[8:10]}:{time_part[10:12]}:{time_part[12:14]}"
+                                elif len(time_part) == 6:
+                                    # HHMMSS만 온 경우 (오늘 데이터인 경우가 많음)
+                                    today_str = datetime.now().strftime("%Y-%m-%d")
+                                    formatted_ts = f"{today_str} {time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
                                 else:
-                                    formatted_ts = raw_time
+                                    formatted_ts = time_part
 
                                 # 증분 수집 중단 체크: 이미 DB에 있는 시점에 도달함
                                 # [버그 수정] T 문자와 공백 혼용으로 인한 문자열 비교 오류 방지 (정규화)
