@@ -8,6 +8,7 @@ import numpy as np
 
 from env.trading_env import ScalpingTradingEnv
 from models.agent import TradingAgentWrapper
+from utils.daily_logger import log_universe_snapshot
 
 class StrategyManager:
     """
@@ -97,6 +98,12 @@ class StrategyManager:
 
     def init_engines(self, universe_list: List[Dict[str, Any]]):
         """유니버스 확정 후 실시간 매매 엔진 초기화 (Lazy Initialization)"""
+        # [NEW] 유니버스 전체 스냅샷 로깅
+        try:
+            log_universe_snapshot(universe_list, reason="초기 유니버스 설정")
+        except Exception as e:
+            self.logger.error(f"주도주 스냅샷 로깅 에러 (init): {e}")
+
         if not self.shared_agent:
             self.logger.error("StrategyManager: 엔진 초기화 실패 - 로드된 에이전트가 없습니다.")
             return
@@ -150,6 +157,13 @@ class StrategyManager:
         asyncio.create_task(self._empty_candle_watchdog())
 
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
+        """장중 유니버스 동적 교조"""
+        # [NEW] 유니버스 전체 스냅샷 로깅
+        try:
+            log_universe_snapshot(new_universe, reason="장중 유니버스 갱신")
+        except Exception as e:
+            self.logger.error(f"주도주 스냅샷 로깅 에러 (update): {e}")
+
         async with self._swap_lock:
             new_symbols = list(set([s.get("code").split('_')[0] for s in new_universe if s.get("code")]))
             current_symbols = list(self.symbols)
