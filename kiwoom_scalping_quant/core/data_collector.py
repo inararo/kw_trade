@@ -178,14 +178,14 @@ class DataCollector:
             self.circuit_breaker_active = False
             self.last_receive_time = time.time()
             
-            self.logger.error("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
+            self.logger.info("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
 
             # [Step 1] 웹소켓 로그인 인증 요청
             await websocket.send(json.dumps({
                 "trnm": "LOGIN",
                 "token": token
             }))
-            self.logger.error("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
+            self.logger.info("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
             
             # [Handshake] LOGIN 응답 수신 대기 (중요: 응답 확인 후 구독 진행)
             login_success = False
@@ -193,7 +193,7 @@ class DataCollector:
                 first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
                 login_res = json.loads(first_msg)
                 if str(login_res.get("return_code")) == "0" or login_res.get("return_code") == 0:
-                    self.logger.error(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
+                    self.logger.info(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
                     login_success = True
                 else:
                     self.logger.error(

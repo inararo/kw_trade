@@ -113,23 +113,28 @@ class QuantSystem:
 
     async def start(self):
         self.main_window.show()
-        print("시스템: 부팅 시퀀스를 시작합니다.")
+        print("시스템: 부팅 시퀀스를 시작합니다. (모델 기반 에이전트 모드)")
         
         # 텔레그램 부팅 알림 전송
         notifier = self.container.telegram_notifier()
         await notifier.notify_app_start()
 
-        # Step 1: Token 발급 완료 대기
-        self.token_task = asyncio.create_task(self.token_manager.start())
-        print("시스템: [Step 1] 토큰 발급 대기 중...")
-        try:
-            await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
-            print("시스템: [Step 1] 토큰 발급 완료.")
-        except asyncio.TimeoutError:
-            print("시스템: [Step 1] 토큰 발급 타임아웃! (인터넷 연결 및 앱 키를 확인하세요)")
+        # Step 1: 에이전트 무기 장착 (모델 로드) - Fail-Safe 전략
+        # (모델 로드 중 오류가 발생해도 random 모델로 자가 복구하도록 StrategyManager에 구현됨)
+        print("시스템: [Step 1] Config 기반 에이전트 모델 로드 시작...")
+        self.strategy_manager.load_model_from_config()
 
-        # Step 2: Universe 및 Scheduler 시작
-        print("시스템: [Step 2] 스케줄러 가동 및 기존 유니버스 로드...")
+        # Step 2: Token 발급 및 유니버스 준비
+        self.token_task = asyncio.create_task(self.token_manager.start())
+        print("시스템: [Step 2] 토큰 발급 및 스케줄러 가동 준비...")
+        try:
+            # 토큰 발급 대기 (최대 10초)
+            await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
+            print("시스템: [Step 2] 토큰 발급 완료.")
+        except asyncio.TimeoutError:
+            print("시스템: [Step 2] 토큰 발급 타임아웃! (인터넷 연결 확인 필요)")
+
+        # 스케줄러 및 유니버스 세팅
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
 
         # [기능 개선] 장시간(매매 가능 시간)에 부팅할 경우에만 유니버스를 자동으로 갱신합니다.
@@ -147,35 +152,29 @@ class QuantSystem:
         try:
             # 유니버스 로드가 완료될 때까지 잠시 대기
             await asyncio.wait_for(self.universe_ready_event.wait(), timeout=10.0)
-            universe_len = len(self.asset_vm.config_manager.get_symbols())
-            print(f"시스템: [Step 2] 유니버스 준비 완료 (총 {universe_len}개 종목).")
+            universe_list = self.asset_vm.config_manager.get_symbols()
+            universe_len = len(universe_list)
+            print(f"시스템: [Step 2] 유니버스 로드 완료 (총 {universe_len}개 종목).")
+
+            # [Step 2.5] 확정된 유니버스를 바탕으로 매매 엔진(LiveTradingEngine) 초기화 실행
+            print("시스템: [Step 2.5] 확정된 유니버스에 대해 전용 매매 엔진 초기화 시작...")
+            self.strategy_manager.init_engines(universe_list)
             
             # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
             try:
                 await notifier.notify_app_ready(universe_len)
-            except Exception as e:
-                print(f"시스템: [주의] 텔레그램 알림 전송 실패 (네트워크 확인 필요): {e}")
+            except:
+                pass
         except asyncio.TimeoutError:
-            print("시스템: [Step 2] 유니버스 로드 타임아웃! 기본 설정으로 진행합니다.")
+            print("시스템: [Step 2] 유니버스 로드 지연 - 기본 설정 리스트로 지연 초기화를 진행합니다.")
+            self.strategy_manager.init_engines(self.asset_vm.config_manager.get_symbols())
 
-        # Step 3: DataCollector 시작 및 웹소켓 연결 대기
+        # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())
-        print("시스템: [Step 3] DataCollector 가동 및 웹소켓 구독 대기...")
+        print("시스템: [Step 3] DataCollector 가동 및 웹소켓 데이터 스트림 연결...")
         self.collector_task = asyncio.create_task(self.data_collector.start())
 
-        try:
-            # [안정화] 장 초반 서버 부하 및 네트워크 불안정을 고려하여 대기 시간을 60초로 연장
-            if hasattr(self.data_collector, 'first_data_received_event'):
-                await asyncio.wait_for(self.data_collector.first_data_received_event.wait(), timeout=60.0)
-                print("시스템: [Step 3] 최초 웹소켓 틱 데이터 수신 확인 완료. 파이프라인 정상.")
-        except asyncio.TimeoutError:
-            print("시스템: [Step 3] 웹소켓 데이터 수신 지연 중... (네트워크 불안정 또는 장외 시간 가능성)")
-            print("         팁: 프로그램은 종료되지 않았으며 백그라운드에서 지속적으로 재연결을 시도합니다.")
-
-        # Step 4: config.yaml의 live_trading_model_type에 의한 Config 라우팅으로 모델 자동 로드
-        print("시스템: [Step 4] Config 기반 Agent 매매 로드 시작...")
-        self.strategy_manager.load_model_from_config()
-
+        # 매매 로직 정식 구동
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 
