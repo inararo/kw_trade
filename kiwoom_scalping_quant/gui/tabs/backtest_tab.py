@@ -67,6 +67,14 @@ class BacktestStudioTab(QWidget):
         self.btn_start.clicked.connect(self._on_start_backtest)
         ctrl_layout.addWidget(self.btn_start)
 
+        # 그룹 6: 자동 배치 버튼 (Top 30)
+        self.btn_auto_batch = QPushButton("자동 백테스트 시작 (Top 30)")
+        self.btn_auto_batch.setMinimumWidth(180)
+        self.btn_auto_batch.setFixedHeight(30)
+        self.btn_auto_batch.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_auto_batch.clicked.connect(self._on_start_auto_batch)
+        ctrl_layout.addWidget(self.btn_auto_batch)
+
         ctrl_group.setLayout(ctrl_layout)
         main_layout.addWidget(ctrl_group)
 
@@ -172,10 +180,33 @@ class BacktestStudioTab(QWidget):
         pct = (step / total) * 100 if total > 0 else 0
         self.lbl_progress.setText(f"진행률: {step}/{total} ({pct:.1f}%) | 누적 PnL: {pnl:,.0f}")
 
+    def _on_start_auto_batch(self):
+        """자동 백테스트 배치 시작 호출"""
+        start_dt = self.date_start.date().toString("yyyyMMdd")
+        end_dt = self.date_end.date().toString("yyyyMMdd")
+
+        reply = QMessageBox.question(
+            self, "자동 백테스트 확인",
+            f"선택한 기간({start_dt} ~ {end_dt}) 동안 거래량 상위 30개 종목에 대해 일괄 백테스트를 시작하시겠습니까?\n"
+            "(DB에 데이터가 없는 종목은 자동으로 제외됩니다.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.btn_auto_batch.setEnabled(False)
+            self.lbl_progress.setText("진행률: 배치 시작 중...")
+            self.view_model.start_auto_backtest_batch(start_dt, end_dt)
+
     @pyqtSlot(dict)
     def on_bt_finished(self, kpi: dict):
         self.btn_start.setEnabled(True)
+        self.btn_auto_batch.setEnabled(True)
         self.lbl_progress.setText("진행률: 완료")
+
+        if "Batch Count" in kpi:
+            count = kpi["Batch Count"]
+            QMessageBox.information(self, "자동 백테스트 완료", f"총 {count}개 종목에 대한 일괄 백테스트 및 리포트(CSV) 생성이 완료되었습니다.")
+            return
 
         self.lbl_return.setText(f"총 수익률: {kpi.get('Total Return', 0):.2f} %")
         if kpi.get('Total Return', 0) > 0:

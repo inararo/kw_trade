@@ -113,3 +113,67 @@ class KPICalculator:
             "MDD": mdd,
             "Profit Factor": profit_factor
         }
+
+    async def run_automation_batch(self, agent_builder_cb, env_builder_cb, symbol_list: List[str], 
+                                  start_date: str, end_date: str, progress_cb=None) -> List[Dict[str, Any]]:
+        """
+        [NEW] 여러 종목에 대해 독립적으로 백테스트를 실행하는 배치 프로세스.
+        특정 종목 에러 시에도 중단되지 않고 다음 종목으로 넘어갑니다.
+        """
+        batch_results = []
+        total_symbols = len(symbol_list)
+
+        for i, symbol in enumerate(symbol_list):
+            try:
+                if progress_cb:
+                    progress_cb(i, total_symbols, f"[{symbol}] 데이터 로딩 중...")
+
+                # 1. 환경 및 에이전트 생성 (콜백 활용)
+                env, df = await env_builder_cb(symbol, start_date, end_date)
+                if env is None or df is None or df.empty:
+                    raise ValueError(f"데이터가 없거나 환경 생성 실패: {symbol}")
+
+                agent = agent_builder_cb(env)
+
+                # 2. 백테스트 실행
+                # 내부 run_backtest 활용 (콜백은 배치 진행 상황 위주로 업데이트)
+                def inner_cb(step, total, pnl):
+                    if progress_cb:
+                        progress_cb(i, total_symbols, f"[{symbol}] 진행 중... {step}/{total}")
+
+                history_df = await self.run_backtest(agent, env, df, callbacks=[inner_cb])
+
+                # 3. KPI 계산
+                kpi = KPICalculator.calculate(history_df)
+                total_trades = len(history_df[history_df['action'].isin(['Buy', 'Sell'])])
+                
+                # 결과 수집
+                result_row = {
+                    "Symbol": symbol,
+                    "Start Date": start_date,
+                    "End Date": end_date,
+                    "Total Return (%)": round(kpi.get("Total Return", 0), 2),
+                    "Win Rate (%)": round(kpi.get("Win Rate", 0), 2),
+                    "MDD (%)": round(kpi.get("MDD", 0), 2),
+                    "Profit Factor": round(kpi.get("Profit Factor", 0), 3),
+                    "Total Trades": total_trades
+                }
+                batch_results.append(result_row)
+
+            except Exception as e:
+                import logging
+                logging.getLogger("BacktestEngine").error(f"[{symbol}] 배치 테스트 중 에러 발생: {e}")
+                # 에러 발생 시에도 결과 리스트에 실패 기록을 남겨 행 개수를 맞춤
+                batch_results.append({
+                    "Symbol": symbol,
+                    "Start Date": start_date,
+                    "End Date": end_date,
+                    "Total Return (%)": 0,
+                    "Win Rate (%)": 0,
+                    "MDD (%)": 0,
+                    "Profit Factor": 0,
+                    "Total Trades": 0,
+                    "Error": str(e)
+                })
+
+        return batch_results

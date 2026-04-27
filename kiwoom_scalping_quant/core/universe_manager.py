@@ -349,3 +349,70 @@ class UniverseManager:
         self.logger.error(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
 
         return top_universe
+
+    @future_safe
+    async def fetch_top_30_volume_symbols(self, access_token: str) -> List[Dict[str, Any]]:
+        """
+        [NEW] 증권사 API를 호출하여 거래량 상위 30개 종목을 가져옵니다.
+        관리종목, 우선주, ETF/ETN, SPAC은 필터링하여 순수 주식 리스트만 반환합니다.
+        """
+        endpoint = f"{self.base_url}/api/dostk/rkinfo"
+        self.logger.info("거래량 상위 30개 종목 스캔 시작...")
+
+        headers = {
+            'Content-Type': 'application/json;charset=UTF-8',
+            "authorization": f"Bearer {access_token}",
+            'cont-yn': 'N',
+            'next-key': '',
+            "api-id": "ka10030"
+        }
+
+        # mang_stk_incls: 4 (관리종목, 우선주제외) 
+        # sort_tp: 1 (거래량)
+        params = {
+            'mrkt_tp': '000',      # 000: 전체
+            'sort_tp': '1',      # 1: 거래량
+            'mang_stk_incls': '4', # 4: 관리종목, 우선주제외
+            'crd_tp': '0',
+            'trde_qty_tp': '0',
+            'pric_tp': '0',
+            'trde_prica_tp': '0',
+            'mrkt_open_tp': '0',
+            'stex_tp': '3',
+        }
+
+        top_30 = []
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
+                    if response.status != 200:
+                        err_text = await response.text()
+                        raise RuntimeError(f"Kiwoom API 연동 실패: {response.status} - {err_text}")
+
+                    data = await response.json()
+                    items = data.get("ka10030", []) or data.get("output", []) or data.get("output1", [])
+                    
+                    for item in items:
+                        if len(top_30) >= 30:
+                            break
+                            
+                        code = item.get("stk_cd") or item.get("stck_shrn_iscd") or ""
+                        name = item.get("stk_nm") or item.get("hts_kor_isnm") or f"Unknown_{code}"
+
+                        # 추가 필터링 (ETF, SPAC 등)
+                        if not self._is_valid_scalping_symbol(name, code):
+                            continue
+
+                        top_30.append({
+                            "code": code,
+                            "name": name,
+                            "price": float(str(item.get("cur_prc", 0)).replace(',', '')),
+                            "volume": float(str(item.get("trde_qty", 0)).replace(',', ''))
+                        })
+                        
+            self.logger.info(f"거래량 상위 30개 종목 추출 완료 (필터링 후 {len(top_30)}개)")
+            return top_30
+
+        except Exception as e:
+            self.logger.error(f"Top 30 스캔 중 에러: {e}")
+            raise e

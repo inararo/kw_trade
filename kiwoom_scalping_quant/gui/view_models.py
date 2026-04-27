@@ -1001,12 +1001,13 @@ class BacktestViewModel(QObject):
     sig_bt_chart_data = pyqtSignal(object) # DataFrame
     sig_bt_error = pyqtSignal(str)
 
-    def __init__(self, config_manager, influx_client, data_collector, order_manager):
+    def __init__(self, config_manager, influx_client, data_collector, order_manager, universe_manager=None):
         super().__init__()
         self.config_manager = config_manager
         self.influx_client = influx_client
         self.data_collector = data_collector
         self.order_manager = order_manager
+        self.universe_manager = universe_manager
         self.logger = logging.getLogger("BacktestViewModel")
 
         from core.backtester import BacktestEngine
@@ -1157,3 +1158,156 @@ class BacktestViewModel(QObject):
 
         except Exception as export_e:
             self.logger.error(f"Backtest 결과 Export 중 오류 발생: {export_e}")
+
+    def start_auto_backtest_batch(self, start_date: str, end_date: str):
+        """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행"""
+        if not self.model_path:
+            # 설정의 active_model_path 확인
+            self.model_path = self.config_manager.get("active_model_path")
+            if not self.model_path or not os.path.exists(self.model_path):
+                self.sig_bt_error.emit("활성화된 모델이 없거나 파일이 존재하지 않습니다. 모델 로드를 먼저 해주세요.")
+                return
+
+        asyncio.create_task(self._run_auto_batch_task(start_date, end_date))
+
+    async def _run_auto_batch_task(self, start_date: str, end_date: str):
+        try:
+            # 1. Top 30 종목 스캔
+            access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
+            if not access_token:
+                self.sig_bt_error.emit("API 접근 토큰이 없습니다. 먼저 로그인(토큰 발급)이 필요합니다.")
+                return
+
+            if not self.universe_manager:
+                self.sig_bt_error.emit("UniverseManager가 주입되지 않았습니다.")
+                return
+
+            self.sig_bt_progress.emit(0, 100, 0)
+            self.logger.info("거래량 상위 30개 종목 리스트를 가져오는 중...")
+            
+            result = await self.universe_manager.fetch_top_30_volume_symbols(access_token)
+            
+            # @future_safe Result 처리
+            if hasattr(result, 'unwrap'):
+                top_30_list = result.unwrap()._inner_value
+            else:
+                top_30_list = result
+                
+            if not top_30_list:
+                self.sig_bt_error.emit("거래량 상위 30개 종목을 가져오지 못했습니다.")
+                return
+
+            symbols = [s["code"] for s in top_30_list]
+            self.logger.info(f"스캔 완료: {len(symbols)}개 종목에 대해 백테스트 배치를 시작합니다.")
+
+            # 2. 배치 실행 준비 (환경/에이전트 빌더 정의)
+            from env.trading_env import ScalpingTradingEnv
+            from models.agent import TradingAgentWrapper
+
+            # 모델 차원 감지 (최초 1회)
+            model_dim = TradingAgentWrapper.get_model_dimension(self.model_path)
+            detected_mode = "advanced" if model_dim >= 200 else "basic"
+            all_symbols_list = [s.get("code") for s in self.config_manager.get_symbols()]
+
+            async def env_builder(sym, start, end):
+                data = await self.influx_client.fetch_data_by_range(sym, start, end)
+                if not data: return None, None
+                
+                df = pd.DataFrame(data)
+                df['step'] = range(len(df))
+                
+                env_config = {
+                    "symbol": sym,
+                    "initial_balance": 10000000,
+                    "historical_data": data,
+                    "mode": "backtest",
+                    "feature_mode": detected_mode,
+                    "target_dim": model_dim,
+                    "all_symbols": all_symbols_list
+                }
+                return ScalpingTradingEnv(self.data_collector, self.order_manager, env_config), df
+
+            def agent_builder(env):
+                agent = TradingAgentWrapper(env, {"seq_len": 10})
+                agent.load_weights(self.model_path)
+                return agent
+
+            # 3. 엔진 배치 실행
+            results = await self.engine.run_automation_batch(
+                agent_builder, env_builder, symbols, start_date, end_date,
+                progress_cb=self._on_batch_progress
+            )
+
+            # 4. CSV 저장 및 완료 알림
+            self._save_batch_results_csv(results, self.model_path)
+            self.sig_bt_finished.emit({"Batch Count": len(results)})
+            self.logger.info(f"Top 30 자동 백테스트 배치 완료 (저장: backtest_results/auto_bt_...)")
+
+        except Exception as e:
+            import traceback
+            self.logger.error(f"배치 백테스트 오류: {e}\n{traceback.format_exc()}")
+            self.sig_bt_error.emit(f"배치 실행 중 오류가 발생했습니다: {e}")
+
+    def _on_batch_progress(self, idx, total, status_msg):
+        """배치 진행률 업데이트 (UI 표시용)"""
+        pct = int(((idx) / total) * 100)
+        # progress signal의 파라미터 형식을 맞춤 (step=idx, total=total, current_pnl=0(배치에선 status_msg 대용 불가하므로 로깅용))
+        # 하지만 기존 시그널은 (int, int, float) 이므로 progress_cb에서 status_msg를 직접 보낼 순 없음
+        # 대신 뷰모델의 로거로 직접 출력
+        self.logger.info(f"BT 배치 [{idx+1}/{total}] {status_msg}")
+        self.sig_bt_progress.emit(idx + 1, total, 0.0)
+
+    def _save_batch_results_csv(self, results, model_path):
+        """[NEW] 요구사항에 맞춘 상세 CSV 저장 포맷"""
+        try:
+            import datetime
+            import pandas as pd
+            
+            results_dir = "./backtest_results"
+            if not os.path.exists(results_dir):
+                os.makedirs(results_dir)
+
+            model_name = os.path.basename(model_path)
+            today_str = datetime.datetime.now().strftime("%Y%m%d")
+            timestamp_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filename = f"auto_bt_{model_name.replace('.zip', '')}_{today_str}.csv"
+            save_path = os.path.join(results_dir, filename)
+
+            # DataFrame 생성
+            df = pd.DataFrame(results)
+            
+            # 필수 컬럼 구성 및 순서 조정
+            # [테스트 일시, 모델명, 종목코드(Symbol), 시작일, 종료일, 총수익률(%), 승률(%), MDD(%), Profit Factor, 총 매매횟수]
+            df.insert(0, "테스트 일시", timestamp_now)
+            df.insert(1, "모델명", model_name)
+            
+            # 컬럼명 매핑 (영문 -> 한글)
+            column_map = {
+                "Symbol": "종목코드(Symbol)",
+                "Start Date": "시작일",
+                "End Date": "종료일",
+                "Total Return (%)": "총수익률(%)",
+                "Win Rate (%)": "승률(%)",
+                "MDD (%)": "MDD(%)",
+                "Profit Factor": "Profit Factor",
+                "Total Trades": "총 매매횟수"
+            }
+            df = df.rename(columns=column_map)
+            
+            # 수치형 컬럼 선정
+            numeric_cols = ["총수익률(%)", "승률(%)", "MDD(%)", "Profit Factor", "총 매매횟수"]
+            
+            # [Average] 행 추가
+            avg_row = {col: "" for col in df.columns}
+            avg_row["종목코드(Symbol)"] = "[Average]"
+            for col in numeric_cols:
+                avg_row[col] = round(df[col].mean(), 2)
+            
+            df = pd.concat([df, pd.DataFrame([avg_row])], ignore_index=True)
+
+            # CSV 저장 (BOM 포함 UTF-8로 엑셀 호환성 확보)
+            df.to_csv(save_path, index=False, encoding='utf-8-sig')
+            self.logger.info(f"배치 결과 전용 CSV 저장 완료: {save_path}")
+
+        except Exception as e:
+            self.logger.error(f"CSV 저장 중 오류: {e}")

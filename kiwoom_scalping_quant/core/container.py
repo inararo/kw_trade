@@ -127,5 +127,6 @@ class Container(containers.DeclarativeContainer):
         config_manager=config_manager,
         influx_client=influx_client,
         data_collector=data_collector,
-        order_manager=order_manager
+        order_manager=order_manager,
+        universe_manager=universe_manager
     )
