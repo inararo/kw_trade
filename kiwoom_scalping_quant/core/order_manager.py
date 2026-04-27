@@ -285,6 +285,40 @@ class OrderManager:
 
             return internal_id
 
+    @future_safe
+    async def cancel_order(self, internal_id: str) -> bool:
+        """
+        내부 주문 ID를 기반으로 미체결 잔량을 확인하여 취소 주문을 전송합니다.
+        """
+        order = self.active_orders.get(internal_id)
+        if not order:
+            self.logger.error(f"취소 실패: 내부 ID {internal_id}를 찾을 수 없습니다.")
+            return False
+
+        broker_id = order.get('broker_id')
+        unexecuted_qty = order.get('unexecuted_qty', 0)
+        status = order.get('status')
+
+        # 취소 불가능한 상태 체크 (이미 체결됨, 이미 취소됨, 전송 실패 등)
+        if status in [OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED] or unexecuted_qty <= 0:
+            self.logger.info(f"취소 건너뜀: 주문 {internal_id}는 이미 종료되었거나 미체결 물량이 없습니다. (상태: {status})")
+            return True
+
+        if not broker_id:
+            self.logger.warning(f"취소 지연: 주문 {internal_id}의 브로커 주문번호가 아직 없습니다. (PENDING 상태)")
+            return False
+
+        self.logger.error(f"🚫 미체결 취소 요청 시작: {order['symbol']} | 원주문번호: {broker_id} | 취소수량: {unexecuted_qty}")
+        
+        # kt10003 취소 주문 실행 (send_order의 CANCEL 타입 활용)
+        try:
+            # 취소 주문은 가격(price)이 의미가 없으므로 0으로 전송 (kt10003 규격 준수)
+            result = await self.send_order("CANCEL", order['symbol'], 0, unexecuted_qty, orig_order_no=broker_id)
+            return True
+        except Exception as e:
+            self.logger.error(f"취소 주문 전송 중 오류 발생: {e}")
+            return False
+
 
     async def _wait_for_ack(self, internal_id: str, timeout: float):
         """주문 접수 후 브로커 응답(접수 확인) 타임아웃 감시"""
