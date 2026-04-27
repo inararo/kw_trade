@@ -1,4 +1,5 @@
 account_number: ''
+active_model_path: ./saved_models/random/model_advanced_random_best.zip
 ai_confidence_threshold: 0.5
 cb_timeout_sec: 3
 cutoff_time: '14:00'

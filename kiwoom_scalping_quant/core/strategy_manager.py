@@ -41,57 +41,58 @@ class StrategyManager:
         self.is_ai_paused = paused
         self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
 
-    def _load_single_model(self, folder: str) -> TradingAgentWrapper:
-        save_dir = f"./saved_models/{folder}/"
-        pattern = os.path.join(save_dir, f"model_*_{folder}_*.zip")
-        files = sorted(glob.glob(pattern))
-
-        if not files:
-            files = sorted(glob.glob(os.path.join(save_dir, "*.zip")))
-
-        if not files:
-            self.logger.warning(f"StrategyManager: [{folder}] 모델이 {save_dir}에 없습니다.")
+    def _load_model_by_path(self, model_path: str) -> TradingAgentWrapper:
+        """지정된 경로의 모델 파이을 다이렉트로 로드합니다."""
+        if not model_path or not os.path.exists(model_path):
+            self.logger.error(f"StrategyManager: 지정된 모델 경로가 유효하지 않습니다: {model_path}")
             return None
 
-        latest_zip = files[-1]
-        model_path = latest_zip.replace(".zip", "")
-        self.logger.info(f"StrategyManager: [{folder}] 모델 탐색 완료 → {latest_zip}")
+        # .zip 확장자 제거 (Stable Baselines3 규격 대응)
+        model_load_path = model_path.replace(".zip", "")
+        self.logger.info(f"StrategyManager: 명시적 모델 로드 시작 → {model_path}")
 
-        model_dim = TradingAgentWrapper.get_model_dimension(model_path)
-        detected_mode = "advanced" if model_dim >= 100 else "basic"
-        dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
-        dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
+        try:
+            # 모델 차원 자동 감지 및 더미 환경 생성
+            model_dim = TradingAgentWrapper.get_model_dimension(model_load_path)
+            detected_mode = "advanced" if model_dim >= 100 else "basic"
+            dummy_config = {"symbol": "DUMMY", "feature_mode": detected_mode, "target_dim": model_dim}
+            dummy_env = ScalpingTradingEnv(self.data_collector, self.order_manager, dummy_config)
 
-        config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
-        agent_config = {"seq_len": config_dict.get("seq_len", 10)}
-        agent = TradingAgentWrapper(dummy_env, agent_config)
-        agent.load_weights(model_path)
-        self.logger.info(f"StrategyManager: [{folder}] 모델 로딩 성공 ✅ (차원={model_dim})")
-        return agent
+            config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+            agent_config = {"seq_len": config_dict.get("seq_len", 10)}
+            agent = TradingAgentWrapper(dummy_env, agent_config)
+            
+            agent.load_weights(model_load_path)
+            print(f"StrategyManager: 모델 로딩 성공 ✅ (차원={model_dim}, 경로={model_path})")
+            return agent
+        except Exception as e:
+            self.logger.error(f"StrategyManager: 모델 가중치 로드 중 치명적 오류: {e}")
+            return None
 
     def load_model_from_config(self):
+        """
+        config.yaml의 active_model_path를 직접 참조하여 모델을 로드합니다.
+        더 이상 디렉토리를 스캔하며 모델을 자동 탐색하지 않습니다.
+        """
         try:
             config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
-            model_type = config_dict.get("live_trading_model_type", "random").lower().strip()
-            self.logger.info(f"StrategyManager: Config 모델 타입 = [{model_type}]")
-
-            if model_type == "smart":
-                agent = self._load_single_model("smart")
-                self.shared_agent = agent or self.shared_agent
-                if agent: self.model_smart = agent
-                else: self._fallback_empty_model()
-            elif model_type == "dual":
-                self.model_random = self._load_single_model("random")
-                self.model_smart = self._load_single_model("smart")
-                self.shared_agent = self.model_random or self.model_smart
-                if not self.shared_agent: self._fallback_empty_model()
+            active_path = config_dict.get("active_model_path", "").strip()
+            
+            self.logger.info(f"StrategyManager: 설정된 활성 모델 경로 = [{active_path}]")
+            
+            if active_path:
+                agent = self._load_model_by_path(active_path)
+                if agent:
+                    self.shared_agent = agent
+                    # 하위 호환성을 위해 모델 타입 분기 생략하고 shared_agent로 단일화
+                else:
+                    self._fallback_empty_model()
             else:
-                agent = self._load_single_model("random")
-                self.shared_agent = agent or self.shared_agent
-                if agent: self.model_random = agent
-                else: self._fallback_empty_model()
+                self.logger.warning("StrategyManager: active_model_path가 설정되지 않았습니다. 폴백 모드로 진입합니다.")
+                self._fallback_empty_model()
+                
         except Exception as e:
-            self.logger.error(f"StrategyManager: 모델 로딩 중 오류 발생 ({e}). 폴백 모드로 전환합니다.")
+            self.logger.error(f"StrategyManager: 부팅 중 모델 로드 프로세스 실패 ({e}). 폴백 모드로 전환합니다.")
             self._fallback_empty_model()
 
     def init_engines(self, universe_list: List[Dict[str, Any]]):

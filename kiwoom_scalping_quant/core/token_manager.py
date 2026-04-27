@@ -89,7 +89,7 @@ class TokenManager:
                         # f-string을 사용하면 None이나 숫자 데이터도 안전하게 문자열로 합쳐집니다.
                         token_info = f"{token_val}, {expires}, {t_type}, {r_code}, {r_msg}"
                         print(f"JYJ  token_info: {token_info}")
-                        self.logger.error(f"Token successfully refreshed. Expires at {self.expires_at}, access_token : {self.access_token}")
+                        print(f"Token successfully refreshed. Expires at {self.expires_at}, access_token : {self.access_token}")
 
                         # Update globally
                         self.config_manager.update_settings({"KIWOOM_ACCESS_TOKEN": self.access_token})

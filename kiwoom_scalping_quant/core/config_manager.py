@@ -57,6 +57,10 @@ class ConfigManager:
         """두 파일의 출처를 신경 쓰지 않고 쉽게 값을 가져갈 수 있는 래퍼 메서드."""
         return self._config_cache.get(key, default)
 
+    def get_dict(self) -> Dict[str, Any]:
+        """현재 캐시된 모든 설정을 딕셔너리 형태로 반환합니다."""
+        return self._config_cache
+
     def get_rest_url(self) -> str:
         """현재 설정된 trading_mode에 따른 REST API Base URL을 반환합니다."""
         kiwoom_config = self.get("kiwoom", {})
