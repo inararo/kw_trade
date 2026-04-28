@@ -160,6 +160,7 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_risk_metrics_updated.connect(self.on_risk_metrics_updated)
         self.view_model.sig_status_alert.connect(self.on_status_alert)
         self.view_model.sig_error_occurred.connect(self.on_error)
+        self.view_model.sig_universe_changed.connect(self.on_universe_changed) # [NEW]
 
     def _on_table_selection_changed(self):
         selected_items = self.summary_table.selectedItems()
@@ -170,6 +171,15 @@ class LiveDashboardTab(QWidget):
             if hasattr(self.view_model, 'set_selected_symbol'):
                 self.view_model.set_selected_symbol(symbol)
                 self.on_log_appended(f"[UI] 상세 뷰 종목 변경: {symbol}")
+
+    @pyqtSlot(list)
+    def on_universe_changed(self, new_symbols: list):
+        """
+        [긴급 패치] 유니버스가 완전히 교체될 때 호출되어 테이블을 초기화합니다.
+        다음 번 symbols_summary 업데이트 시 새로운 종목들로 테이블이 다시 그려집니다.
+        """
+        self.summary_table.setRowCount(0)
+        self.on_log_appended(f"[UI] 장중 유니버스 교체 감지: 테이블을 초기화하고 다시 그립니다. ({len(new_symbols)} 종목)")
 
     @pyqtSlot(dict)
     def on_symbols_summary_updated(self, summary_dict: dict):

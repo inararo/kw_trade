@@ -346,7 +346,7 @@ class UniverseManager:
         top_symbols = [f"{s.get('name')}({s.get('code')})" for s in top_universe]
         self.logger.error(f"최종 선정된 유니버스 Top {len(top_universe)}: {', '.join(top_symbols)}")
 
-        self.logger.error(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
+        self.logger.info(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
 
         return top_universe
 

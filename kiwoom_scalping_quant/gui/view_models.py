@@ -21,6 +21,7 @@ class LiveDashboardViewModel(QObject):
 
     # 멀티 종목 요약 정보 (Symbol -> Dict of stats)
     sig_symbols_summary_updated = pyqtSignal(dict)
+    sig_universe_changed = pyqtSignal(list) # [NEW] 유니버스 교체 시그널
 
     # 스레드 브릿지: 백그라운드 -> 메인 스레드 (내부용)
     _sig_raw_data = pyqtSignal(object)
@@ -84,6 +85,37 @@ class LiveDashboardViewModel(QObject):
                 if code in self.symbols_summary:
                     self.symbols_summary[code]["name"] = name
         self._ui_dirty = True
+
+    def update_universe_list(self, new_symbols: list):
+        """
+        [긴급 패치] 장중 유니버스 교체 시 호출되어 기존 데이터를 초기화하고 
+        새로운 종목 리스트를 UI에 반영하도록 준비합니다.
+        """
+        self.logger.info(f"ViewModel: 유니버스 교체 감지 ({len(new_symbols)} 종목)")
+        
+        # 1. 기존 요약 데이터 완전 초기화
+        self.symbols_summary.clear()
+        
+        # 2. 종목명 캐시 및 요약 뼈대 재구축
+        for s in new_symbols:
+            code = s.get("code", "").split('_')[0].strip()
+            name = s.get("name", "-")
+            if code:
+                self._symbol_names[code] = name
+                self.symbols_summary[code] = {
+                    "name": name, 
+                    "price": s.get("price", 0), 
+                    "ai_signal": "-", 
+                    "holdings": 0
+                }
+        
+        # 3. 상세 뷰 대상 초기화 (첫 번째 종목으로 다시 잡히도록)
+        self.selected_symbol = None
+        
+        # 4. UI 갱신 플래그 및 시그널 발생
+        self._ui_dirty = True
+        self.sig_universe_changed.emit(new_symbols)
+        self.sig_log_appended.emit(f"[시스템] 장중 유니버스가 {len(new_symbols)}개 종목으로 교체되었습니다. 화면을 갱신합니다.")
 
     def _init_summary_data(self):
         """부팅 시 유니버스 리스트를 바탕으로 요약 테이블 초기 뼈대 구성"""

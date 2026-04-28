@@ -187,6 +187,11 @@ class StrategyManager:
                     if hasattr(self.data_collector, 'subscribe_symbol'):
                         await self.data_collector.subscribe_symbol(sym)
 
+            # [긴급 패치] UI 쪽에 종목 리스트가 교체되었음을 알림
+            live_vm = getattr(self.config_manager, "_injected_live_vm", None)
+            if live_vm:
+                live_vm.update_universe_list(new_universe)
+
     async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
         if not self.is_running or self.is_ai_paused: return
         try:

@@ -220,13 +220,13 @@ class DataCollector:
 
             symbols = self.subscription_manager.get_symbols()
             if symbols:
-                self.logger.error(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
+                self.logger.info(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
                 try:
                     for sym in symbols:
                         if not self.is_running:
                             break
                         await self.subscribe_symbol(sym)
-                    self.logger.error("초기 종목 구독 요청 완료.")
+                    self.logger.info("초기 종목 구독 요청 완료.")
                 except Exception as e:
                     self.logger.error(f"초기 구독 프로세스 중 오류 발생 (무시하고 계속 진행): {e}")
 
