@@ -59,76 +59,81 @@ class LiveDashboardTab(QWidget):
         master_layout.addWidget(self.summary_table)
 
         master_group.setLayout(master_layout)
-        main_layout.addWidget(master_group, stretch=1)
+        main_layout.addWidget(master_group, stretch=8) # [가로 사이즈 대폭 확대]
 
-        # 2. 중앙 패널: 상세 호가창 래더 (선택된 종목)
+        # 2. 우측 통합 영역 (호가창 + AI제어 + 하단로그)
+        dashboard_content_layout = QVBoxLayout()
+        
+        # 2-A. 상단 구역: 호가창(좌) + AI/제어(우)
+        top_row_layout = QHBoxLayout()
+        
+        # [상세 호가창 래더]
         ladder_group = QGroupBox("상세 호가창 래더")
         ladder_layout = QVBoxLayout()
         self.orderbook_widget = OrderbookLadderWidget(self.view_model)
         ladder_layout.addWidget(self.orderbook_widget)
         ladder_group.setLayout(ladder_layout)
-        main_layout.addWidget(ladder_group, stretch=1)
+        top_row_layout.addWidget(ladder_group, stretch=5)
 
-        # 3. 우측 패널: AI 모니터 및 컨트롤
-        control_group = QGroupBox("상세 AI 모니터링 및 시스템 제어")
+        # [상세 AI 모니터 및 컨트롤]
+        control_group = QGroupBox("상세 AI 모니터링 및 제어")
         control_layout = QVBoxLayout()
 
         # AI 신뢰도 모니터
         ai_layout = QVBoxLayout()
         ai_layout.addWidget(QLabel("AI 에이전트 행동 신뢰도:"))
-
         self.prog_hold = QProgressBar()
         self.prog_hold.setStyleSheet("QProgressBar::chunk { background-color: gray; }")
         self.prog_hold.setFormat("관망: %p%")
-
         self.prog_buy = QProgressBar()
         self.prog_buy.setStyleSheet("QProgressBar::chunk { background-color: red; }")
         self.prog_buy.setFormat("매수: %p%")
-
         self.prog_sell = QProgressBar()
         self.prog_sell.setStyleSheet("QProgressBar::chunk { background-color: blue; }")
         self.prog_sell.setFormat("매도: %p%")
-
         ai_layout.addWidget(self.prog_hold)
         ai_layout.addWidget(self.prog_buy)
         ai_layout.addWidget(self.prog_sell)
         control_layout.addLayout(ai_layout)
 
-        # [신규 추가] 시스템 실시간 제어 패널
+        # 시스템 실시간 제어 패널 (위로 이동)
         sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
         sys_ctrl_layout = QVBoxLayout()
-        
-        # 1. 종목 감시 (Websocket) 제어 버튼
         self.btn_monitor_toggle = QPushButton("🛰️ 종목 감시 중지")
         self.btn_monitor_toggle.setCheckable(True)
         self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
         self.btn_monitor_toggle.clicked.connect(self._on_monitor_toggle_clicked)
         sys_ctrl_layout.addWidget(self.btn_monitor_toggle)
-        
-        # 2. AI 매매 의사결정 제어 버튼
         self.btn_ai_toggle = QPushButton("🤖 AI 매매 일시 정지")
         self.btn_ai_toggle.setCheckable(True)
         self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 35px;")
         self.btn_ai_toggle.clicked.connect(self._on_ai_toggle_clicked)
         sys_ctrl_layout.addWidget(self.btn_ai_toggle)
-        
         sys_ctrl_group.setLayout(sys_ctrl_layout)
         control_layout.addWidget(sys_ctrl_group)
 
-        # 체결 및 시스템 로그 리스트
-        control_layout.addWidget(QLabel("시스템 및 체결 로그:"))
-        self.log_list = QListWidget()
-        self.log_list.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: monospace;")
-        control_layout.addWidget(self.log_list, stretch=1)
-
         # 패닉 버튼
-        self.panic_btn = QPushButton("🚨 전량 시장가 매도 및 전체 주문 취소 🚨")
-        self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 16px; font-weight: bold; height: 50px;")
+        self.panic_btn = QPushButton("🚨 전량 시장가 매도 🚨\n전체 주문 취소")
+        self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 14px; font-weight: bold; height: 50px;")
         self.panic_btn.clicked.connect(self.view_model.trigger_panic_sell)
         control_layout.addWidget(self.panic_btn)
-
+        
+        control_layout.addStretch(1) # [여백] 나머지 요소를 위로 밀착
         control_group.setLayout(control_layout)
-        main_layout.addWidget(control_group, stretch=1)
+        top_row_layout.addWidget(control_group, stretch=2)
+
+        dashboard_content_layout.addLayout(top_row_layout, stretch=5)
+
+        # 2-B. 하단 구역: 시스템 및 체결 로그 (너비 확장)
+        log_group = QGroupBox("시스템 및 체결 로그")
+        log_layout = QVBoxLayout()
+        self.log_list = QListWidget()
+        self.log_list.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: monospace; font-size: 11px;")
+        log_layout.addWidget(self.log_list)
+        log_group.setLayout(log_layout)
+        dashboard_content_layout.addWidget(log_group, stretch=2)
+        
+        main_layout.addLayout(dashboard_content_layout, stretch=7)
 
     # --- 실시간 제어 슬롯 ---
     def _on_monitor_toggle_clicked(self, checked):
