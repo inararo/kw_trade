@@ -148,6 +148,13 @@ class MarketScheduler:
         if old_state == new_state:
             return
 
+        # [추가] config_manager 참조 획득
+        config_mgr = None
+        if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+            config_mgr = self.universe_manager.config_manager
+        elif self.order_manager and hasattr(self.order_manager, 'config'):
+            config_mgr = self.order_manager.config
+
         self.logger.info(f"State Transition: {old_state} -> {new_state}")
         self.current_state = new_state
         self.signals.state_changed.emit(old_state, new_state)
