@@ -39,6 +39,10 @@ class LiveDashboardViewModel(QObject):
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config_manager = config_manager
+
+        # [핵심 패치 1] 엔진이 나를 찾을 수 있도록 config_manager에 스스로를 주입!
+        self.config_manager._injected_live_vm = self
+
         self.logger = logging.getLogger("LiveDashboardViewModel")
         self._is_running = False
         self._mock_task = None
@@ -104,7 +108,8 @@ class LiveDashboardViewModel(QObject):
                 self._symbol_names[code] = name
                 self.symbols_summary[code] = {
                     "name": name, 
-                    "price": s.get("price", 0), 
+                    "price": s.get("price", 0),
+                    "volume": 0,  # [핵심 패치 2] 거래량 필드 추가!
                     "ai_signal": "-", 
                     "holdings": 0
                 }
@@ -123,7 +128,7 @@ class LiveDashboardViewModel(QObject):
             code = s.get("code", "").split('_')[0].strip()
             name = s.get("name", "-")
             if code and code not in self.symbols_summary:
-                self.symbols_summary[code] = {"name": name, "price": 0, "ai_signal": "-", "holdings": 0}
+                self.symbols_summary[code] = {"name": name, "price": 0, "volume": 0, "ai_signal": "-", "holdings": 0}
         self._ui_dirty = True
 
     def append_log(self, msg: str):
@@ -147,6 +152,11 @@ class LiveDashboardViewModel(QObject):
             # 가격 업데이트
             if "price" in data and data["price"] > 0:
                 self.symbols_summary[symbol]["price"] = data["price"]
+            
+            # [신규] 거래량 업데이트
+            # [수정 후: 0일 때는 기존에 찍힌 거래량을 유지!]
+            if "volume" in data and data["volume"] > 0:
+                self.symbols_summary[symbol]["volume"] = data["volume"]
 
             # 보유량 업데이트 (실시간 반영)
             self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)

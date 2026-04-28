@@ -220,15 +220,40 @@ class DataCollector:
 
             symbols = self.subscription_manager.get_symbols()
             if symbols:
-                self.logger.info(f"초기 종목 {len(symbols)}개에 대해 순차적 구독을 시작합니다.")
+                self.logger.info(f"초기 종목 {len(symbols)}개에 대해 일괄 구독(Batch)을 시작합니다.")
                 try:
+                    clean_symbols = []
+                    # 1. 내부 버퍼 먼저 일괄 생성
                     for sym in symbols:
-                        if not self.is_running:
-                            break
-                        await self.subscribe_symbol(sym)
-                    self.logger.info("초기 종목 구독 요청 완료.")
+                        clean = sym.split('_')[0].strip()
+                        clean_symbols.append(clean)
+
+                        if sym not in self.feature_engineers:
+                            from core.feature_engineer import FeatureEngineer
+                            from env.normalizer import OnlineRollingNormalizer
+                            self.feature_engineers[sym] = FeatureEngineer(max_ticks=100)
+                            self.normalizers[sym] = OnlineRollingNormalizer(window_size=1000, bypass_indices=[2])
+                            self.state_buffers[sym] = deque(maxlen=self.max_buffer_size)
+                            self.tick_buffers[sym] = deque(maxlen=self.max_buffer_size)
+                            self.min1_buffers[sym] = deque(maxlen=self.max_buffer_size // 10)
+
+                    # 2. 단 한 번의 웹소켓 요청으로 20개 종목 통째로 구독!
+                    if self.is_running and self.ws_connection:
+                        msg = json.dumps({
+                            "trnm": "REG",
+                            "grp_no": "1",
+                            "refresh": "0",
+                            "data": [
+                                {"type": ["0B"], "item": clean_symbols},  # 배열 형태로 20개 한방에 전송
+                                {"type": ["0D"], "item": clean_symbols}
+                            ]
+                        })
+                        await self.ws_connection.send(msg)
+                        await asyncio.sleep(0.5)
+
+                    self.logger.info(f"일괄 구독 요청 완료: {clean_symbols[:5]} 등 {len(clean_symbols)}개 종목")
                 except Exception as e:
-                    self.logger.error(f"초기 구독 프로세스 중 오류 발생 (무시하고 계속 진행): {e}")
+                    self.logger.error(f"일괄 구독 프로세스 중 오류 발생: {e}")
 
             try:
                 async for message in websocket:
@@ -301,8 +326,8 @@ class DataCollector:
             clean_code = str(raw_code).strip()
             
             # [RAW_DEBUG] 특정 종목 원시 데이터 필터링 출력
-            # if clean_code == "005930":
-            #     self.logger.info(f"[RAW_SOCKET] 005930 >> {entry}")
+            # if clean_code == "010170":
+            # self.logger.info(f"[RAW_SOCKET] {clean_code} tick received")
 
             target_symbol = self._symbol_map.get(clean_code)
             
@@ -311,104 +336,79 @@ class DataCollector:
                 if random.random() < 0.001:
                     self.logger.info(f"매칭 대상 아님: {clean_code} (구독: {list(self._symbol_map.keys())[:5]}...)")
                 continue
-            
-            # 3. FID 기반 정보 추출 (10: 현재가, 15: 체결량, 13: 누적거래량)
+
+            # 3. FID 기반 정보 추출
             try:
                 values = entry.get("values", entry)
-                # 키움 데이터는 부호(+/-)가 포함된 문자열이므로 abs(float()) 처리
-                raw_price = values.get("10") or values.get("curr_pric") or "0"
-                raw_vol = values.get("15") or values.get("cntg_vol") or "0"
-                
+                raw_price = values.get("10") or values.get("curr_pric") or values.get("cur_prc") or values.get("exec_prc") or "0"
+                raw_vol = values.get("15") or values.get("cntg_vol") or values.get("trde_qty") or values.get("exec_qty") or "0"
+
                 price = abs(float(str(raw_price).replace(',', '')))
                 volume = abs(float(str(raw_vol).replace(',', '')))
-                
-                # 4. 피처 엔진 및 버퍼 업데이트 (체결 데이터일 경우)
-                if price > 0:
-                    features = self.feature_engineers[target_symbol].update_tick(price, volume)
-                    
-                    # 실시간 상태 버퍼 업데이트 (AI 입력용)
-                    raw_state = np.array([
-                        price,
-                        volume,
-                        features["OIR"],
-                        features["Volatility"],
-                        features["Aggressiveness"]
-                    ], dtype=np.float32)
 
-                    normalized_state = self.normalizers[target_symbol].update_and_normalize(raw_state)
-                    self.state_buffers[target_symbol].append(normalized_state)
-                    
-                    # 마지막 유효 가격 업데이트
-                    self.last_prices[target_symbol] = price
-
-                    # 진단 로그: 1% 확률로 데이터 매칭 성공 출력
-                    if random.random() < 0.01:
-                        self.logger.info(f"데이터 매칭 성공! [{target_symbol}] 현재가: {price:,.0f} | 타입: {msg_type}")
-                    
-                    # [UI_DEBUG] 200틱마다 한 번씩 VM 전송 로그 출력
-                    if not hasattr(self, "_ui_debug_cnt"): self._ui_debug_cnt = {}
-                    self._ui_debug_cnt[target_symbol] = self._ui_debug_cnt.get(target_symbol, 0) + 1
-                    if self._ui_debug_cnt[target_symbol] % 200 == 0:
-                        self.logger.info(f"[UI_DEBUG] DataCollector -> VM 데이터 전송: {target_symbol}")
-
-                    # 5. 이벤트 콜백 실행 (StrategyManager 등 알림)
-                    from datetime import datetime
-                    now_time = datetime.now()
-                    for callback in self.on_state_updated_callbacks:
-                        if asyncio.iscoroutinefunction(callback):
-                            task = asyncio.create_task(callback(target_symbol, normalized_state, price=price, volume=volume, timestamp=now_time))
-                            self._pending_tasks.add(task)
-                            task.add_done_callback(self._pending_tasks.discard)
-                        else:
-                            callback(target_symbol, normalized_state, price=price, volume=volume, timestamp=now_time)
-                
-                # 6. UI 업데이트 지원 (시세 또는 호가 정보가 있을 때)
+                # ========================================================
+                # [긴급 패치 1] UI 업데이트를 최상단으로 끌어올림 (방패 역할)
+                # AI 콜백에서 에러가 터져도 화면은 무조건 갱신되도록 보장!
+                # ========================================================
                 if price > 0 or msg_type == "0D":
                     orderbook = {}
                     if msg_type == "0D":
-                        asks = []
-                        bids = []
-                        # Kiwoom 0D 필드: 매도(41~50 가격, 61~70 잔량), 매수(51~60 가격, 71~80 잔량)
+                        asks, bids = [], []
                         for i in range(1, 11):
-                            # 매도 호가 (Asks)
                             ask_p = values.get(str(40 + i))
                             ask_q = values.get(str(60 + i))
-                            if ask_p and ask_q:
-                                asks.append({
-                                    "price": abs(float(str(ask_p).replace(',', ''))),
-                                    "qty": abs(float(str(ask_q).replace(',', '')))
-                                })
-                            
-                            # 매수 호가 (Bids)
+                            if ask_p and ask_q: asks.append({"price": abs(float(str(ask_p).replace(',', ''))),
+                                                             "qty": abs(float(str(ask_q).replace(',', '')))})
+
                             bid_p = values.get(str(50 + i))
                             bid_q = values.get(str(70 + i))
-                            if bid_p and bid_q:
-                                bids.append({
-                                    "price": abs(float(str(bid_p).replace(',', ''))),
-                                    "qty": abs(float(str(bid_q).replace(',', '')))
-                                })
-                        
+                            if bid_p and bid_q: bids.append({"price": abs(float(str(bid_p).replace(',', ''))),
+                                                             "qty": abs(float(str(bid_q).replace(',', '')))})
                         orderbook = {"asks": asks, "bids": bids}
 
-                    # 0D(호가) 패킷에는 현재가가 없는 경우가 많으므로 유지 중인 마지막 가격 사용
-                    current_display_price = price
-                    if current_display_price <= 0 and target_symbol in self.last_prices:
-                        current_display_price = self.last_prices[target_symbol]
+                    current_display_price = price if price > 0 else self.last_prices.get(target_symbol, 0)
 
-                    # orderbook 포맷 변환 (필수 필드 매핑)
-                    # UI에는 최대 10호가를 그려주므로 asks/bids를 추출
-                    
+                    # [긴급 패치 2] volume 필드 명시적 추가
                     ui_data = {
                         "symbol": target_symbol,
                         "price": current_display_price,
+                        "volume": volume,
                         "orderbook": orderbook,
                     }
 
                     if self._ui_callback:
                         self._ui_callback(ui_data)
-                        
+
+                # ========================================================
+                # [긴급 패치 3] UI 갱신 후 AI 콜백 실행 (에러 발생 가능 구간)
+                # ========================================================
+                if price > 0:
+                    features = self.feature_engineers[target_symbol].update_tick(price, volume)
+                    raw_state = np.array(
+                        [price, volume, features["OIR"], features["Volatility"], features["Aggressiveness"]],
+                        dtype=np.float32)
+                    normalized_state = self.normalizers[target_symbol].update_and_normalize(raw_state)
+                    self.last_prices[target_symbol] = price
+
+                    from datetime import datetime
+                    now_time = datetime.now()
+
+                    # 여기가 에러(TypeError)가 터지는 핵심 용의자입니다!
+                    for callback in self.on_state_updated_callbacks:
+                        if asyncio.iscoroutinefunction(callback):
+                            task = asyncio.create_task(
+                                callback(target_symbol, normalized_state, price=price, volume=volume,
+                                         timestamp=now_time))
+                            self._pending_tasks.add(task)
+                            task.add_done_callback(self._pending_tasks.discard)
+                        else:
+                            callback(target_symbol, normalized_state, price=price, volume=volume,
+                                     timestamp=now_time)
+
             except (ValueError, TypeError, Exception) as e:
                 self.logger.error(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())  # [추가] 정확히 어디서 터졌는지 추적
                 continue
 
         # [최적화] 개별 틱이 아닌 메시지 한 묶음 처리가 끝난 후 한 번만 양보하여 UI 기회 제공

@@ -38,8 +38,8 @@ class LiveDashboardTab(QWidget):
         master_group = QGroupBox("전체 감시 종목 (Universe)")
         master_layout = QVBoxLayout()
 
-        self.summary_table = QTableWidget(0, 5)
-        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "AI 신호", "보유량"])
+        self.summary_table = QTableWidget(0, 6)
+        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "거래량", "AI 신호", "보유량"])
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         
@@ -217,20 +217,26 @@ class LiveDashboardTab(QWidget):
             if self.summary_table.item(row, 2) is None or self.summary_table.item(row, 2).text() != price_str:
                 self.summary_table.setItem(row, 2, QTableWidgetItem(price_str))
 
-            # AI 신호 업데이트 (index 3)
+            # [신규] 거래량 업데이트 (index 3)
+            volume = data.get('volume', 0)
+            vol_str = f"{volume:,.0f}"
+            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != vol_str:
+                self.summary_table.setItem(row, 3, QTableWidgetItem(vol_str))
+
+            # AI 신호 업데이트 (index 4)
             ai_sig = data.get('ai_signal', '-')
-            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != ai_sig:
+            if self.summary_table.item(row, 4) is None or self.summary_table.item(row, 4).text() != ai_sig:
                 item_sig = QTableWidgetItem(ai_sig)
                 if ai_sig == "Buy":
                     item_sig.setForeground(Qt.GlobalColor.red)
                 elif ai_sig == "Sell":
                     item_sig.setForeground(Qt.GlobalColor.blue)
-                self.summary_table.setItem(row, 3, item_sig)
+                self.summary_table.setItem(row, 4, item_sig)
 
-            # 보유량 업데이트 (index 4)
+            # 보유량 업데이트 (index 5)
             holdings_str = str(data.get('holdings', 0))
-            if self.summary_table.item(row, 4) is None or self.summary_table.item(row, 4).text() != holdings_str:
-                self.summary_table.setItem(row, 4, QTableWidgetItem(holdings_str))
+            if self.summary_table.item(row, 5) is None or self.summary_table.item(row, 5).text() != holdings_str:
+                self.summary_table.setItem(row, 5, QTableWidgetItem(holdings_str))
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):
