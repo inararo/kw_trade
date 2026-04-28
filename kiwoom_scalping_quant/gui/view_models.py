@@ -911,7 +911,12 @@ class SettingsViewModel(QObject):
 
         save_result = self.config_manager.update_settings(updates)
         if isinstance(save_result, Success):
-            self.save_completed.emit("설정이 성공적으로 저장되었습니다. (일부 설정은 재시작 시 적용됩니다.)")
+            # [추가] 로그 레벨 즉시 반영
+            new_log_level = updates.get("log_level", "INFO").upper()
+            logging.getLogger().setLevel(getattr(logging, new_log_level, logging.INFO))
+            self.logger.info(f"시스템 로그 레벨이 {new_log_level}로 변경되었습니다.")
+            
+            self.save_completed.emit("설정이 성공적으로 저장되었습니다.")
         else:
             self.save_failed.emit(f"설정 저장 실패: {save_result.failure()}")
 

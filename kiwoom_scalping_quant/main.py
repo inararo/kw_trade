@@ -13,7 +13,6 @@ from gui.main_window import MainWindow
 import logging
 
 logging.basicConfig(
-    level=logging.ERROR,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
@@ -40,6 +39,12 @@ class QuantSystem:
             }
 
         self.container.config.from_dict(config_dict)
+        
+        # [추가] 로그 레벨 동적 적용
+        log_level_str = config_dict.get("log_level", "INFO").upper()
+        logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
+        print(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
+
         # 의존성 와이어링 (필요시)
         self.container.wire(modules=[__name__])
 
