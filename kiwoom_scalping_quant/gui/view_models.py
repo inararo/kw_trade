@@ -329,6 +329,11 @@ class LiveDashboardViewModel(QObject):
 
     def stop(self):
         self._is_running = False
+        # [종료 안정화] UI 갱신 타이머 중지하여 자원 해제 및 종료 지연 방지
+        if hasattr(self, '_ui_flush_timer'):
+            self._ui_flush_timer.stop()
+            self.logger.info("LiveDashboardViewModel: UI Flush Timer stopped.")
+            
         if self._mock_task and not self._mock_task.done():
             self._mock_task.cancel()
 
