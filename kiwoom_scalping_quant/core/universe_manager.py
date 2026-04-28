@@ -396,6 +396,15 @@ class UniverseManager:
                     data = await response.json()
                     items = data.get("ka10030", []) or data.get("output", []) or data.get("output1", [])
                     
+                    if not items:
+                        self.logger.warning(f"Kiwoom API 응답에 예상된 데이터 키가 없습니다. 수신된 키: {list(data.keys())}")
+                        # [안정화] 일부 TR은 'output' 대신 다른 키를 사용할 수 있으므로 전체 탐색 시도
+                        for k, v in data.items():
+                            if isinstance(v, list) and len(v) > 0:
+                                items = v
+                                self.logger.info(f"대체 데이터 키 발견: '{k}' (종목 수: {len(v)})")
+                                break
+                    
                     for item in items:
                         if len(top_30) >= 30:
                             break

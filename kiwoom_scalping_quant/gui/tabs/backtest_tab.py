@@ -1,16 +1,23 @@
 import os
 import pandas as pd
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter, QComboBox)
-from PyQt6.QtCore import QDate, Qt, pyqtSlot
+                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter, QComboBox, QProgressDialog)
+from PyQt6.QtCore import QDate, Qt, pyqtSlot, QTimer
 import pyqtgraph as pg
 
 class BacktestStudioTab(QWidget):
     def __init__(self, view_model):
         super().__init__()
         self.view_model = view_model
+        self.progress_dialog = None
         self._init_ui()
         self._connect_signals()
+        
+        # 버튼 상태 업데이트 타이머 (1분마다 체크)
+        self.state_timer = QTimer(self)
+        self.state_timer.timeout.connect(self._update_button_states)
+        self.state_timer.start(60000)
+        self._update_button_states() # 초기 설정
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -71,7 +78,7 @@ class BacktestStudioTab(QWidget):
         self.btn_auto_batch = QPushButton("자동 백테스트 시작 (Top 30)")
         self.btn_auto_batch.setMinimumWidth(180)
         self.btn_auto_batch.setFixedHeight(30)
-        self.btn_auto_batch.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        # 초기 스타일은 _update_button_states에서 결정됨
         self.btn_auto_batch.clicked.connect(self._on_start_auto_batch)
         ctrl_layout.addWidget(self.btn_auto_batch)
 
@@ -177,8 +184,13 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(int, int, float)
     def on_bt_progress(self, step: int, total: int, pnl: float):
-        pct = (step / total) * 100 if total > 0 else 0
-        self.lbl_progress.setText(f"진행률: {step}/{total} ({pct:.1f}%) | 누적 PnL: {pnl:,.0f}")
+        if self.progress_dialog and self.progress_dialog.isVisible():
+            pct = int((step / total) * 100) if total > 0 else 0
+            self.progress_dialog.setValue(pct)
+            self.progress_dialog.setLabelText(f"배치 진행 중... ({step}/{total})")
+            
+        pct_text = (step / total) * 100 if total > 0 else 0
+        self.lbl_progress.setText(f"진행률: {step}/{total} ({pct_text:.1f}%) | 누적 PnL: {pnl:,.0f}")
 
     def _on_start_auto_batch(self):
         """자동 백테스트 배치 시작 호출"""
@@ -195,10 +207,21 @@ class BacktestStudioTab(QWidget):
         if reply == QMessageBox.StandardButton.Yes:
             self.btn_auto_batch.setEnabled(False)
             self.lbl_progress.setText("진행률: 배치 시작 중...")
+            
+            # 프로그레스 다이얼로그 생성
+            self.progress_dialog = QProgressDialog("자동 백테스트 배치 작업 중...", None, 0, 100, self)
+            self.progress_dialog.setWindowTitle("배치 시뮬레이션")
+            self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self.progress_dialog.setAutoClose(True)
+            self.progress_dialog.setMinimumDuration(0)
+            self.progress_dialog.show()
+
             self.view_model.start_auto_backtest_batch(start_dt, end_dt)
 
     @pyqtSlot(dict)
     def on_bt_finished(self, kpi: dict):
+        if self.progress_dialog:
+            self.progress_dialog.close()
         self.btn_start.setEnabled(True)
         self.btn_auto_batch.setEnabled(True)
         self.lbl_progress.setText("진행률: 완료")
@@ -257,6 +280,27 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(str)
     def on_bt_error(self, err_msg: str):
+        if self.progress_dialog:
+            self.progress_dialog.close()
         self.btn_start.setEnabled(True)
+        self.btn_auto_batch.setEnabled(True)
         self.lbl_progress.setText("진행률: 에러 발생")
         QMessageBox.critical(self, "백테스트 에러", f"시뮬레이션 중 오류가 발생했습니다:\n{err_msg}")
+
+    def _update_button_states(self):
+        """시간에 따른 자동 백테스트 버튼 활성화/비활성화 제어"""
+        from datetime import datetime
+        now = datetime.now().time()
+        start_time = datetime.strptime("16:00", "%H:%M").time()
+        end_time = datetime.strptime("23:50", "%H:%M").time()
+        
+        # 16:00 ~ 23:50 사이에만 활성화
+        is_active = start_time <= now <= end_time
+        
+        self.btn_auto_batch.setEnabled(is_active)
+        if is_active:
+            self.btn_auto_batch.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+            self.btn_auto_batch.setToolTip("자동 백테스트 실행 가능")
+        else:
+            self.btn_auto_batch.setStyleSheet("background-color: #888888; color: #cccccc; font-weight: bold;")
+            self.btn_auto_batch.setToolTip("자동 백테스트는 장 종료 후(16:00~23:50)에만 가능합니다.")

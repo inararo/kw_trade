@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import glob
+import pandas as pd
 from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QTimer
 from typing import Dict, Any, List
 from returns.result import Success, Failure
@@ -1046,13 +1047,14 @@ class BacktestViewModel(QObject):
     sig_bt_chart_data = pyqtSignal(object) # DataFrame
     sig_bt_error = pyqtSignal(str)
 
-    def __init__(self, config_manager, influx_client, data_collector, order_manager, universe_manager=None):
+    def __init__(self, config_manager, influx_client, data_collector, order_manager, universe_manager=None, historical_fetcher=None):
         super().__init__()
         self.config_manager = config_manager
         self.influx_client = influx_client
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.universe_manager = universe_manager
+        self.historical_fetcher = historical_fetcher
         self.logger = logging.getLogger("BacktestViewModel")
 
         from core.backtester import BacktestEngine
@@ -1205,15 +1207,19 @@ class BacktestViewModel(QObject):
             self.logger.error(f"Backtest 결과 Export 중 오류 발생: {export_e}")
 
     def start_auto_backtest_batch(self, start_date: str, end_date: str):
-        """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행"""
+        """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행 (무조건 당일 데이터만 사용)"""
+        import datetime
+        today = datetime.datetime.now().strftime("%Y%m%d")
+        
         if not self.model_path:
             # 설정의 active_model_path 확인
             self.model_path = self.config_manager.get("active_model_path")
             if not self.model_path or not os.path.exists(self.model_path):
                 self.sig_bt_error.emit("활성화된 모델이 없거나 파일이 존재하지 않습니다. 모델 로드를 먼저 해주세요.")
                 return
-
-        asyncio.create_task(self._run_auto_batch_task(start_date, end_date))
+        
+        # [수정] 사용자가 선택한 날짜와 관계없이 무조건 '당일' 데이터로 고정
+        asyncio.create_task(self._run_auto_batch_task(today, today))
 
     async def _run_auto_batch_task(self, start_date: str, end_date: str):
         try:
@@ -1231,15 +1237,19 @@ class BacktestViewModel(QObject):
             self.logger.info("거래량 상위 30개 종목 리스트를 가져오는 중...")
             
             result = await self.universe_manager.fetch_top_30_volume_symbols(access_token)
-            
-            # @future_safe Result 처리
-            if hasattr(result, 'unwrap'):
-                top_30_list = result.unwrap()._inner_value
-            else:
-                top_30_list = result
+
+            from returns.io import IOSuccess, IOFailure
+            if isinstance(result, IOFailure):
+                err = result.failure()._inner_value
+                self.sig_bt_error.emit(f"Kiwoom API 호출 실패: {err}")
+                return
+
+            # IOSuccess(Success(list)) 형태이므로 unwrap()._inner_value 사용
+            top_30_list = result.unwrap()._inner_value
                 
             if not top_30_list:
-                self.sig_bt_error.emit("거래량 상위 30개 종목을 가져오지 못했습니다.")
+                self.logger.warning("UniverseManager가 빈 종목 리스트를 반환했습니다. 필터링 조건이나 API 응답을 확인하세요.")
+                self.sig_bt_error.emit("거래량 상위 30개 종목을 가져오지 못했습니다. (API 응답이 비어있거나 모두 필터링됨)")
                 return
 
             symbols = [s["code"] for s in top_30_list]
@@ -1255,10 +1265,39 @@ class BacktestViewModel(QObject):
             all_symbols_list = [s.get("code") for s in self.config_manager.get_symbols()]
 
             async def env_builder(sym, start, end):
-                data = await self.influx_client.fetch_data_by_range(sym, start, end)
-                if not data: return None, None
+                from returns.io import IOFailure
+                # [수정] 수집 중단 시점을 당일 08:00:00으로 설정
+                stop_ts = f"{start[:4]}-{start[4:6]}-{start[6:8]} 08:00:00"
                 
+                # [기능 개선] DB 대신 키움 서버에서 직접 수집하되, UI의 날짜 범위를 최대한 준수
+                result = await self.historical_fetcher.fetch_historical_data(
+                    sym, end, access_token, 
+                    stop_timestamp=stop_ts, 
+                    max_pages=5 # 자동 배치는 보통 단기이므로 5페이지면 충분 (약 4500분)
+                )
+                
+                if isinstance(result, IOFailure):
+                    self.logger.error(f"[{sym}] 키움 서버 데이터 수집 실패: {result.failure()}")
+                    return None, None
+                
+                data = result.unwrap()._inner_value
+                if not data: 
+                    self.logger.warning(f"[{sym}] 당일({start}) 데이터가 없습니다.")
+                    return None, None
+                
+                # API는 최신순으로 데이터를 주므로 정렬 및 시간 필터링 (08:00 ~ 16:00)
                 df = pd.DataFrame(data)
+                if 'timestamp' in df.columns:
+                    day_prefix = f"{start[:4]}-{start[4:6]}-{start[6:8]}"
+                    df = df[(df['timestamp'] >= f"{day_prefix} 08:00:00") & 
+                            (df['timestamp'] <= f"{day_prefix} 16:00:00")]
+                    
+                    if df.empty:
+                        self.logger.warning(f"[{sym}] 08:00 ~ 16:00 범위 내에 유효한 데이터가 없습니다.")
+                        return None, None
+                        
+                    df = df.sort_values('timestamp').reset_index(drop=True)
+                
                 df['step'] = range(len(df))
                 
                 env_config = {

@@ -157,14 +157,16 @@ class QuantSystem:
         prepare_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
         
         if current_state in prepare_states:
-            print(f"시스템: [Step 2] 장시간 부팅 확인 (상태: {current_state}) → 유니버스 자동 갱신 시작...")
-            # [안정화] 동시 태스크 폭증 방지를 위해 순차적 실행 고려
+            print("시스템: 장시간 부팅 - 로컬 로드를 생략하고 서버에서 실시간 유니버스를 수집합니다.")
             try:
+                # 서버에서 최신 주도주 수집 (자동으로 config 저장 및 UI 갱신 시그널 발생)
                 await asyncio.wait_for(self.asset_vm._build_universe_task(is_auto=True), timeout=15.0)
             except Exception as e:
                 print(f"시스템: [Step 2] 유니버스 자동 갱신 중 오류 발생: {e}")
+                # 서버 수집 실패 시 폴백으로 로컬 로드 시도
+                self.asset_vm.load_symbols()
         else:
-            print(f"시스템: [Step 2] 장외 시간 부팅 확인 (상태: {current_state}) → 자동 갱신 생략 (기존 리스트 로드).")
+            print("시스템: 장외시간 부팅 - 서버 통신을 생략하고 저장된 로컬 유니버스를 로드합니다.")
             self.asset_vm.load_symbols()
             await asyncio.sleep(0.5)
 
@@ -420,7 +422,13 @@ def main():
         if "Event loop stopped before Future completed" in str(e):
             print("System: Async loop finished normally.")
         else:
-            raise e
+            logging.error(f"Critical RuntimeError: {e}")
+            import traceback
+            traceback.print_exc()
+    except Exception as e:
+        logging.error(f"Critical Unexpected Error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # 2. 종료 후 잔여 태스크 정리 및 I/O 캐시 플러시를 위한 최종 유예
         print("System: Performing final cleanup sequence...")
