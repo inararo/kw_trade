@@ -76,7 +76,19 @@ class QuantSystem:
         # [안정화] 비동기 루프가 실행 중인 상태에서 코어 객체 및 ViewModel 생성 (InfluxDB 에러 방지)
         self.influx_client = self.container.influx_client()
         self.order_manager = self.container.order_manager()
-        self.data_collector = self.container.data_collector()
+        # =========================================================
+        # 🔄 [MOCK 스위치] 환경 변수에 따라 DataCollector를 갈아끼움
+        # =========================================================
+        import os
+        if os.getenv("USE_MOCK_DATA") == "True":
+            from core.mock_data_collector import MockDataCollector
+            # 배속(speed_multiplier)을 20으로 주면 하루 치 장을 20분 만에 돌려볼 수 있습니다.
+            self.data_collector = MockDataCollector(self.container.config_manager(), data_file="mock_data.csv", speed_multiplier=20.0)
+            print("🚨 시스템: [주의] MOCK_MODE가 켜져 있습니다. 가상 데이터를 재생합니다.")
+        else:
+            self.data_collector = self.container.data_collector()
+            print("🌐 시스템: [REAL] 실제 증권사 데이터 수집기를 가동합니다.")
+        # =========================================================
         self.strategy_manager = self.container.strategy_manager()
         # [🚨 100% 해결 핵심 패치]
         # 전략 매니저가 엉뚱한(새로 생성된) 수집기를 바라보지 못하도록,
