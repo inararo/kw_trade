@@ -38,8 +38,8 @@ class LiveDashboardTab(QWidget):
         master_group = QGroupBox("전체 감시 종목 (Universe)")
         master_layout = QVBoxLayout()
 
-        self.summary_table = QTableWidget(0, 6)
-        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "거래량", "AI 신호", "보유량"])
+        self.summary_table = QTableWidget(0, 7)
+        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량", "AI 신호", "보유량"])
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         
@@ -211,32 +211,52 @@ class LiveDashboardTab(QWidget):
             if self.summary_table.item(row, 1) is None or self.summary_table.item(row, 1).text() != name:
                 self.summary_table.setItem(row, 1, QTableWidgetItem(name))
 
-            # 현재가 업데이트 (index 2)
+            # 등락 및 색상 결정
+            change_rate = data.get('change_rate', 0.0)
+            text_color = Qt.GlobalColor.white # 기본값
+            if change_rate > 0:
+                text_color = Qt.GlobalColor.red
+            elif change_rate < 0:
+                text_color = Qt.GlobalColor.blue
+
+            # 현재가 업데이트 (index 2) + 색상 적용
             price = data.get('price', 0)
             price_str = f"{price:,.0f}"
-            if self.summary_table.item(row, 2) is None or self.summary_table.item(row, 2).text() != price_str:
-                self.summary_table.setItem(row, 2, QTableWidgetItem(price_str))
+            price_item = self.summary_table.item(row, 2)
+            if price_item is None or price_item.text() != price_str:
+                price_item = QTableWidgetItem(price_str)
+                self.summary_table.setItem(row, 2, price_item)
+            price_item.setForeground(text_color)
 
-            # [신규] 거래량 업데이트 (index 3)
+            # [신규] 등락률 업데이트 (index 3) + 색상 적용
+            chg_sign = "+" if change_rate > 0 else ""
+            chg_str = f"{chg_sign}{change_rate:.2f}%"
+            chg_item = self.summary_table.item(row, 3)
+            if chg_item is None or chg_item.text() != chg_str:
+                chg_item = QTableWidgetItem(chg_str)
+                self.summary_table.setItem(row, 3, chg_item)
+            chg_item.setForeground(text_color)
+
+            # 거래량 업데이트 (index 4)
             volume = data.get('volume', 0)
             vol_str = f"{volume:,.0f}"
-            if self.summary_table.item(row, 3) is None or self.summary_table.item(row, 3).text() != vol_str:
-                self.summary_table.setItem(row, 3, QTableWidgetItem(vol_str))
+            if self.summary_table.item(row, 4) is None or self.summary_table.item(row, 4).text() != vol_str:
+                self.summary_table.setItem(row, 4, QTableWidgetItem(vol_str))
 
-            # AI 신호 업데이트 (index 4)
+            # AI 신호 업데이트 (index 5)
             ai_sig = data.get('ai_signal', '-')
-            if self.summary_table.item(row, 4) is None or self.summary_table.item(row, 4).text() != ai_sig:
+            if self.summary_table.item(row, 5) is None or self.summary_table.item(row, 5).text() != ai_sig:
                 item_sig = QTableWidgetItem(ai_sig)
                 if ai_sig == "Buy":
                     item_sig.setForeground(Qt.GlobalColor.red)
                 elif ai_sig == "Sell":
                     item_sig.setForeground(Qt.GlobalColor.blue)
-                self.summary_table.setItem(row, 4, item_sig)
+                self.summary_table.setItem(row, 5, item_sig)
 
-            # 보유량 업데이트 (index 5)
+            # 보유량 업데이트 (index 6)
             holdings_str = str(data.get('holdings', 0))
-            if self.summary_table.item(row, 5) is None or self.summary_table.item(row, 5).text() != holdings_str:
-                self.summary_table.setItem(row, 5, QTableWidgetItem(holdings_str))
+            if self.summary_table.item(row, 6) is None or self.summary_table.item(row, 6).text() != holdings_str:
+                self.summary_table.setItem(row, 6, QTableWidgetItem(holdings_str))
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):

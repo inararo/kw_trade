@@ -109,6 +109,7 @@ class LiveDashboardViewModel(QObject):
                 self.symbols_summary[code] = {
                     "name": name, 
                     "price": s.get("price", 0),
+                    "change_rate": 0.0, # [신규] 등락률 필드 추가
                     "volume": 0,  # [핵심 패치 2] 거래량 필드 추가!
                     "ai_signal": "-", 
                     "holdings": 0
@@ -128,7 +129,7 @@ class LiveDashboardViewModel(QObject):
             code = s.get("code", "").split('_')[0].strip()
             name = s.get("name", "-")
             if code and code not in self.symbols_summary:
-                self.symbols_summary[code] = {"name": name, "price": 0, "volume": 0, "ai_signal": "-", "holdings": 0}
+                self.symbols_summary[code] = {"name": name, "price": 0, "change_rate": 0.0, "volume": 0, "ai_signal": "-", "holdings": 0}
         self._ui_dirty = True
 
     def append_log(self, msg: str):
@@ -147,16 +148,18 @@ class LiveDashboardViewModel(QObject):
 
             if symbol not in self.symbols_summary:
                 name = self._symbol_names.get(symbol) or "-"
-                self.symbols_summary[symbol] = {"name": name, "price": 0, "ai_signal": "-", "holdings": 0}
+                self.symbols_summary[symbol] = {"name": name, "price": 0, "change_rate": 0.0, "ai_signal": "-", "holdings": 0}
 
             # 가격 업데이트
             if "price" in data and data["price"] > 0:
                 self.symbols_summary[symbol]["price"] = data["price"]
             
-            # [신규] 거래량 업데이트
-            # [수정 후: 0일 때는 기존에 찍힌 거래량을 유지!]
+            # [신규] 거래량 및 등락률 업데이트
             if "volume" in data and data["volume"] > 0:
                 self.symbols_summary[symbol]["volume"] = data["volume"]
+            
+            if "change_rate" in data:
+                self.symbols_summary[symbol]["change_rate"] = data["change_rate"]
 
             # 보유량 업데이트 (실시간 반영)
             self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)

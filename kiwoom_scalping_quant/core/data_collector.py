@@ -48,8 +48,9 @@ class DataCollector:
         if not self._initial_symbols:
             self._initial_symbols = ['005930']
 
-        # 마지막 유효 현재가 저장용 (호가 패킷 등에 현재가가 없을 때 사용)
+        # 마지막 유효 현재가 및 등락률 저장용 (호가 패킷 등에 정보가 없을 때 사용)
         self.last_prices = {}
+        self.last_change_rates = {}
         
         # [안정화] 관리되지 않는 비동기 태스크 추적용 (종료 시 정리)
         self._pending_tasks = set()
@@ -342,9 +343,15 @@ class DataCollector:
                 values = entry.get("values", entry)
                 raw_price = values.get("10") or values.get("curr_pric") or values.get("cur_prc") or values.get("exec_prc") or "0"
                 raw_vol = values.get("15") or values.get("cntg_vol") or values.get("trde_qty") or values.get("exec_qty") or "0"
+                raw_chg = values.get("12") or values.get("flu_rt") or values.get("chg_rt") or "0"
 
                 price = abs(float(str(raw_price).replace(',', '')))
                 volume = abs(float(str(raw_vol).replace(',', '')))
+                change_rate = float(str(raw_chg).replace(',', ''))
+
+                # 등락률 캐시 갱신 (유효한 값이 들어올 때만)
+                if change_rate != 0 or msg_type == "0B":
+                    self.last_change_rates[target_symbol] = change_rate
 
                 # ========================================================
                 # [긴급 패치 1] UI 업데이트를 최상단으로 끌어올림 (방패 역할)
@@ -367,11 +374,16 @@ class DataCollector:
                         orderbook = {"asks": asks, "bids": bids}
 
                     current_display_price = price if price > 0 else self.last_prices.get(target_symbol, 0)
+                    
+                    current_change_rate = change_rate
+                    if current_change_rate == 0 and target_symbol in self.last_change_rates:
+                        current_change_rate = self.last_change_rates[target_symbol]
 
-                    # [긴급 패치 2] volume 필드 명시적 추가
+                    # [긴급 패치 2] volume, change_rate 필드 명시적 추가
                     ui_data = {
                         "symbol": target_symbol,
                         "price": current_display_price,
+                        "change_rate": current_change_rate,
                         "volume": volume,
                         "orderbook": orderbook,
                     }
