@@ -129,7 +129,14 @@ class DataCollector:
             await asyncio.sleep(0.1)
 
     async def start(self):
+        if self.is_running:
+            self.logger.warning("DataCollector is already running.")
+            return
+        
         self.is_running = True
+        # 상태 이벤트 초기화
+        self.ws_connected_event.clear()
+        self.first_data_received_event.clear()
         
         # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스를 다시 읽어옵니다.
         if hasattr(self.config, 'get_symbols'):
@@ -505,7 +512,6 @@ class DataCollector:
             self.logger.info("Watchdog 태스크가 취소되어 안전하게 종료됩니다.")
 
     async def stop(self):
-        """Safely stops the data collector."""
         self.is_running = False
         
         # 1. Stop Watchdog
@@ -515,28 +521,33 @@ class DataCollector:
                 await asyncio.wait_for(self._watchdog_task, timeout=1.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            self._watchdog_task = None
 
         # 2. Cancel all pending callback tasks
         if self._pending_tasks:
-            self.logger.info(f"DataCollector: Cancelling {len(self._pending_tasks)} pending tasks...")
+            self.logger.info(f"DataCollector: {len(self._pending_tasks)}개의 대기 중인 콜백 태스크 취소 중...")
             for task in list(self._pending_tasks):
-                task.cancel()
+                if not task.done():
+                    task.cancel()
             
             try:
                 await asyncio.wait_for(asyncio.gather(*self._pending_tasks, return_exceptions=True), timeout=2.0)
             except asyncio.TimeoutError:
-                self.logger.warning("DataCollector: Task cancellation timeout")
+                self.logger.warning("DataCollector: 태스크 취소 타임아웃 발생")
             self._pending_tasks.clear()
 
         # 3. Close Websocket
         if self.ws_connection:
             try:
-                # [Windows Stability] Wait briefly after setting stop flag to let recv loop exit naturally
                 await asyncio.wait_for(self.ws_connection.close(), timeout=2.0)
             except Exception as e:
-                self.logger.warning(f"WS force close exception (ignored): {e}")
+                self.logger.warning(f"WS 강제 종료 중 예외 (무시됨): {e}")
+            finally:
+                self.ws_connection = None
+                self.ws_connected_event.clear()
+                self.first_data_received_event.clear()
 
-        self.logger.info("DataCollector: All connections closed and resources cleaned up.")
+        self.logger.info("DataCollector: 모든 연결이 해제되고 리소스가 정리되었습니다.")
 
 # 전역 싱글톤 인스턴스 저장소
 global_data_collector_instance = None

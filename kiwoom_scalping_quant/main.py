@@ -126,6 +126,7 @@ class QuantSystem:
         self.token_manager.signals.token_updated.connect(self._on_token_updated)
         self.token_manager.signals.token_error.connect(self._on_token_error)
         self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
+        self.market_scheduler.signals.state_changed.connect(self._on_market_state_changed)
 
         # Step 0: DB 연결 확인
         self.main_window.show()
@@ -197,7 +198,15 @@ class QuantSystem:
 
         # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())
-        print("시스템: [Step 3] DataCollector 가동 및 웹소켓 데이터 스트림 연결...")
+        # [스마트 소켓 관리] 장시간 상태에 따라서만 웹소켓 가동
+        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.LIQUIDATING]
+        
+        if current_state in active_ws_states:
+            print(f"시스템: [Step 3] 장시간({current_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
+            self.collector_task = asyncio.create_task(self.data_collector.start())
+        else:
+            print(f"시스템: [Step 3] 장외 시간({current_state})입니다. 불필요한 웹소켓 연결을 생략하고 수면 모드로 대기합니다.")
+            self.collector_task = None
 
         # =====================================================================
         # 🚀 [MASTER BRIDGE] DI 컨테이너 다 무시하고 여기서 직접 혈관을 뚫습니다.
@@ -206,9 +215,6 @@ class QuantSystem:
         self.data_collector.on_state_updated_callbacks.append(self.strategy_manager._on_tick_event)
         print("시스템: [SUCCESS] 마스터 브릿지 연결 완료! (DataCollector -> StrategyManager)")
         # =====================================================================
-
-        self.collector_task = asyncio.create_task(self.data_collector.start())
-
         # 매매 로직 정식 구동
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
@@ -219,6 +225,23 @@ class QuantSystem:
         finally:
             # 루프를 빠져나올 때 수행될 정리
             print("시스템: 메인 루프 종료됨.")
+
+    def _on_market_state_changed(self, old_state: str, new_state: str):
+        """스케줄러 상태 변경에 따른 웹소켓 자동 토글 (Event-Driven)"""
+        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.LIQUIDATING]
+        
+        # 장 개시 (Inactive -> Active)
+        if old_state not in active_ws_states and new_state in active_ws_states:
+            print(f"시스템: [알림] 장 개시 타이머 작동({new_state})! 웹소켓 연결을 자동으로 재개합니다.")
+            if not self.data_collector.is_running:
+                self.collector_task = asyncio.create_task(self.data_collector.start())
+        
+        # 장 마감 (Active -> Inactive)
+        elif old_state in active_ws_states and new_state not in active_ws_states:
+            print(f"시스템: [알림] 장 마감 타이머 작동({new_state})! 웹소켓 연결을 안전하게 해제합니다.")
+            if self.data_collector.is_running:
+                asyncio.create_task(self.data_collector.stop())
+                self.collector_task = None
 
     async def stop(self):
         """비동기 파이프라인 안전 종료 로직 (Graceful Shutdown)"""
