@@ -71,9 +71,15 @@ class RiskManager:
     def can_order(self, symbol: str, amount: float, order_type: str) -> bool:
         """
         주문 전송 전 모든 조건을 검증합니다.
-        SELL 주문은 청산을 의미하므로 항상 허용합니다.
         """
-        if order_type.upper() in ["SELL", "CANCEL"]:
+        # [최우선] 보호 종목 체크 (매수/매도 모두 차단)
+        protected_symbols = self.config_manager.get("protected_symbols", [])
+        if symbol in protected_symbols:
+            self.logger.warning(f"Risk Check Failed: [{symbol}]은 보호 종목으로 설정되어 있어 모든 자동 주문이 차단됩니다.")
+            self.signals.risk_warning.emit(f"보호 종목({symbol})에 대한 자동 주문이 차단되었습니다.")
+            return False
+
+        if order_type.upper() in ["CANCEL"]:
             return True
 
         if self.is_stopped_for_day:

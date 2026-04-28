@@ -175,11 +175,17 @@ class SettingsTab(QWidget):
         ai_group = QGroupBox("AI 매매 설정")
         ai_form = QFormLayout()
         
-        self.spin_confidence_threshold = QDoubleSpinBox()
-        self.spin_confidence_threshold.setRange(0.0, 1.0)
-        self.spin_confidence_threshold.setSingleStep(0.05)
-        self.spin_confidence_threshold.setDecimals(2)
-        ai_form.addRow("AI 매매 신뢰도 임계값:", self.spin_confidence_threshold)
+        self.spin_buy_threshold = QDoubleSpinBox()
+        self.spin_buy_threshold.setRange(0.0, 1.0)
+        self.spin_buy_threshold.setSingleStep(0.05)
+        self.spin_buy_threshold.setDecimals(2)
+        ai_form.addRow("AI 매수 임계값 (Buy):", self.spin_buy_threshold)
+        
+        self.spin_sell_threshold = QDoubleSpinBox()
+        self.spin_sell_threshold.setRange(0.0, 1.0)
+        self.spin_sell_threshold.setSingleStep(0.05)
+        self.spin_sell_threshold.setDecimals(2)
+        ai_form.addRow("AI 매도 임계값 (Sell):", self.spin_sell_threshold)
         
         ai_group.setLayout(ai_form)
         right_column.addWidget(ai_group) # [이동] 좌측 -> 우측
@@ -239,7 +245,8 @@ class SettingsTab(QWidget):
             "enable_cutoff": self.chk_enable_cutoff.isChecked(),
             "cutoff_time": self.time_cutoff.time().toString("HH:mm"),
             "protected_symbols": protected_symbols,
-            "ai_confidence_threshold": self.spin_confidence_threshold.value()
+            "ai_buy_threshold": self.spin_buy_threshold.value(),
+            "ai_sell_threshold": self.spin_sell_threshold.value()
         }
 
     # --- UI Action Handlers ---
@@ -293,7 +300,8 @@ class SettingsTab(QWidget):
         cutoff_str = config.get("cutoff_time", "13:00")
         self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
 
-        self.spin_confidence_threshold.setValue(float(config.get("ai_confidence_threshold", 0.5)))
+        self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.65)))
+        self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.60)))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

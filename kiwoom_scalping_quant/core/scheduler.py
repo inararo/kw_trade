@@ -188,12 +188,20 @@ class MarketScheduler:
                 # 현재는 order_manager.bot_holdings를 우선 활용하고 환경 변수 fallback을 씁니다.
                 import os
 
-                # We can inject or grab protected_symbols, but it's simpler to just check bot_holdings
+                # [보강] 보호 종목 리스트 가져오기
+                protected_symbols = []
+                if config_mgr:
+                    protected_symbols = config_mgr.get("protected_symbols", [])
+
                 bot_holdings = getattr(self.order_manager, 'bot_holdings', {})
 
                 # Trigger panic sell for bot holdings
                 for symbol, qty in self.order_manager.holdings.items():
                     if qty <= 0:
+                        continue
+                    
+                    if symbol in protected_symbols:
+                        self.logger.info(f"🛡️ 보호 종목 청산 제외 (LIQUIDATING): {symbol}")
                         continue
 
                     bot_qty = bot_holdings.get(symbol, 0)
@@ -226,9 +234,18 @@ class MarketScheduler:
                 # Cancel all and market sell immediately
                 await self.order_manager.cancel_all_orders()
 
+                # [보강] 보호 종목 리스트
+                protected_symbols = []
+                if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+                    protected_symbols = self.universe_manager.config_manager.get("protected_symbols", [])
+
                 bot_holdings = getattr(self.order_manager, 'bot_holdings', {})
                 for symbol, qty in self.order_manager.holdings.items():
                     if qty <= 0:
+                        continue
+
+                    if symbol in protected_symbols:
+                        self.logger.info(f"🛡️ 보호 종목 강제 청산 제외 (STOPPED_FOR_DAY): {symbol}")
                         continue
 
                     bot_qty = bot_holdings.get(symbol, 0)

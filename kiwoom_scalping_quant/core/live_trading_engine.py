@@ -238,9 +238,13 @@ class LiveTradingEngine:
         action, probs = self.agent.predict(np.expand_dims(obs_1d, axis=0), action_masks=np.array(action_masks), return_probs=True)
         if isinstance(action, np.ndarray): action = int(action[0])
         
-        # 신뢰도 필터
-        ai_threshold = self.config_manager.get("ai_confidence_threshold", 0.5)
-        if max(probs) < ai_threshold: action = 0
+        # 신뢰도 필터 (매수/매도 임계값 분리 적용)
+        if action == 1: # BUY
+            buy_threshold = self.config_manager.get("ai_buy_threshold", 0.6)
+            if probs[1] < buy_threshold: action = 0
+        elif action == 2: # SELL
+            sell_threshold = self.config_manager.get("ai_sell_threshold", 0.6)
+            if probs[2] < sell_threshold: action = 0
         
         self._update_ui_signals(action, {0:"Hold", 1:"Buy", 2:"Sell"}.get(action, "Hold"), probs)
 

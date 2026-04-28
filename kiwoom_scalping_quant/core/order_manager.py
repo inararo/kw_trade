@@ -48,25 +48,20 @@ class OrderManager:
         # Safety Guard Risk Manager
         self.risk_manager = None # Will be injected
 
-    @property
-    def orderable_cash(self) -> float:
-        """내부 예약 금액을 제외한 실제 가용 현금"""
-        return max(0, self._broker_orderable_cash - self.pending_buy_amount)
-
         # Global Risk Limits (Deprecated in favor of RiskManager)
-        self.global_max_loss = config.get("global_max_loss", -500000) # e.g. Daily limit
-        self.global_max_exposure = config.get("global_max_exposure", 50000000) # e.g. Total asset exposure
-
+        self.global_max_loss = config.get("global_max_loss", -500000)
+        self.global_max_exposure = config.get("global_max_exposure", 50000000)
         self.daily_realized_pnl = 0.0
 
         self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://mockapi.kiwoom.com"
-
         self.rate_limit = 5
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)
         self.order_timestamps = []
 
-        # [신규] 마지막 동기화 시간
-        self.last_sync_time = 0
+    @property
+    def orderable_cash(self) -> float:
+        """내부 예약 금액을 제외한 실제 가용 현금"""
+        return max(0, self._broker_orderable_cash - self.pending_buy_amount)
 
     def get_balance(self) -> float:
         """현재 가용 잔고를 반환합니다."""
