@@ -30,9 +30,18 @@ class SettingsTab(QWidget):
         
         # 실제 컨텐츠가 들어갈 위젯
         content_widget = QWidget()
-        main_layout = QVBoxLayout(content_widget)
-        main_layout.setContentsMargins(15, 15, 15, 15)
-        main_layout.setSpacing(10)
+        main_v_layout = QVBoxLayout(content_widget)
+        main_v_layout.setContentsMargins(15, 15, 15, 15)
+        main_v_layout.setSpacing(20)
+
+        # 2열 구성을 위한 컨테이너 레이아웃
+        columns_layout = QHBoxLayout()
+        left_column = QVBoxLayout()
+        right_column = QVBoxLayout()
+        columns_layout.addLayout(left_column, stretch=1)
+        columns_layout.addLayout(right_column, stretch=1)
+        
+        main_v_layout.addLayout(columns_layout)
 
         # 1. Broker API Group (.env)
         broker_group = QGroupBox("브로커 API 연결")
@@ -54,7 +63,7 @@ class SettingsTab(QWidget):
         broker_form.addRow("매매 모드:", self.combo_mode)
 
         broker_group.setLayout(broker_form)
-        main_layout.addWidget(broker_group)
+        left_column.addWidget(broker_group)
 
         # 2. Database Group (.env & config.yaml 혼합)
         db_group = QGroupBox("데이터베이스")
@@ -74,7 +83,7 @@ class SettingsTab(QWidget):
         db_form.addRow("버킷:", self.input_db_bucket)
 
         db_group.setLayout(db_form)
-        main_layout.addWidget(db_group)
+        left_column.addWidget(db_group)
 
         # 3. Risk Management Group (config.yaml)
         risk_group = QGroupBox("리스크 관리")
@@ -118,7 +127,7 @@ class SettingsTab(QWidget):
         risk_form.addRow("보호 종목 (Protected Symbols):", self.input_protected_symbols)
 
         risk_group.setLayout(risk_form)
-        main_layout.addWidget(risk_group)
+        right_column.addWidget(risk_group)
 
         # 4. Time Management Group
         time_group = QGroupBox("매매 스케줄 관리")
@@ -133,7 +142,7 @@ class SettingsTab(QWidget):
         time_form.addRow("신규 진입 마감 시간:", self.time_cutoff)
 
         time_group.setLayout(time_form)
-        main_layout.addWidget(time_group)
+        right_column.addWidget(time_group)
 
         # 5. System Group
         system_group = QGroupBox("시스템 알림 및 로깅")
@@ -154,7 +163,7 @@ class SettingsTab(QWidget):
         sys_form.addRow("로그 레벨:", self.combo_log_level)
 
         system_group.setLayout(sys_form)
-        main_layout.addWidget(system_group)
+        left_column.addWidget(system_group) # [이동] 우측 -> 좌측
         
         # 6. AI Settings Group
         ai_group = QGroupBox("AI 매매 설정")
@@ -167,7 +176,11 @@ class SettingsTab(QWidget):
         ai_form.addRow("AI 매매 신뢰도 임계값:", self.spin_confidence_threshold)
         
         ai_group.setLayout(ai_form)
-        main_layout.addWidget(ai_group)
+        right_column.addWidget(ai_group) # [이동] 좌측 -> 우측
+        
+        # 컬럼 하단 여백 채우기
+        left_column.addStretch()
+        right_column.addStretch()
 
         # 5. 하단 제어 버튼
         btn_layout = QHBoxLayout()
@@ -180,10 +193,7 @@ class SettingsTab(QWidget):
 
         btn_layout.addWidget(self.btn_test)
         btn_layout.addWidget(self.btn_save)
-        main_layout.addLayout(btn_layout)
-        
-        # 마지막 여백 확보
-        main_layout.addStretch()
+        main_v_layout.addLayout(btn_layout)
 
         scroll.setWidget(content_widget)
         outer_layout.addWidget(scroll)
