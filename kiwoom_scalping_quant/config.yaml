@@ -29,7 +29,8 @@ protected_symbols:
 seq_len: 10
 signal_only_mode: true
 slippage: 0.0005
-stop_loss_pct: -2.0
+stop_loss_pct: -3.5
+take_profit_pct: 4.0
 symbols:
 - code: 001440_AL
   name: 대한전선

@@ -95,6 +95,12 @@ class SettingsTab(QWidget):
         self.spin_stop_loss.setRange(-20.0, 0.0)
         risk_form.addRow("하드 손절 라인:", self.spin_stop_loss)
 
+        self.spin_take_profit = QDoubleSpinBox()
+        self.spin_take_profit.setSuffix(" %")
+        self.spin_take_profit.setDecimals(2)
+        self.spin_take_profit.setRange(0.0, 50.0)
+        risk_form.addRow("하드 익절 라인:", self.spin_take_profit)
+
         self.spin_max_position = QDoubleSpinBox()
         self.spin_max_position.setSuffix(" %")
         self.spin_max_position.setRange(1.0, 100.0)
@@ -221,6 +227,7 @@ class SettingsTab(QWidget):
             "trading_mode": self.combo_mode.currentText(),
             "influx_bucket": self.input_db_bucket.text(),
             "stop_loss_pct": self.spin_stop_loss.value(),
+            "take_profit_pct": self.spin_take_profit.value(),
             "max_position_pct": self.spin_max_position.value(),
             "cb_timeout_sec": self.spin_cb_timeout.value(),
             "telegram_chat_id": self.input_tg_chat.text(),
@@ -268,6 +275,7 @@ class SettingsTab(QWidget):
 
         self.input_db_bucket.setText(config.get("influx_bucket", "kiwoom_data"))
         self.spin_stop_loss.setValue(config.get("stop_loss_pct", -2.0))
+        self.spin_take_profit.setValue(config.get("take_profit_pct", 4.0))
         self.spin_max_position.setValue(config.get("max_position_pct", 50.0))
         self.spin_cb_timeout.setValue(config.get("cb_timeout_sec", 3))
         self.input_tg_chat.setText(config.get("telegram_chat_id", ""))

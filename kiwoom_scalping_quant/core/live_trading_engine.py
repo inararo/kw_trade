@@ -35,9 +35,17 @@ class LiveTradingEngine:
         self.last_action_time = 0.0
         self.cooldown_seconds = 3.0
         
-        # 하드 스탑로스/테이크프로핏 임계값
-        self.tick_stop_loss = -0.015
-        self.tick_take_profit = 0.03
+        # [수정] 하드 스탑로스/익절 임계값 (설정 파일과 연동)
+        # AI의 자율성을 보장하기 위해 기본 하드 손절은 넉넉하게 -3.5%로 설정
+        sl_config = float(self.config_manager.get("stop_loss_pct", -3.5))
+        tp_config = float(self.config_manager.get("take_profit_pct", 4.0))
+        
+        # 변수명에 _pct가 명시되어 있으므로 사용자는 무조건 퍼센트로 입력했다고 신뢰함
+        # 무조건 100으로 나누어 소수점으로 변환 (예: -3.5 -> -0.035)
+        self.tick_stop_loss = sl_config / 100.0
+        self.tick_take_profit = tp_config / 100.0
+        
+        self.logger.info(f"엔진 초기화: 하드 손절라인 {sl_config:.2f}%, 하드 익절라인 {tp_config:.2f}% 설정됨")
 
         # 웜업 상태 플래그
         self.is_warmed_up = False
@@ -130,9 +138,14 @@ class LiveTradingEngine:
                     if avg_price > 0:
                         pnl_pct = (price - avg_price) / avg_price
                         if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
-                            self.logger.error(f"🚨 [긴급] 틱 단위 스탑로스/익절 발동! (수익률: {pnl_pct * 100:.2f}%)")
+                            reason = "스탑로스" if pnl_pct <= self.tick_stop_loss else "익절"
+                            self.logger.error(f"🚨 [긴급] 틱 단위 {reason} 발동! (수익률: {pnl_pct * 100:.2f}%)")
                             self._is_order_pending = True
-                            asyncio.create_task(self._execute_order_background("SELL", int(price), holdings))
+                            
+                            # [개선] 하드 손절 시 체결 확률을 높이기 위해 현재가보다 1호가 아래로 주문 (Slippage 대응)
+                            # 매도의 경우 price * 0.999 정도면 충분히 최우선 매수호가에 체결됨
+                            sell_price = int(price * 0.999) if reason == "스탑로스" else int(price)
+                            asyncio.create_task(self._execute_order_background("SELL", sell_price, holdings))
                             return
 
                             # 5. 1분봉 병합 핵심 로직
