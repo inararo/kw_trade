@@ -12,9 +12,6 @@ class AssetDataManagerTab(QWidget):
         self._init_ui()
         self._connect_signals()
 
-        # UI 로딩 완료 후 ViewModel에 데이터 요청
-        self.view_model.load_symbols()
-
     def _init_ui(self):
         layout = QVBoxLayout(self)
         

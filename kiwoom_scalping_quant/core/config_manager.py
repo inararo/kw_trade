@@ -19,9 +19,9 @@ class ConfigManager:
         self._config_cache: Dict[str, Any] = {}
         self._env_keys = {"KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "TELEGRAM_BOT_TOKEN"}
 
-        self.load_config() # 동기 로드
+        self.load_config(skip_symbols=True) # 초기 생성 시에는 종목 리스트를 비워둠 (이중 로드 방지)
 
-    def load_config(self) -> Result[Dict[str, Any], Exception]:
+    def load_config(self, skip_symbols: bool = False) -> Result[Dict[str, Any], Exception]:
         """config.yaml과 .env 파일을 모두 로드하여 캐시합니다."""
         try:
             # 1. Load config.yaml
@@ -29,7 +29,7 @@ class ConfigManager:
                 self._config_cache = {
                     "symbols": [], 
                     "ws_url": "ws://localhost:8080",
-                    "ai_confidence_threshold": 0.5 # [신규] 기본 임계값
+                    "ai_confidence_threshold": 0.5
                 }
                 self.save_config()
             else:
@@ -42,6 +42,11 @@ class ConfigManager:
                     if not data.get("symbols") and data.get("universe"):
                         data["symbols"] = data.get("universe")
                     
+                    # symbols를 건너뛰어야 하는 경우 빈 리스트로 설정
+                    if skip_symbols:
+                        data["symbols"] = []
+                        if "universe" in data: data["universe"] = []
+
                     self._config_cache = data
 
             # 2. Load .env
