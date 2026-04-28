@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import aiohttp
+import socket
 from datetime import datetime, timedelta
 from typing import Optional
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -71,7 +72,9 @@ class TokenManager:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
+            # [안정화] Windows qasync 환경에서 DNS 이슈 방지를 위해 TCPConnector 설정 추가
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(url, headers=headers, json=payload, timeout=10) as response:
                     if response.status == 200:
                         data = await response.json()

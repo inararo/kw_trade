@@ -43,49 +43,10 @@ class QuantSystem:
         # 의존성 와이어링 (필요시)
         self.container.wire(modules=[__name__])
 
-        # 컨테이너를 통해 코어 객체 생성
-        self.influx_client = self.container.influx_client()
-        self.order_manager = self.container.order_manager()
-        self.data_collector = self.container.data_collector()
-        self.strategy_manager = self.container.strategy_manager()
-        self.token_manager = self.container.token_manager()
-        self.market_scheduler = self.container.market_scheduler()
-        self.risk_manager = self.container.risk_manager()
-
-        # Risk Manager injection loop closing
-        self.order_manager.risk_manager = self.risk_manager
-
-        # [안정화] DataCollector에 TokenManager 참조 주입 → LOGIN 실패 시 토큰 자동 갱신 가능
-        self.data_collector.config._token_manager = self.token_manager
-
-        # Connect Daily Stop-Loss Signal
-        self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
-
-        # 대표 ViewModel 생성 (LiveDashboardViewModel)
-        self.live_vm = self.container.live_dashboard_view_model()
-        self.asset_vm = self.container.asset_data_view_model()
-
-        # Inject references for background managers safely
-        config_mgr = self.container.config_manager()
-        config_mgr._injected_scheduler = self.market_scheduler
-        config_mgr._injected_strategy_manager = self.strategy_manager
-        config_mgr._injected_live_vm = self.live_vm
-        config_mgr._injected_asset_data_vm = self.asset_vm
-
-        # GUI 초기화: ViewModel 주입
-        self.main_window = MainWindow(self.live_vm, self)
+        self.main_window = None
         self.shutdown_event = asyncio.Event()
-
-        # Boot sequence events
         self.token_ready_event = asyncio.Event()
         self.universe_ready_event = asyncio.Event()
-
-        # Connect TokenManager signals to UI
-        self.token_manager.signals.token_updated.connect(self._on_token_updated)
-        self.token_manager.signals.token_error.connect(self._on_token_error)
-
-        # Connect Universe ready signal
-        self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
 
     def _on_token_updated(self, msg: str):
         self.token_ready_event.set()
@@ -112,6 +73,44 @@ class QuantSystem:
         asyncio.create_task(notifier.notify_critical(msg_title, msg_content))
 
     async def start(self):
+        # [안정화] 비동기 루프가 실행 중인 상태에서 코어 객체 및 ViewModel 생성 (InfluxDB 에러 방지)
+        self.influx_client = self.container.influx_client()
+        self.order_manager = self.container.order_manager()
+        self.data_collector = self.container.data_collector()
+        self.strategy_manager = self.container.strategy_manager()
+        # [🚨 100% 해결 핵심 패치]
+        # 전략 매니저가 엉뚱한(새로 생성된) 수집기를 바라보지 못하도록,
+        # 현재 웹소켓을 담당할 '진짜' 수집기를 강제로 주입합니다.
+        self.strategy_manager.data_collector = self.data_collector
+        self.token_manager = self.container.token_manager()
+        self.market_scheduler = self.container.market_scheduler()
+        self.risk_manager = self.container.risk_manager()
+        self.live_vm = self.container.live_dashboard_view_model()
+        self.asset_vm = self.container.asset_data_view_model()
+
+        # Risk Manager injection loop closing
+        self.order_manager.risk_manager = self.risk_manager
+        
+        # [안정화] DataCollector에 TokenManager 참조 주입
+        self.data_collector.config._token_manager = self.token_manager
+
+        # Inject references for background managers safely
+        config_mgr = self.container.config_manager()
+        config_mgr._injected_scheduler = self.market_scheduler
+        config_mgr._injected_strategy_manager = self.strategy_manager
+        config_mgr._injected_live_vm = self.live_vm
+        config_mgr._injected_asset_data_vm = self.asset_vm
+
+        # GUI 초기화: ViewModel 주입 및 MainWindow 생성
+        self.main_window = MainWindow(self.live_vm, self)
+        
+        # Connect Signals
+        self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
+        self.token_manager.signals.token_updated.connect(self._on_token_updated)
+        self.token_manager.signals.token_error.connect(self._on_token_error)
+        self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
+
+        # Step 0: DB 연결 확인
         self.main_window.show()
         print("시스템: 부팅 시퀀스를 시작합니다. (모델 기반 에이전트 모드)")
         
@@ -125,14 +124,17 @@ class QuantSystem:
         self.strategy_manager.load_model_from_config()
 
         # Step 2: Token 발급 및 유니버스 준비
-        self.token_task = asyncio.create_task(self.token_manager.start())
         print("시스템: [Step 2] 토큰 발급 및 스케줄러 가동 준비...")
+        self.token_task = asyncio.create_task(self.token_manager.start())
+        
         try:
             # 토큰 발급 대기 (최대 10초)
             await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
             print("시스템: [Step 2] 토큰 발급 완료.")
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 토큰 발급 타임아웃! (인터넷 연결 확인 필요)")
+            # [안정화] 타임아웃 시 잠시 유예를 두어 루프 스트레스 분산
+            await asyncio.sleep(1.0)
 
         # 스케줄러 및 유니버스 세팅
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
@@ -144,10 +146,15 @@ class QuantSystem:
         
         if current_state in prepare_states:
             print(f"시스템: [Step 2] 장시간 부팅 확인 (상태: {current_state}) → 유니버스 자동 갱신 시작...")
-            asyncio.create_task(self.asset_vm._build_universe_task(is_auto=True))
+            # [안정화] 동시 태스크 폭증 방지를 위해 순차적 실행 고려
+            try:
+                await asyncio.wait_for(self.asset_vm._build_universe_task(is_auto=True), timeout=15.0)
+            except Exception as e:
+                print(f"시스템: [Step 2] 유니버스 자동 갱신 중 오류 발생: {e}")
         else:
             print(f"시스템: [Step 2] 장외 시간 부팅 확인 (상태: {current_state}) → 자동 갱신 생략 (기존 리스트 로드).")
             self.asset_vm.load_symbols()
+            await asyncio.sleep(0.5)
 
         try:
             # 유니버스 로드가 완료될 때까지 잠시 대기
@@ -172,6 +179,15 @@ class QuantSystem:
         # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())
         print("시스템: [Step 3] DataCollector 가동 및 웹소켓 데이터 스트림 연결...")
+
+        # =====================================================================
+        # 🚀 [MASTER BRIDGE] DI 컨테이너 다 무시하고 여기서 직접 혈관을 뚫습니다.
+        # =====================================================================
+        self.data_collector.on_state_updated_callbacks.clear()
+        self.data_collector.on_state_updated_callbacks.append(self.strategy_manager._on_tick_event)
+        print("시스템: [SUCCESS] 마스터 브릿지 연결 완료! (DataCollector -> StrategyManager)")
+        # =====================================================================
+
         self.collector_task = asyncio.create_task(self.data_collector.start())
 
         # 매매 로직 정식 구동
@@ -362,10 +378,20 @@ def main():
     # [안정화] qasync 루프가 가비지 컬렉션되는 것을 방지하기 위해 app 객체에 강한 참조로 고정
     app.loop = QEventLoop(app)
     asyncio.set_event_loop(app.loop)
-    
-    # 윈도우 Proactor 관련 Mutex 삭제 오류 방지를 위해 전역 참조 유지
-    global_loop_reference = app.loop
     loop = app.loop
+    
+    # [안정화] Windows Proactor (IOCP)가 안정화될 시간을 아주 짧게 부여
+    loop.run_until_complete(asyncio.sleep(0.1))
+    
+    # 글로벌 예외 처리기 등록 (루프 크래시 방지)
+    def handle_exception(loop, context):
+        msg = context.get("exception", context["message"])
+        logging.error(f"Global Async Error: {msg}")
+        if "QMutex" in str(msg) or "deleted" in str(msg).lower():
+            # 이미 삭제된 자원 접근 시 무시
+            return
+            
+    loop.set_exception_handler(handle_exception)
 
     system = QuantSystem()
 

@@ -11,6 +11,10 @@ from env.normalizer import OnlineRollingNormalizer
 from core.subscription_manager import SymbolSubscriptionManager
 
 class DataCollector:
+    # [핵심 패치] 인스턴스 변수가 아닌 '클래스 변수'로 선언하여
+    # 어떤 DataCollector 객체에서도 동일한 콜백 리스트를 공유하게 함
+    on_state_updated_callbacks = []
+
     def __init__(self, config):
         self.config = config
 
@@ -32,8 +36,6 @@ class DataCollector:
         self.last_receive_time = time.time()
         self.latency_logs = deque(maxlen=1000)
         self.circuit_breaker_active = False
-
-        self.on_state_updated_callbacks = []
 
         self.logger = logging.getLogger("DataCollector")
         self._ui_callback = None
@@ -58,6 +60,10 @@ class DataCollector:
         # [최적화] 실시간 코드 매칭용 맵 (clean_code -> full_symbol)
         self._symbol_map = {}
         self._update_symbol_map()
+
+        # 자신이 태어나면 전역 변수에 자신을 등록
+        global global_data_collector_instance
+        global_data_collector_instance = self
 
     def _update_symbol_map(self):
         """구독 관리자의 최신 심볼 리스트를 바탕으로 고속 조회용 맵 갱신"""
@@ -406,16 +412,43 @@ class DataCollector:
                     now_time = datetime.now()
 
                     # 여기가 에러(TypeError)가 터지는 핵심 용의자입니다!
+                    # ========================================================
+                    # [비동기 에러 탐지기 & 콜백 미아 방지]
+                    # ========================================================
+                    if not self.on_state_updated_callbacks:
+                        # 콜백이 비어있다면 1% 확률로 경고 (로그 도배 방지)
+                        import random
+                        if random.random() < 0.01:
+                            self.logger.warning(
+                                f"⚠️ [{target_symbol}] 틱 수신 완료... 그러나 연결된 AI 콜백(StrategyManager)이 없습니다!")
+
                     for callback in self.on_state_updated_callbacks:
                         if asyncio.iscoroutinefunction(callback):
                             task = asyncio.create_task(
                                 callback(target_symbol, normalized_state, price=price, volume=volume,
                                          timestamp=now_time))
                             self._pending_tasks.add(task)
-                            task.add_done_callback(self._pending_tasks.discard)
+
+                            # [핵심] 조용히 죽는 비동기 에러를 끄집어내는 사냥꾼 함수
+                            def _handle_task_result(t):
+                                self._pending_tasks.discard(t)
+                                try:
+                                    exc = t.exception()
+                                    if exc:
+                                        import traceback
+                                        err_msg = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+                                        self.logger.error(f"🚨 [AI 콜백 붕괴] 틱 전달 중 치명적 에러 발생:\n{err_msg}")
+                                except asyncio.CancelledError:
+                                    pass
+
+                            task.add_done_callback(_handle_task_result)
                         else:
-                            callback(target_symbol, normalized_state, price=price, volume=volume,
-                                     timestamp=now_time)
+                            try:
+                                callback(target_symbol, normalized_state, price=price, volume=volume,
+                                         timestamp=now_time)
+                            except Exception as e:
+                                import traceback
+                                self.logger.error(f"🚨 [동기 콜백 붕괴] {e}\n{traceback.format_exc()}")
 
             except (ValueError, TypeError, Exception) as e:
                 self.logger.error(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {e}")
@@ -504,3 +537,6 @@ class DataCollector:
                 self.logger.warning(f"WS force close exception (ignored): {e}")
 
         self.logger.info("DataCollector: All connections closed and resources cleaned up.")
+
+# 전역 싱글톤 인스턴스 저장소
+global_data_collector_instance = None

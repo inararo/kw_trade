@@ -139,27 +139,23 @@ class StrategyManager:
         from core.scheduler import MarketState
         scheduler = getattr(self.config_manager, "_injected_scheduler", None)
         current_state = getattr(scheduler, "current_state", MarketState.OUT_OF_MARKET)
-        
+
         if current_state == MarketState.TRADING:
-            self.logger.info("StrategyManager: 장중 부팅 - 종목별 웜업(백그라운드)을 시작합니다.")
+            self.logger.info("StrategyManager: 장중 부팅 - 종목별 순차 웜업(백그라운드)을 시작합니다.")
             token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
-            for sym, engine in self.envs.items():
-                if token:
-                    asyncio.create_task(engine.warmup(token))
-                    await asyncio.sleep(0.1)
+            if token:
+                engines_list = list(self.envs.values())
+                # 20개 종목을 한 번에 쏘지 않고 순차 웜업 큐로 넘김
+                asyncio.create_task(self._safe_sequential_warmup(engines_list, token))
         else:
             self.logger.info(f"StrategyManager: 장외 시간({current_state}) - 웜업을 생략합니다.")
-
-        if hasattr(self.data_collector, 'on_state_updated_callbacks'):
-            if self._on_tick_event not in self.data_collector.on_state_updated_callbacks:
-                self.data_collector.on_state_updated_callbacks.append(self._on_tick_event)
 
         asyncio.create_task(self._empty_candle_watchdog())
 
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
-        """장중 유니버스 동적 교조"""
-        # [NEW] 유니버스 전체 스냅샷 로깅
+        """장중 유니버스 동적 교체"""
         try:
+            from utils.daily_logger import log_universe_snapshot
             log_universe_snapshot(new_universe, reason="장중 유니버스 갱신")
         except Exception as e:
             self.logger.error(f"주도주 스냅샷 로깅 에러 (update): {e}")
@@ -168,6 +164,7 @@ class StrategyManager:
             new_symbols = list(set([s.get("code").split('_')[0] for s in new_universe if s.get("code")]))
             current_symbols = list(self.symbols)
 
+            # 1. 기존 유니버스에서 빠진 종목 정리
             for sym in current_symbols:
                 if sym not in new_symbols:
                     holdings = self.order_manager.holdings.get(sym, 0)
@@ -177,17 +174,26 @@ class StrategyManager:
                     if hasattr(self.data_collector, 'unsubscribe_symbol'):
                         await self.data_collector.unsubscribe_symbol(sym)
 
+            # 2. 새로운 종목 추가 및 엔진 생성
+            new_engines = []
             for sym in new_symbols:
                 if sym not in self.symbols:
                     self.symbols.append(sym)
                     from core.live_trading_engine import LiveTradingEngine
-                    self.envs[sym] = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
-                    token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
-                    if token: asyncio.create_task(self.envs[sym].warmup(token))
+                    new_engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
+                    self.envs[sym] = new_engine
+                    new_engines.append(new_engine)
+
                     if hasattr(self.data_collector, 'subscribe_symbol'):
                         await self.data_collector.subscribe_symbol(sym)
 
-            # [긴급 패치] UI 쪽에 종목 리스트가 교체되었음을 알림
+            # 3. 새로 추가된 엔진들만 모아서 순차 웜업 큐로 넘김
+            if new_engines:
+                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                if token:
+                    asyncio.create_task(self._safe_sequential_warmup(new_engines, token))
+
+            # 4. UI 쪽에 종목 리스트가 교체되었음을 알림
             live_vm = getattr(self.config_manager, "_injected_live_vm", None)
             if live_vm:
                 live_vm.update_universe_list(new_universe)
@@ -198,7 +204,10 @@ class StrategyManager:
             clean_symbol = symbol.split('_')[0]
             engine = self.envs.get(clean_symbol)
             if engine and price > 0 and timestamp:
-                await engine.update_tick(price, int(volume), timestamp)
+                # ==============================================================
+                # [긴급 패치] 엔진이 오해하지 않도록 인자 개수와 키워드를 완벽하게 맞춰서 던짐!
+                # ==============================================================
+                await engine.update_tick(symbol, normalized_state, price=price, volume=int(volume), timestamp=timestamp)
         except Exception as e:
             self.logger.error(f"[StrategyManager] _on_tick_event 오류: {e}")
 
@@ -219,3 +228,17 @@ class StrategyManager:
             if self._on_tick_event in self.data_collector.on_state_updated_callbacks:
                 self.data_collector.on_state_updated_callbacks.remove(self._on_tick_event)
         self.logger.info("StrategyManager Stopped.")
+
+    async def _safe_sequential_warmup(self, engines_to_warmup: list, token: str):
+        """API 조회 제한(Rate Limit)을 피하기 위해 0.5초 간격으로 순차적 웜업 수행"""
+        self.logger.info(f"StrategyManager: {len(engines_to_warmup)}개 종목 순차 웜업 큐 시작...")
+        for engine in engines_to_warmup:
+            try:
+                await engine.warmup(token)
+            except Exception as e:
+                self.logger.error(f"[{engine.symbol}] 웜업 중 오류 발생: {e}")
+
+            # [가장 중요] 증권사 API TR 조회 제한 회피를 위한 필수 딜레이!
+            await asyncio.sleep(0.5)
+
+        self.logger.info("StrategyManager: 모든 종목 순차 웜업 완료!")

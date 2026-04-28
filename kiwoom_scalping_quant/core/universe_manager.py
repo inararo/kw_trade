@@ -3,6 +3,7 @@ import re
 import asyncio
 import logging
 import aiohttp
+import socket
 from typing import List, Dict, Any, Optional
 from returns.result import Result, Success, Failure
 from returns.future import future_safe
@@ -71,7 +72,8 @@ class UniverseManager:
         params = {"stk_cd": clean_code}
 
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(endpoint, headers=headers, json=params, timeout=5) as response:
                     status = response.status
                     if status == 200:
@@ -177,7 +179,8 @@ class UniverseManager:
 
         raw_market = []
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 # 공식 샘플 가이드에 따라 조회성 TR인 ka10030도 POST 방식을 사용합니다.
                 async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
                     if response.status != 200:
@@ -383,7 +386,8 @@ class UniverseManager:
 
         top_30 = []
         try:
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
                     if response.status != 200:
                         err_text = await response.text()

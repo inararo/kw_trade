@@ -84,45 +84,84 @@ class LiveTradingEngine:
         else:
             self.is_warmed_up = True
 
-    async def update_tick(self, price: float, volume: int, timestamp):
-        """실시간 틱 수신 및 1분봉 조합"""
-        if not self.is_warmed_up: return
+    # 앞의 불필요한 인자(symbol, state)는 스펀지처럼 흡수하고, 핵심 데이터만 빼서 씁니다.
+    async def update_tick(self, *args, **kwargs):
+        """실시간 틱 수신 및 1분봉 조합 (직접 콜백 대응 및 심볼 필터링 추가)"""
+        try:
+            # 0. 심볼 필터링 (DataCollector에서 직접 호출 시 타 종목 데이터 유입 방지)
+            target_symbol = args[0] if args else kwargs.get('symbol')
+            if target_symbol and target_symbol.split('_')[0].strip() != self.symbol.split('_')[0].strip():
+                return
 
-        ts_str = timestamp if isinstance(timestamp, str) else timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            # 1. 인자 유연 추출
+            price = kwargs.get('price')
+            volume = kwargs.get('volume')
+            timestamp = kwargs.get('timestamp')
 
-        # [REFACTORED] 틱 단위 실시간 감시 (Stop Loss / Take Profit)
-        # 주문이 진행 중(Lock)인 경우에는 중복 감시/주문을 철저히 배제합니다.
-        if not self._is_order_pending:
-            holdings = getattr(self.order_manager, 'holdings', {}).get(self.symbol, 0)
-            if holdings > 0:
-                avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
-                if avg_price > 0:
-                    pnl_pct = (price - avg_price) / avg_price
-                    if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
-                        self.logger.error(f"🚨 [긴급] 틱 단위 스탑로스/익절 발동! (수익률: {pnl_pct*100:.2f}%)")
-                        self._is_order_pending = True  # 👈 [여기에 추가!] 태스크 생성 전 즉시 락 설정
-                        # [FIXED] 강제 잔고 초기화를 제거하고, 안전한 배경 주문 파이프라인으로 위임합니다.
-                        asyncio.create_task(self._execute_order_background("SELL", int(price), holdings))
-                        return 
+            # 위치 인자(args)로 들어왔을 경우를 대비한 방어 로직 (DataCollector 호출 포맷 대응)
+            if price is None and len(args) >= 3:
+                # DataCollector: callback(symbol, state, price=p, volume=v, timestamp=t)
+                # 만약 위치 인자로만 왔다면 뒤에서부터 추출
+                price = args[-3] if isinstance(args[-3], (int, float)) else price
+                volume = args[-2] if isinstance(args[-2], (int, float)) else volume
+                timestamp = args[-1]
 
-        minute_str = ts_str[:16]
-        async with self.lock:
-            if self.current_minute_str != minute_str:
-                if self.current_candle is not None: await self._finalize_candle()
-                self.current_minute_str = minute_str
-                self.current_candle = {
-                    "timestamp": minute_str + ":00", "symbol": self.symbol,
-                    "open": price, "high": price, "low": price, "price": price, "volume": volume
-                }
-            else:
-                self.current_candle["high"] = max(self.current_candle["high"], price)
-                self.current_candle["low"] = min(self.current_candle["low"], price)
-                self.current_candle["price"] = price # close
-                self.current_candle["volume"] += volume
+            # 형변환 보장
+            if price is None or volume is None: return
+            price = float(price)
+            volume = int(volume)
 
-        # UI 업데이트 요청
-        vm = getattr(self.config_manager, "_injected_live_vm", None)
-        if vm: vm._on_data_received({"symbol": self.symbol, "price": price, "volume": volume})
+            # 2. 틱 유입 생존 신고 (너무 많으면 안되니 500틱마다 한 번씩 터미널에 보고)
+            if not hasattr(self, '_tick_alive_cnt'): self._tick_alive_cnt = 0
+            self._tick_alive_cnt += 1
+            if self._tick_alive_cnt % 500 == 0:
+                self.logger.info(f"[{self.symbol}] 엔진 내부 틱 수신 중... (현재가: {price}, 웜업: {self.is_warmed_up})")
+
+            # 3. 웜업이 안 끝났으면 1분봉 조립을 대기
+            if not self.is_warmed_up: return
+
+            ts_str = timestamp if isinstance(timestamp, str) else timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 4. 기존 스탑로스 / 익절 로직 유지
+            if not self._is_order_pending:
+                holdings = getattr(self.order_manager, 'holdings', {}).get(self.symbol, 0)
+                if holdings > 0:
+                    avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
+                    if avg_price > 0:
+                        pnl_pct = (price - avg_price) / avg_price
+                        if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
+                            self.logger.error(f"🚨 [긴급] 틱 단위 스탑로스/익절 발동! (수익률: {pnl_pct * 100:.2f}%)")
+                            self._is_order_pending = True
+                            asyncio.create_task(self._execute_order_background("SELL", int(price), holdings))
+                            return
+
+                            # 5. 1분봉 병합 핵심 로직
+            minute_str = ts_str[:16]
+            async with self.lock:
+                if self.current_minute_str != minute_str:
+                    # 분이 바뀌면 이전 캔들을 확정하고 AI 추론으로 넘김!
+                    if self.current_candle is not None:
+                        await self._finalize_candle()
+
+                    self.current_minute_str = minute_str
+                    self.current_candle = {
+                        "timestamp": minute_str + ":00", "symbol": self.symbol,
+                        "open": price, "high": price, "low": price, "price": price, "volume": volume
+                    }
+                else:
+                    self.current_candle["high"] = max(self.current_candle["high"], price)
+                    self.current_candle["low"] = min(self.current_candle["low"], price)
+                    self.current_candle["price"] = price  # close
+                    self.current_candle["volume"] += volume
+
+            # UI 업데이트 요청 (안전장치)
+            vm = getattr(self.config_manager, "_injected_live_vm", None)
+            if vm: vm._on_data_received({"symbol": self.symbol, "price": price, "volume": volume})
+
+        except Exception as e:
+            # 🚨 암살당하던 에러를 멱살 잡고 끌어올려 터미널에 전시합니다!
+            import traceback
+            self.logger.error(f"[{self.symbol}] 🚨 엔진 update_tick 치명적 에러 발생!\n{traceback.format_exc()}")
 
     async def _finalize_candle(self):
         if not self.current_candle: return
@@ -145,6 +184,9 @@ class LiveTradingEngine:
 
     async def _run_inference(self):
         """AI 추론 및 주문 결정"""
+        # [디버그 로그 추가] AI가 깨어있는지 확인
+        self.logger.info(f"[{self.symbol}] AI 추론 시도... (현재 버퍼 크기: {len(self.minute_buffer)})")
+
         if self._is_order_pending:
             self.logger.debug(f"[{self.symbol}] 주문 파이프라인 가동 중 - 추론 생략")
             return
