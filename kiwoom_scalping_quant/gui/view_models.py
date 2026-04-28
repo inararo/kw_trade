@@ -28,7 +28,8 @@ class LiveDashboardViewModel(QObject):
     _sig_raw_data = pyqtSignal(object)
 
     # Risk Limits and Alerts
-    sig_risk_metrics_updated = pyqtSignal(float, float) # current PnL, available invest limit
+    sig_risk_metrics_updated = pyqtSignal(float, float, float) # current PnL, total orderable cash, per-symbol limit
+    sig_balance_updated = pyqtSignal(float) # [신규] 총 예수금(잔고) 업데이트
     sig_status_alert = pyqtSignal(str)
     
     # [제어 상태 시그널]
@@ -66,6 +67,8 @@ class LiveDashboardViewModel(QObject):
         # UI logging hook for Signal Only mode bypass messages
         if hasattr(self.order_manager, 'signals'):
             self.order_manager.signals.signal_only_log.connect(self.append_log)
+            # [신규] 잔고 동기화 시그널 연결
+            self.order_manager.signals.balance_synced.connect(self.sig_balance_updated.emit)
 
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
         self.data_collector.set_ui_callback(self._on_data_received)
@@ -222,17 +225,18 @@ class LiveDashboardViewModel(QObject):
             # Emit Risk Manager details periodically
             if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
                 rm = self.order_manager.risk_manager
+                # [수정] 1. 종목당 최대 투자 한도 (max_invest_per_symbol)
+                per_symbol_limit = rm.get_dynamic_max_invest()
                 pnl = rm.daily_realized_pnl
-                max_invest = rm.get_max_invest_per_symbol()
 
-                # Calculate basic rough available limit (e.g. max_invest - current holding of selected symbol)
-                # Using 0 if none selected for simple UI purpose
-                curr_invested = 0
-                if self.selected_symbol:
-                    curr_invested = self.order_manager.holdings.get(self.selected_symbol, 0) * self.order_manager.avg_entry_prices.get(self.selected_symbol, 0)
+                # [수정] 2. 전체 주문 가능 금액 (실제 현금)
+                total_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
 
-                avail_limit = max(0, max_invest - curr_invested)
-                self.sig_risk_metrics_updated.emit(pnl, avail_limit)
+                # UI로 전달 (손익, 전체 주문 가능 현금, 종목당 한도)
+                self.sig_risk_metrics_updated.emit(pnl, total_cash, per_symbol_limit)
+                
+                # [신규] 현재 총 잔고도 주기적으로 업데이트
+                self.sig_balance_updated.emit(self.order_manager.current_balance)
 
             await asyncio.sleep(1.0)
 

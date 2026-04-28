@@ -151,6 +151,7 @@ class StrategyManager:
             self.logger.info(f"StrategyManager: 장외 시간({current_state}) - 웜업을 생략합니다.")
 
         asyncio.create_task(self._empty_candle_watchdog())
+        asyncio.create_task(self._balance_sync_loop()) # [신규] 잔고 동기화 루프 시작
 
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
         """장중 유니버스 동적 교체"""
@@ -221,6 +222,18 @@ class StrategyManager:
                     if hasattr(engine, 'check_empty_minute'):
                         await engine.check_empty_minute(now_dt)
                 await asyncio.sleep(2.0)
+
+    async def _balance_sync_loop(self):
+        """실전 매매 모드일 때 주기적으로 계좌 잔고를 동기화합니다."""
+        self.logger.info("StrategyManager: 잔고 동기화 루프 시작 (주기: 60초)")
+        while self.is_running:
+            try:
+                # 60초마다 동기화 시도 (OrderManager 내부의 30초 쿨다운과 별개)
+                await self.order_manager.sync_balance()
+            except Exception as e:
+                self.logger.error(f"잔고 동기화 루프 오류: {e}")
+            
+            await asyncio.sleep(60.0)
 
     async def stop(self):
         self.is_running = False

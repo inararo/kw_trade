@@ -149,6 +149,10 @@ class QuantSystem:
             # 토큰 발급 대기 (최대 10초)
             await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
             print("시스템: [Step 2] 토큰 발급 완료.")
+
+            # [Step 3] 초기 계좌 잔고 동기화 (실전 모드 대응)
+            print("시스템: [Step 3] 초기 계좌 잔고 동기화 시도...")
+            await self.order_manager.sync_balance(force=True)
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 토큰 발급 타임아웃! (인터넷 연결 확인 필요)")
             # [안정화] 타임아웃 시 잠시 유예를 두어 루프 스트레스 분산

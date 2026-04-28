@@ -251,13 +251,39 @@ class LiveTradingEngine:
         scheduler = getattr(self.config_manager, "_injected_scheduler", None)
         if scheduler and scheduler.current_state != MarketState.TRADING: return
 
-        max_invest = self.config_manager.get("max_invest_per_symbol", 1000000)
+        # [고도화] 최대 진입 자금 비율(max_position_pct)을 고려한 동적 투자 한도 적용
+        risk_mgr = getattr(self.order_manager, 'risk_manager', None)
+        if risk_mgr:
+            max_invest = risk_mgr.get_dynamic_max_invest()
+            # self.logger.debug(f"[{self.symbol}] 동적 투자 한도 적용: {max_invest:,.0f}원")
+        else:
+            max_invest = self.config_manager.get("max_invest_per_symbol", 1000000)
+
         if action == 1: # BUY
-            qty = int(max_invest // current_price)
+            # [신규] 매수 주문 전 최신 잔고 동기화
+            await self.order_manager.sync_balance(force=True)
+            
+            # [퀀트 최적화] 가용 현금 기반 Partial Order 로직
+            orderable_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
+            
+            # 목표 금액 vs 가용 현금 중 작은 값 선택
+            final_invest_amount = min(max_invest, orderable_cash)
+            
+            if final_invest_amount < max_invest and final_invest_amount > 0:
+                self.logger.info(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest:,.0f} -> {final_invest_amount:,.0f}")
+            
+            qty = int(final_invest_amount // current_price)
+            
             if qty > 0:
-                self._is_order_pending = True  # 태스크 생성 전에 즉시 문부터 잠금!
+                self._is_order_pending = True 
                 asyncio.create_task(self._execute_order_background("BUY", int(current_price), qty))
                 self.last_action_time = current_time
+            else:
+                # 1주조차 살 수 없을 때만 최종 차단
+                if orderable_cash < current_price:
+                    self.logger.warning(f"[{self.symbol}] 현금 잔고 부족: 가용현금({orderable_cash:,.0f})이 현재가({current_price:,.0f})보다 적어 매수를 취소합니다.")
+                else:
+                    self.logger.warning(f"[{self.symbol}] 주문 수량 0: 투자 한도({final_invest_amount:,.0f})가 너무 낮아 주문을 생성할 수 없습니다.")
         elif action == 2: # SELL
             if holdings > 0:
                 self._is_order_pending = True  # 👈 [여기에 추가!] 매수와 동일하게 즉시 락 설정

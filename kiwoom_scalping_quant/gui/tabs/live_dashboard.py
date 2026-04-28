@@ -14,6 +14,9 @@ class LiveDashboardTab(QWidget):
     def __init__(self, view_model):
         super().__init__()
         self.view_model = view_model
+        self._current_pnl = 0.0
+        self._current_balance = 0.0
+        self._available_limit = 0.0
         self._init_ui()
         self._connect_signals()
 
@@ -163,6 +166,7 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_ai_confidence_updated.connect(self.on_ai_confidence_updated)
         self.view_model.sig_log_appended.connect(self.on_log_appended)
         self.view_model.sig_risk_metrics_updated.connect(self.on_risk_metrics_updated)
+        self.view_model.sig_balance_updated.connect(self.on_balance_updated) # [신규]
         self.view_model.sig_status_alert.connect(self.on_status_alert)
         self.view_model.sig_error_occurred.connect(self.on_error)
         self.view_model.sig_universe_changed.connect(self.on_universe_changed) # [NEW]
@@ -275,9 +279,27 @@ class LiveDashboardTab(QWidget):
         self.log_list.addItem(f"[{ts}] {msg}")
         self.log_list.scrollToBottom()
 
-    @pyqtSlot(float, float)
-    def on_risk_metrics_updated(self, pnl: float, available_limit: float):
-        self.risk_bar.setText(f"당일 누적 손익: {pnl:,.0f} 원 | 잔여 매수 가능 한도: {available_limit:,.0f} 원")
+    @pyqtSlot(float, float, float)
+    def on_risk_metrics_updated(self, pnl: float, total_cash: float, per_symbol_limit: float):
+        self._current_pnl = pnl
+        self._available_limit = total_cash # 전체 주문 가능 현금
+        self._per_symbol_limit = per_symbol_limit
+        self._update_risk_bar()
+
+    @pyqtSlot(float)
+    def on_balance_updated(self, balance: float):
+        self._current_balance = balance
+        self._update_risk_bar()
+
+    def _update_risk_bar(self):
+        """상단 리스크/자산 정보 레이블 갱신"""
+        # [수정] 총자산, 주문가능현금, 종목당 한도를 모두 명시
+        per_sym = getattr(self, '_per_symbol_limit', 0.0)
+        text = (f"💰 당일 손익: {self._current_pnl:,.0f} | "
+                f"📊 총 자산: {self._current_balance:,.0f} | "
+                f"💳 주문 가능: {self._available_limit:,.0f} | "
+                f"🚫 종목 한도: {per_sym:,.0f}")
+        self.risk_bar.setText(text)
 
     @pyqtSlot(str)
     def on_status_alert(self, alert_msg: str):

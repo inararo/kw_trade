@@ -24,6 +24,31 @@ class RiskManager:
         # Default 5,000,000 KRW
         return float(self.config_manager.get("max_invest_per_symbol", 5000000))
 
+    def get_max_position_pct(self) -> float:
+        # Default 100% (All capital allocated to trading)
+        return float(self.config_manager.get("max_position_pct", 100.0))
+
+    def get_dynamic_max_invest(self) -> float:
+        """
+        [핵심 리스크 관리] 
+        전체 자산 대비 설정된 비중(%)을 종목 수로 나누어 동적 한도를 계산합니다.
+        공식: (현재 잔고 * 비중 / 100) / 최대 보유 종목 수
+        """
+        balance = getattr(self.order_manager, 'current_balance', 10000000)
+        pct = self.get_max_position_pct()
+        max_slots = self.get_max_open_positions()
+
+        # 1. 비중 기반 계산 (예: 1000만 * 50% / 5종목 = 종목당 100만)
+        ratio_based_limit = (balance * (pct / 100.0)) / max(1, max_slots)
+
+        # 2. 고정 한도값과 비교하여 더 작은 값을 최종 한도로 채택 (보수적 운영)
+        fixed_limit = self.get_max_invest_per_symbol()
+        
+        dynamic_limit = min(ratio_based_limit, fixed_limit)
+        
+        # 최소 10,000원(한 주 가격 고려) 보장
+        return max(10000, dynamic_limit)
+
     def get_daily_stop_loss_limit(self) -> float:
         # Default -500,000 KRW
         return float(self.config_manager.get("daily_stop_loss_limit", -500000))
@@ -64,16 +89,17 @@ class RiskManager:
                 self.signals.risk_warning.emit("마감 시간 경과로 신규 매수 주문이 차단되었습니다.")
                 return False
 
-        # 1. Max Invest Per Symbol Check
+        # 1. Dynamic Max Invest Check (고정값 대신 동적 계산값 사용)
         current_holding_qty = self.order_manager.holdings.get(symbol, 0)
         avg_price = self.order_manager.avg_entry_prices.get(symbol, 0.0)
         current_invested = current_holding_qty * avg_price
 
-        max_invest = self.get_max_invest_per_symbol()
+        max_invest = self.get_dynamic_max_invest()
         if current_invested + amount > max_invest:
-            self.logger.warning(f"Risk Check Failed [{symbol}]: Max invest exceeded. Current: {current_invested:,.0f}, "
-                                f"Adding: {amount:,.0f}, Limit: {max_invest:,.0f}")
-            self.signals.risk_warning.emit(f"[{symbol}] 한 종목 최대 투자 금액({max_invest:,.0f}원) 초과로 매수 거부")
+            self.logger.warning(f"Risk Check Failed [{symbol}]: Dynamic max invest exceeded. "
+                                f"Current: {current_invested:,.0f}, Adding: {amount:,.0f}, Limit: {max_invest:,.0f} "
+                                f"(Pct: {self.get_max_position_pct()}%)")
+            self.signals.risk_warning.emit(f"[{symbol}] 자산 비중 기반 투자 한도({max_invest:,.0f}원) 초과로 매수 거부")
             return False
 
         # 2. Max Open Positions Check
