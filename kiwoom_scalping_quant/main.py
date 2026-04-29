@@ -287,12 +287,10 @@ class QuantSystem:
 
         # ── 1. 설정 변경 리스너 ──────────────────────────────────────
         def on_settings_changed(data: dict):
-            """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 루프에 전달"""
+            """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 메인 루프에서 안전하게 실행"""
             def _apply():
-                config_mgr = self.container.config_manager()
-                for key, value in data.items():
-                    config_mgr._config_cache[key] = value
-                    logging.info(f"[Firebase] 원격 설정 반영 → {key} = {value}")
+                # ConfigManager.hot_reload_settings()가 키별 [설정값 변경 감지] 로그를 출력함
+                self.container.config_manager().hot_reload_settings(data)
             loop.call_soon_threadsafe(_apply)
 
         self.firebase_manager.listen_to_settings(on_settings_changed)
