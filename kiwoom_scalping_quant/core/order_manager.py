@@ -1,6 +1,8 @@
 import asyncio
 import time
 import logging
+import json
+import os
 from typing import Dict, Any, Optional
 from returns.result import Result, Success, Failure
 from returns.future import FutureResult, future_safe
@@ -42,8 +44,14 @@ class OrderManager:
         self.holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
         self.avg_entry_prices = {sym: 0.0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
 
-        # 봇(Agent) 전용 매수/보유 수량 트래킹 (수동 매수 종목과 구분 위함)
-        self.bot_holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
+        # [영구 저장] 봇 관리 종목 데이터 경로
+        self.data_dir = os.path.join(os.getcwd(), "data")
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+        self.holdings_file = os.path.join(self.data_dir, "bot_holdings.json")
+        
+        # 봇(Agent) 전용 매수/보유 수량 트래킹 (파일에서 로드)
+        self.bot_holdings: Dict[str, int] = self._load_bot_holdings()
 
         # Safety Guard Risk Manager
         self.risk_manager = None # Will be injected
@@ -57,6 +65,10 @@ class OrderManager:
         self.rate_limit = 5
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)
         self.order_timestamps = []
+        
+        # [신규] 잔고 동기화 전용 락 및 쿨다운 관리
+        self._sync_lock = asyncio.Lock()
+        self._last_real_sync_time = 0.0
 
     @property
     def orderable_cash(self) -> float:
@@ -197,6 +209,9 @@ class OrderManager:
 
             # 2. 주문 종류별 api-id 및 엔드포인트 결정
             endpoint = f"{self.rest_base_url}/api/dostk/ordr"
+            
+            # [핵심] 키움 REST API는 순수 숫자 종목 코드만 허용함
+            clean_symbol = symbol.split('_')[0]
 
             if order_type == "BUY":
                 api_id = 'kt10000'
@@ -204,7 +219,7 @@ class OrderManager:
                 trde_tp = '0' if price > 0 else '3'
                 body = {
                     "dmst_stex_tp": 'KRX',  # 국내거래소 구분 필수, 예시로 KRX 고정
-                    "stk_cd":       symbol,
+                    "stk_cd":       clean_symbol,
                     "ord_qty":      str(qty),
                     "ord_uv":       str(price) if price > 0 else '',
                     "trde_tp":      trde_tp,
@@ -429,13 +444,21 @@ class OrderManager:
                 self.avg_entry_prices[symbol] = total_value / self.holdings[symbol]
 
                 # 봇이 진입한 수량 추가
-                self.bot_holdings[symbol] += exec_qty
+                self.bot_holdings[symbol] = self.bot_holdings.get(symbol, 0) + exec_qty
+                
+                # 데이터 영구 저장
+                self._save_bot_holdings()
 
             elif order['type'] == 'SELL':
                 self.holdings[symbol] -= exec_qty
 
                 # 봇이 청산한 수량 감소 (0 미만으로 떨어지지 않게 방어)
                 self.bot_holdings[symbol] = max(0, self.bot_holdings[symbol] - exec_qty)
+                if self.bot_holdings[symbol] == 0:
+                    del self.bot_holdings[symbol]
+
+                # 데이터 영구 저장
+                self._save_bot_holdings()
 
                 # 체결가 기반으로 daily_realized_pnl 업데이트
                 realized_profit = (exec_price - self.avg_entry_prices[symbol]) * exec_qty
@@ -711,6 +734,9 @@ class OrderManager:
                                 self.logger.warning(f"잔고 필드를 찾을 수 없거나 값이 0입니다. 응답 키: {list(output.keys())}")
                         else:
                             self.logger.error(f"잔고 조회 API 오류: {res_data.get('return_msg')}")
+                    elif resp.status == 429:
+                        self.logger.warning("⚠️ 잔고 조회 과부하(429): API 요청 제한에 도달했습니다. 잠시 후 재시도합니다.")
+                        await asyncio.sleep(1.0) # 429 발생 시 강제 대기
                     else:
                         self.logger.error(f"잔고 조회 HTTP 오류: {resp.status}")
         except Exception as e:
@@ -728,21 +754,52 @@ class OrderManager:
         self.logger.debug(f"sync_balance 호출됨 (mode={mode}, force={force})")
         
         if mode == "real":
-            # 30초 주기로 동기화 (force가 아닐 경우)
-            now = time.time()
-            if not force and now - self.last_sync_time < 30:
-                return
+            async with self._sync_lock:
+                now = time.time()
+                # 1. 일반 주기(30초) 체크
+                if not force and now - self.last_sync_time < 30:
+                    return
 
-            real_balance = await self.fetch_real_balance()
-            if real_balance is not None:
-                diff = real_balance - self.current_balance
-                if abs(diff) > 1: # 1원 이상의 차이가 있을 때만 로깅
-                    self.logger.info(f"🔄 잔고 동기화 완료: {self.current_balance:,.0f} -> {real_balance:,.0f} (오차: {diff:,.0f})")
-                
-                self.current_balance = real_balance
-                self.last_sync_time = now
-                # 시그널 발생 (총자산과 주문가능현금 함께 전달)
-                self.signals.balance_synced.emit(self.current_balance)
+                # 2. 강제 동기화(force=True) 보호: 최소 2초 간격 유지
+                if force and now - self._last_real_sync_time < 2.0:
+                    # self.logger.debug("잔고 동기화 보호: 최근 2초 내 동기화가 수행되어 API 호출을 스킵합니다.")
+                    return
+
+                real_balance = await self.fetch_real_balance()
+                if real_balance is not None:
+                    diff = real_balance - self.current_balance
+                    if abs(diff) > 1: # 1원 이상의 차이가 있을 때만 로깅
+                        self.logger.info(f"🔄 잔고 동기화 완료: {self.current_balance:,.0f} -> {real_balance:,.0f} (오차: {diff:,.0f})")
+                    
+                    self.current_balance = real_balance
+                    self.last_sync_time = now
+                    self._last_real_sync_time = now
+                    # 시그널 발생 (총자산과 주문가능현금 함께 전달)
+                    self.signals.balance_synced.emit(self.current_balance)
         else:
             # 가상 매매 모드에서는 동기화 시그널만 발생 (내부 계산 유지)
             self.signals.balance_synced.emit(self.current_balance)
+
+    def _save_bot_holdings(self):
+        """현재 봇이 관리 중인 종목 수량을 파일에 저장합니다."""
+        try:
+            with open(self.holdings_file, 'w', encoding='utf-8') as f:
+                json.dump(self.bot_holdings, f, indent=4, ensure_ascii=False)
+            self.logger.debug(f"봇 관리 종목 데이터 저장 완료: {len(self.bot_holdings)}개 종목")
+        except Exception as e:
+            self.logger.error(f"봇 관리 종목 저장 실패: {e}")
+
+    def _load_bot_holdings(self) -> Dict[str, int]:
+        """파일에서 이전 봇 관리 종목 데이터를 불러옵니다."""
+        if not os.path.exists(self.holdings_file):
+            self.logger.info("이전 봇 관리 종목 데이터가 없습니다. 새로 시작합니다.")
+            return {}
+        
+        try:
+            with open(self.holdings_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.logger.info(f"이전 봇 관리 종목 {len(data)}개를 성공적으로 불러왔습니다.")
+                return data
+        except Exception as e:
+            self.logger.error(f"봇 관리 종목 로드 실패: {e}")
+            return {}

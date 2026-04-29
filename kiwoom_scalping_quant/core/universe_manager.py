@@ -209,7 +209,7 @@ class UniverseManager:
 
                     self.logger.error(f"API 수신 데이터 확인: 총 {len(items)}개의 종목 수신됨.")
                     if items:
-                        self.logger.error(f"[DEBUG] ITEM KEYS: {list(items[0].keys())}")
+                        self.logger.debug(f"ITEM KEYS: {list(items[0].keys())}")
 
                     for item in items:
                         # 제공된 명세(stk_cd, stk_nm, trde_amt)를 최우선으로 적용합니다.

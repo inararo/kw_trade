@@ -20,7 +20,7 @@ kiwoom:
     real: wss://api.kiwoom.com:10000/api/dostk/websocket
     virtual: wss://mockapi.kiwoom.com:10000/api/dostk/websocket
 live_trading_model_type: smart
-log_level: DEBUG
+log_level: ERROR
 max_buffer_size: 100000
 max_invest_per_symbol: 200000.0
 max_open_positions: 6

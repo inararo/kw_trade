@@ -8,6 +8,7 @@ from collections import deque
 from core.historical_fetcher import HistoricalFetcher
 from core.feature_engineer import AdvancedFeatureEngineer
 from core.scheduler import MarketState
+from utils.trade_logger import trade_logger
 
 class LiveTradingEngine:
     """
@@ -139,7 +140,9 @@ class LiveTradingEngine:
                         pnl_pct = (price - avg_price) / avg_price
                         if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
                             reason = "스탑로스" if pnl_pct <= self.tick_stop_loss else "익절"
-                            self.logger.error(f"🚨 [긴급] 틱 단위 {reason} 발동! (수익률: {pnl_pct * 100:.2f}%)")
+                            msg = f"🚨 [긴급] {self.symbol} 틱 단위 {reason} 발동! (수익률: {pnl_pct * 100:.2f}%)"
+                            self.logger.error(msg)
+                            self._ui_log(msg)
                             self._is_order_pending = True
                             
                             # [개선] 하드 손절 시 체결 확률을 높이기 위해 현재가보다 1호가 아래로 주문 (Slippage 대응)
@@ -301,12 +304,14 @@ class LiveTradingEngine:
         internal_id = None
         
         try:
-            self.logger.info(f"📤 주문 실행 파이프라인 가동: {side} {self.symbol} {qty}주 @ {price:,}원")
+            self.logger.error(f"📤 주문 실행 파이프라인 가동: {side} {self.symbol} {qty}주 @ {price:,}원")
             
             # 1. 주문 전송
             result = await self.order_manager.send_order(side, self.symbol, price, qty)
             if hasattr(result, 'is_failure') and result.is_failure():
-                self.logger.error(f"❌ 전송 실패: {result.failure()}")
+                err_msg = f"❌ [{self.symbol}] {side} 전송 실패: {result.failure()}"
+                self.logger.error(err_msg)
+                self._ui_log(err_msg)
                 return
 
             internal_id = result.unwrap() if hasattr(result, 'unwrap') else result
@@ -327,11 +332,25 @@ class LiveTradingEngine:
                 status = order_info.get('status')
                 
                 if unexecuted > 0 and status not in ["FILLED", "CANCELLED", "FAILED"]:
-                    self.logger.error(f"⏰ 5초 타임아웃! 미체결 잔량 {unexecuted}주 취소 절차를 시작합니다.")
+                    msg = f"⏰ [{self.symbol}] 5초 타임아웃! 미체결 잔량 {unexecuted}주 취소 절차 시작."
+                    self.logger.error(msg)
+                    self._ui_log(msg)
                     await self.order_manager.cancel_order(internal_id)
                     await asyncio.sleep(2.0) # 서버 처리 시간 대기
                 else:
-                    self.logger.info(f"🎯 주문 처리 완료 (결과 상태: {status})")
+                    # [파일 기록] 매매 결과 기록
+                    pnl, pnl_pct = 0, 0.0
+                    if side == "SELL":
+                        avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
+                        if avg_price > 0:
+                            pnl_pct = (price - avg_price) / avg_price
+                            pnl = (price - avg_price) * qty
+                    
+                    trade_logger.log_trade(self.symbol, side, qty, price, pnl=pnl, pnl_pct=pnl_pct, note=f"Status: {status}")
+                    
+                    res_msg = f"🎯 [{self.symbol}] 주문 처리 완료 (결과: {status}, 수익률: {pnl_pct*100:.2f}%)"
+                    self.logger.error(res_msg)
+                    self._ui_log(res_msg)
 
         except Exception as e:
             self.logger.error(f"🔥 주문 파이프라인 치명적 오류: {e}")
@@ -349,3 +368,10 @@ class LiveTradingEngine:
                 conf = {"Hold": int(probs[0]*100), "Buy": int(probs[1]*100), "Sell": int(probs[2]*100)}
                 vm.sig_ai_confidence_updated.emit(conf)
             vm._ui_dirty = True
+
+    def _ui_log(self, message: str):
+        """중요 메시지를 대시보드 UI 로그 창으로 전송"""
+        vm = getattr(self.config_manager, "_injected_live_vm", None)
+        if vm:
+            # ViewModel의 append_log는 내부적으로 sig_log_appended 시그널을 emit함
+            vm.append_log(message)

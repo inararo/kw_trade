@@ -72,11 +72,14 @@ class RiskManager:
         """
         주문 전송 전 모든 조건을 검증합니다.
         """
-        # [최우선] 보호 종목 체크 (매수/매도 모두 차단)
-        protected_symbols = self.config_manager.get("protected_symbols", [])
-        if symbol in protected_symbols:
-            self.logger.warning(f"Risk Check Failed: [{symbol}]은 보호 종목으로 설정되어 있어 모든 자동 주문이 차단됩니다.")
-            self.signals.risk_warning.emit(f"보호 종목({symbol})에 대한 자동 주문이 차단되었습니다.")
+        # [최우선] 보호 종목 체크 (매수/매도 모두 차단) - 정규화 적용
+        protected_list = self.config_manager.get("protected_symbols", [])
+        protected_symbols = [str(s).split('_')[0] for s in protected_list]
+        clean_symbol = symbol.split('_')[0]
+
+        if clean_symbol in protected_symbols:
+            self.logger.warning(f"Risk Check Failed [{symbol}]: Protected symbol. Manual management required.")
+            self.signals.risk_warning.emit(f"[{symbol}] 보호 종목으로 설정되어 자동 매매가 제한됩니다.")
             return False
 
         if order_type.upper() in ["CANCEL"]:
@@ -95,25 +98,26 @@ class RiskManager:
                 self.signals.risk_warning.emit("마감 시간 경과로 신규 매수 주문이 차단되었습니다.")
                 return False
 
-        # 1. Dynamic Max Invest Check (고정값 대신 동적 계산값 사용)
-        current_holding_qty = self.order_manager.holdings.get(symbol, 0)
-        avg_price = self.order_manager.avg_entry_prices.get(symbol, 0.0)
-        current_invested = current_holding_qty * avg_price
+        # 1. 투자 한도 및 종목 수 체크 (BUY 주문인 경우에만 수행)
+        if order_type.upper() == "BUY":
+            # [1-1] Dynamic Max Invest Check (고정값 대신 동적 계산값 사용)
+            current_holding_qty = self.order_manager.holdings.get(symbol, 0)
+            avg_price = self.order_manager.avg_entry_prices.get(symbol, 0.0)
+            current_invested = current_holding_qty * avg_price
 
-        max_invest = self.get_dynamic_max_invest()
-        if current_invested + amount > max_invest:
-            self.logger.warning(f"Risk Check Failed [{symbol}]: Dynamic max invest exceeded. "
-                                f"Current: {current_invested:,.0f}, Adding: {amount:,.0f}, Limit: {max_invest:,.0f} "
-                                f"(Pct: {self.get_max_position_pct()}%)")
-            self.signals.risk_warning.emit(f"[{symbol}] 자산 비중 기반 투자 한도({max_invest:,.0f}원) 초과로 매수 거부")
-            return False
+            max_invest = self.get_dynamic_max_invest()
+            if current_invested + amount > max_invest:
+                self.logger.warning(f"Risk Check Failed [{symbol}]: Dynamic max invest exceeded. "
+                                    f"Current: {current_invested:,.0f}, Adding: {amount:,.0f}, Limit: {max_invest:,.0f} "
+                                    f"(Pct: {self.get_max_position_pct()}%)")
+                self.signals.risk_warning.emit(f"[{symbol}] 자산 비중 기반 투자 한도({max_invest:,.0f}원) 초과로 매수 거부")
+                return False
 
-        # 2. Max Open Positions Check
-        # Count symbols with holdings > 0. If this symbol is new, check against limit.
-        open_positions = sum(1 for sym, qty in self.order_manager.holdings.items() if qty > 0)
-        if current_holding_qty == 0 and open_positions >= self.get_max_open_positions():
-            self.logger.warning(f"Risk Check Failed [{symbol}]: Max open positions ({self.get_max_open_positions()}) reached.")
-            self.signals.risk_warning.emit(f"최대 동시 보유 종목 수({self.get_max_open_positions()}개) 초과로 신규 진입 거부")
-            return False
+            # [1-2] Max Open Positions Check
+            open_positions = sum(1 for sym, qty in self.order_manager.holdings.items() if qty > 0)
+            if current_holding_qty == 0 and open_positions >= self.get_max_open_positions():
+                self.logger.warning(f"Risk Check Failed [{symbol}]: Max open positions ({self.get_max_open_positions()}) reached.")
+                self.signals.risk_warning.emit(f"최대 동시 보유 종목 수({self.get_max_open_positions()}개) 초과로 신규 진입 거부")
+                return False
 
         return True

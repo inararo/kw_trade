@@ -249,7 +249,7 @@ class HistoricalFetcher:
                     self.logger.info(f"[{symbol}] 유효한 데이터 수집 성공 (형식: {formatted_symbol}, 건수: {len(all_data)})")
                     break
                 else:
-                    self.logger.error(f"[{symbol}] 형식 {formatted_symbol} 결과가 유효하지 않음. 다음 형식 시도...")
+                    self.logger.warning(f"[{symbol}] 형식 {formatted_symbol} 결과가 유효하지 않음. 다음 형식 시도...")
 
         if final_data:
             self.logger.info(f"[{symbol}] 최종 수집 완료: 총 {len(final_data)}건")

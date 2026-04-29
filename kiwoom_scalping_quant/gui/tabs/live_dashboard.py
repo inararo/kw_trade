@@ -131,7 +131,7 @@ class LiveDashboardTab(QWidget):
         log_group = QGroupBox("시스템 및 체결 로그")
         log_layout = QVBoxLayout()
         self.log_list = QListWidget()
-        self.log_list.setStyleSheet("background-color: #2b2b2b; color: #a9b7c6; font-family: monospace; font-size: 11px;")
+        self.log_list.setStyleSheet("background-color: #2b2b2b; color: #90EE90; font-family: monospace; font-size: 11px;")
         log_layout.addWidget(self.log_list)
         log_group.setLayout(log_layout)
         dashboard_content_layout.addWidget(log_group, stretch=2)

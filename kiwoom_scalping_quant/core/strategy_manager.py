@@ -108,17 +108,59 @@ class StrategyManager:
             self.logger.error("StrategyManager: 엔진 초기화 실패 - 로드된 에이전트가 없습니다.")
             return
 
-        self.symbols = [s.get("code").split('_')[0] for s in universe_list if s.get("code")]
+        # [완전 해결] 모든 식별자를 순수 숫자 코드로 통일하여 중복 방지
+        unique_symbols = set()
+        protected_list = self.config_manager.get("protected_symbols", [])
+        protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+
+        # 1. 주도주 리스트 정제 및 추가
+        for s in universe_list:
+            orig = s.get("code")
+            if not orig: continue
+            clean = orig.split('_')[0]
+            if clean not in protected_symbols:
+                unique_symbols.add(clean)
+
+        # 2. 보유 종목 정제 및 추가
+        for orig in self.order_manager.bot_holdings.keys():
+            clean = orig.split('_')[0]
+            if clean not in protected_symbols:
+                unique_symbols.add(clean)
+
+        # 최종 심볼 리스트 (순수 숫자로 통일)
+        self.symbols = list(unique_symbols)
         self.envs.clear()
         
         self.logger.info(f"StrategyManager: 확정된 유니버스 {len(self.symbols)}개에 대해 엔진 초기화 시작.")
+        new_engines = []
         for sym in self.symbols:
             from core.live_trading_engine import LiveTradingEngine
-            self.envs[sym] = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
+            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
+            self.envs[sym] = engine
+            new_engines.append(engine)
             self.last_action_times[sym] = 0.0
             self.logger.info(f"StrategyManager: [{sym}] 실시간 엔진 결합 완료.")
+
+        # [보강] 초기화 시 토큰이 있다면 즉시 웜업 시도 (start() 호출을 기다리지 않음)
+        token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+        if token and new_engines:
+            asyncio.create_task(self._safe_sequential_warmup(new_engines, token))
         
         print(f"시스템: [SUCCESS] 총 {len(self.symbols)}개의 매매 엔진 배치 완료.")
+
+        # [추가] UI 쪽에 초기 유니버스 리스트 전달 (보유 종목 합산 및 보호 종목 필터링 적용)
+        live_vm = getattr(self.config_manager, "_injected_live_vm", None)
+        if live_vm:
+            # 1. 주도주 리스트 필터링
+            display_universe = [s for s in universe_list if str(s.get("code")).split('_')[0] not in protected_symbols]
+            display_codes = set(str(s.get("code")).split('_')[0] for s in display_universe)
+            
+            # 2. 주도주에 없는 보유 종목 추가
+            for sym, qty in self.order_manager.bot_holdings.items():
+                if sym not in display_codes and sym not in protected_symbols:
+                    display_universe.append({"code": sym, "name": f"{sym} (보유)", "is_holding": True})
+            
+            live_vm.update_universe_list(display_universe)
 
     def _fallback_empty_model(self):
         config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
@@ -136,8 +178,6 @@ class StrategyManager:
         self.is_running = True
         self.logger.info(f"StrategyManager: 멀티 종목({len(self.symbols)}개) 전략 루프 시작.")
 
-        from core.scheduler import MarketState
-        scheduler = getattr(self.config_manager, "_injected_scheduler", None)
         current_state = getattr(scheduler, "current_state", MarketState.OUT_OF_MARKET)
 
         if current_state == MarketState.TRADING:
@@ -145,13 +185,12 @@ class StrategyManager:
             token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
             if token:
                 engines_list = list(self.envs.values())
-                # 20개 종목을 한 번에 쏘지 않고 순차 웜업 큐로 넘김
                 asyncio.create_task(self._safe_sequential_warmup(engines_list, token))
         else:
             self.logger.info(f"StrategyManager: 장외 시간({current_state}) - 웜업을 생략합니다.")
 
         asyncio.create_task(self._empty_candle_watchdog())
-        asyncio.create_task(self._balance_sync_loop()) # [신규] 잔고 동기화 루프 시작
+        asyncio.create_task(self._balance_sync_loop()) 
 
     async def update_universe(self, new_universe: List[Dict[str, Any]]):
         """장중 유니버스 동적 교체"""
@@ -162,14 +201,38 @@ class StrategyManager:
             self.logger.error(f"주도주 스냅샷 로깅 에러 (update): {e}")
 
         async with self._swap_lock:
-            new_symbols = list(set([s.get("code").split('_')[0] for s in new_universe if s.get("code")]))
+            # [완전 해결] 장중 교체 시에도 순수 숫자로 통일
+            unique_symbols = set()
+            protected_list = self.config_manager.get("protected_symbols", [])
+            protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+
+            for s in new_universe:
+                orig = s.get("code")
+                if not orig: continue
+                clean = orig.split('_')[0]
+                if clean not in protected_symbols:
+                    unique_symbols.add(clean)
+            
+            for orig in self.order_manager.bot_holdings.keys():
+                clean = orig.split('_')[0]
+                if clean not in protected_symbols:
+                    unique_symbols.add(clean)
+
+            new_symbols_list = list(unique_symbols)
             current_symbols = list(self.symbols)
 
             # 1. 기존 유니버스에서 빠진 종목 정리
             for sym in current_symbols:
-                if sym not in new_symbols:
-                    holdings = self.order_manager.holdings.get(sym, 0)
-                    if holdings > 0: continue
+                if sym not in new_symbols_list:
+                    # [중요] 보호 종목은 잔고 상관없이 무조건 제거!
+                    if sym in protected_symbols:
+                        self.logger.warning(f"🚫 [보호 종목] {sym} 종목은 잔고 여부와 상관없이 감시 리스트에서 즉시 제거됩니다.")
+                    else:
+                        # 실제 잔고가 있거나 봇 관리 종목이면 유지 (clean 코드로 비교)
+                        if sym in self.order_manager.bot_holdings or self.order_manager.holdings.get(sym, 0) > 0:
+                            self.logger.warning(f"⚠️ [Zombie Position 방어] {sym} 종목이 탈락했으나 잔고/미체결로 인해 강제 유지됩니다.")
+                            continue
+                    
                     self.symbols.remove(sym)
                     if sym in self.envs: del self.envs[sym]
                     if hasattr(self.data_collector, 'unsubscribe_symbol'):
@@ -177,14 +240,16 @@ class StrategyManager:
 
             # 2. 새로운 종목 추가 및 엔진 생성
             new_engines = []
-            for sym in new_symbols:
+            for sym in new_symbols_list:
                 if sym not in self.symbols:
+                    # [이중 안전장치] 여기서도 보호 종목 체크
+                    if sym in protected_symbols: continue
+                    
                     self.symbols.append(sym)
                     from core.live_trading_engine import LiveTradingEngine
                     new_engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
                     self.envs[sym] = new_engine
                     new_engines.append(new_engine)
-
                     if hasattr(self.data_collector, 'subscribe_symbol'):
                         await self.data_collector.subscribe_symbol(sym)
 
@@ -194,16 +259,28 @@ class StrategyManager:
                 if token:
                     asyncio.create_task(self._safe_sequential_warmup(new_engines, token))
 
-            # 4. UI 쪽에 종목 리스트가 교체되었음을 알림
+            # 4. UI 쪽에 종목 리스트가 교체되었음을 알림 (보유 종목 합산 및 보호 종목 필터링)
             live_vm = getattr(self.config_manager, "_injected_live_vm", None)
             if live_vm:
-                live_vm.update_universe_list(new_universe)
+                # 1. 새로운 주도주 리스트 필터링
+                display_universe = [s for s in new_universe if str(s.get("code")).split('_')[0] not in protected_symbols]
+                display_codes = set(str(s.get("code")).split('_')[0] for s in display_universe)
+                
+                # 2. 주도주에 없지만 보유 중인 종목 강제 추가
+                for sym, qty in self.order_manager.bot_holdings.items():
+                    clean = sym.split('_')[0]
+                    if clean not in display_codes and clean not in protected_symbols:
+                        display_universe.append({"code": clean, "name": f"{clean} (보유)", "is_holding": True})
+                
+                live_vm.update_universe_list(display_universe)
 
     async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
         if not self.is_running or self.is_ai_paused: return
         try:
+            # [단일화] 무조건 순수 코드로 엔진 조회
             clean_symbol = symbol.split('_')[0]
             engine = self.envs.get(clean_symbol)
+
             if engine and price > 0 and timestamp:
                 # ==============================================================
                 # [긴급 패치] 엔진이 오해하지 않도록 인자 개수와 키워드를 완벽하게 맞춰서 던짐!
@@ -243,15 +320,38 @@ class StrategyManager:
         self.logger.info("StrategyManager Stopped.")
 
     async def _safe_sequential_warmup(self, engines_to_warmup: list, token: str):
-        """API 조회 제한(Rate Limit)을 피하기 위해 0.5초 간격으로 순차적 웜업 수행"""
-        self.logger.info(f"StrategyManager: {len(engines_to_warmup)}개 종목 순차 웜업 큐 시작...")
+        """API 조회 제한(Rate Limit)을 피하며 안정적으로 웜업 수행"""
+        if not engines_to_warmup: return
+        
+        self.logger.info(f"🚀 StrategyManager: {len(engines_to_warmup)}개 종목 웜업 큐 가동 시작 (토큰 확인됨)")
+        
+        count = 0
+        success_count = 0
+        
         for engine in engines_to_warmup:
+            count += 1
+            sym = getattr(engine, 'symbol', 'UNKNOWN')
+            
             try:
-                await engine.warmup(token)
+                self.logger.info(f"⏳ [{sym}] 웜업 시작 ({count}/{len(engines_to_warmup)})")
+                
+                # 개별 종목 웜업에 최대 10초 타임아웃 적용 (한 종목에 묶이지 않도록)
+                await asyncio.wait_for(engine.warmup(token), timeout=10.0)
+                
+                # 웜업 후 상태 확인
+                is_ready = getattr(engine, 'is_warmed_up', False)
+                if is_ready:
+                    success_count += 1
+                    self.logger.info(f"✅ [{sym}] 웜업 성공 (현재 {success_count}개 완료)")
+                else:
+                    self.logger.warning(f"⚠️ [{sym}] 웜업 완료되었으나 상태가 False입니다. (데이터 부족 가능성)")
+                    
+            except asyncio.TimeoutError:
+                self.logger.error(f"⏰ [{sym}] 웜업 타임아웃! (10초 경과 - 다음 종목으로 넘어감)")
             except Exception as e:
-                self.logger.error(f"[{engine.symbol}] 웜업 중 오류 발생: {e}")
+                self.logger.error(f"❌ [{sym}] 웜업 중 치명적 오류: {e}")
 
-            # [가장 중요] 증권사 API TR 조회 제한 회피를 위한 필수 딜레이!
+            # 증권사 API TR 조회 제한 회피를 위한 필수 딜레이 (0.4~0.6초)
             await asyncio.sleep(0.5)
 
-        self.logger.info("StrategyManager: 모든 종목 순차 웜업 완료!")
+        self.logger.info(f"🏁 StrategyManager: 유니버스 웜업 종료. (성공: {success_count}/{len(engines_to_warmup)})")
