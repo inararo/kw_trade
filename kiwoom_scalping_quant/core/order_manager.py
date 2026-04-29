@@ -22,10 +22,11 @@ class OrderState:
     FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
-    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None):
+    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None):
         self.config = config
         self.auth_manager = auth_manager
         self.notifier = telegram_notifier
+        self.firebase_manager = firebase_manager  # [Firebase] Firestore 연동 매니저
         self.logger = logging.getLogger("OrderManager")
         self.signals = OrderSignals()
 
@@ -516,6 +517,26 @@ class OrderManager:
                     price=exec_price,
                     qty=exec_qty,
                     pnl=pnl
+                ))
+
+            # [Firebase] 체결 로그 Firestore 전송
+            if self.firebase_manager:
+                # 종목명 확인 (텔레그램 알림에서 구한 값 재사용 또는 재탐색)
+                fb_symbol_name = symbol
+                universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
+                for s in universe:
+                    if s.get('code') == symbol:
+                        fb_symbol_name = s.get('name', symbol)
+                        break
+
+                from datetime import datetime
+                asyncio.create_task(self.firebase_manager.send_trade_log(
+                    log_type=order['type'],
+                    symbol=symbol,
+                    symbol_name=fb_symbol_name,
+                    price=float(exec_price),
+                    qty=int(exec_qty),
+                    timestamp=datetime.now().isoformat(timespec='seconds'),
                 ))
 
         elif msg_type == '취소확인':

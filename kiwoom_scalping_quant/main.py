@@ -131,6 +131,11 @@ class QuantSystem:
         # Step 0: DB 연결 확인
         self.main_window.show()
         print("시스템: 부팅 시퀀스를 시작합니다. (모델 기반 에이전트 모드)")
+
+        # [Firebase] Firebase 매니저 초기화 및 부팅 상태 전송
+        self.firebase_manager = self.container.firebase_manager()
+        asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
+        print("시스템: [Firebase] 부팅 상태(BOOTING)를 Firestore에 전송합니다.")
         
         # 텔레그램 부팅 알림 전송
         notifier = self.container.telegram_notifier()
@@ -315,6 +320,18 @@ class QuantSystem:
 
         # 8. 종료 이벤트 세트 (main 함수의 loop가 이를 인지하고 탈출하도록 함)
         print("시스템: 모든 정리가 완료되었습니다.")
+
+        # [Firebase] 종료 상태 전송 (await로 동기 처리하여 루프 종료 전 확실히 전송)
+        if hasattr(self, 'firebase_manager') and self.firebase_manager:
+            try:
+                await asyncio.wait_for(
+                    self.firebase_manager.update_system_status("STOPPED"),
+                    timeout=3.0
+                )
+                print("시스템: [Firebase] 종료 상태(STOPPED)를 Firestore에 전송했습니다.")
+            except Exception:
+                pass
+
         self.shutdown_event.set()
 
 def main():

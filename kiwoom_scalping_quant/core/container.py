@@ -13,6 +13,7 @@ from core.risk_manager import RiskManager
 from core.telegram_notifier import TelegramNotifier
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
+from infrastructure.firebase_manager import FirebaseManager
 
 class Container(containers.DeclarativeContainer):
     """
@@ -50,6 +51,12 @@ class Container(containers.DeclarativeContainer):
         config_manager=config_manager
     )
 
+    # Firebase Cloud Firestore 연동 매니저 (싱글톤)
+    firebase_manager = providers.Singleton(
+        FirebaseManager,
+        config_manager=config_manager
+    )
+
     # Core 비즈니스 로직 (싱글톤)
     token_manager = providers.Singleton(
         TokenManager,
@@ -65,7 +72,8 @@ class Container(containers.DeclarativeContainer):
         OrderManager,
         config=config_manager,
         auth_manager=token_manager,
-        telegram_notifier=telegram_notifier
+        telegram_notifier=telegram_notifier,
+        firebase_manager=firebase_manager
     )
 
     risk_manager = providers.Singleton(
@@ -88,7 +96,8 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         universe_manager=universe_manager,
-        telegram_bot=telegram_notifier
+        telegram_bot=telegram_notifier,
+        firebase_manager=firebase_manager
     )
 
     # Presentation Layer - ViewModels (싱글톤으로 전환하여 상태 및 콜백 일관성 유지)

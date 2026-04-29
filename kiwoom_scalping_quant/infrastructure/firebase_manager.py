@@ -1,0 +1,194 @@
+"""
+FirebaseManager - 인프라 계층 (Infrastructure Layer)
+
+Firebase Cloud Firestore를 통한 외부 서비스 연동 모듈.
+- 체결 로그를 Firestore `trade_logs` 컬렉션에 기록
+- 시스템 상태를 Firestore `system/status` 도큐먼트에 실시간 업데이트
+
+[비동기 처리 전략]
+firebase-admin의 Firestore SDK는 동기(Blocking) API입니다.
+asyncio 이벤트 루프가 블로킹되지 않도록 asyncio.to_thread()를 사용하여
+OS 스레드 풀에서 실행합니다.
+
+[Fail-Safe 원칙]
+Firebase 초기화/전송 실패 시 시스템 매매 흐름이 절대 중단되지 않도록
+모든 public 메서드에서 예외를 내부적으로 처리합니다.
+"""
+
+import asyncio
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Optional
+
+logger = logging.getLogger("FirebaseManager")
+
+
+class FirebaseManager:
+    """
+    Firebase Cloud Firestore 연동 매니저.
+
+    DI 컨테이너에 Singleton으로 등록되며,
+    OrderManager(체결 로그)와 MarketScheduler(시스템 상태)에서 호출됩니다.
+    """
+
+    def __init__(self, config_manager=None):
+        """
+        Args:
+            config_manager: ConfigManager 인스턴스.
+                            FIREBASE_KEY_PATH 설정값을 읽기 위해 사용.
+                            None이면 프로젝트 루트의 firebase_key.json으로 폴백.
+        """
+        self.config_manager = config_manager
+        self._db = None        # firestore.Client 인스턴스
+        self._initialized = False
+        self._init_firebase()
+
+    # ─────────────────────────────────────────────────────────────
+    # 내부 초기화
+    # ─────────────────────────────────────────────────────────────
+
+    def _init_firebase(self):
+        """Firebase 앱 및 Firestore 클라이언트를 초기화합니다."""
+        try:
+            import firebase_admin
+            from firebase_admin import credentials, firestore
+
+            # 1. 키 파일 경로 결정: 환경변수 > ConfigManager > 루트 폴백
+            key_path = os.getenv("FIREBASE_KEY_PATH", "")
+            if not key_path and self.config_manager:
+                key_path = self.config_manager.get("FIREBASE_KEY_PATH", "")
+            if not key_path:
+                # 프로젝트 루트 기준으로 자동 탐색
+                root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                key_path = os.path.join(root_dir, "firebase_key.json")
+
+            if not os.path.exists(key_path):
+                logger.warning(
+                    f"FirebaseManager: 키 파일을 찾을 수 없습니다 ({key_path}). "
+                    "Firestore 연동이 비활성화됩니다."
+                )
+                return
+
+            # 2. 중복 초기화 방지 (앱이 이미 존재하면 재사용)
+            try:
+                app = firebase_admin.get_app()
+            except ValueError:
+                cred = credentials.Certificate(key_path)
+                app = firebase_admin.initialize_app(cred)
+
+            # 3. Firestore 클라이언트 생성
+            self._db = firestore.client()
+            self._initialized = True
+            logger.info("FirebaseManager: Firestore 초기화 성공 ✅")
+
+        except ImportError:
+            logger.warning(
+                "FirebaseManager: firebase-admin 패키지가 설치되지 않았습니다. "
+                "`pip install firebase-admin`을 실행하세요."
+            )
+        except Exception as e:
+            logger.error(f"FirebaseManager: 초기화 중 예외 발생 (연동 비활성화): {e}")
+
+    # ─────────────────────────────────────────────────────────────
+    # Public API - 체결 로그 전송 (Write)
+    # ─────────────────────────────────────────────────────────────
+
+    async def send_trade_log(
+        self,
+        log_type: str,
+        symbol: str,
+        symbol_name: str,
+        price: float,
+        qty: int,
+        timestamp: str,
+    ):
+        """
+        체결 데이터를 Firestore `trade_logs` 컬렉션에 비동기로 기록합니다.
+
+        Args:
+            log_type:    주문 유형 ('BUY' 또는 'SELL')
+            symbol:      종목 코드 (예: '005930')
+            symbol_name: 종목명 (예: '삼성전자')
+            price:       체결 가격
+            qty:         체결 수량
+            timestamp:   체결 시각 문자열 (ISO 8601 권장)
+
+        Firestore 저장 포맷:
+        {
+            "log_type":    "BUY",
+            "symbol":      "005930",
+            "symbol_name": "삼성전자",
+            "price":       75000.0,
+            "qty":         10,
+            "timestamp":   "2026-04-29T09:05:00",
+            "created_at":  <Firestore 서버 타임스탬프>
+        }
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+
+        doc_data = {
+            "log_type":    log_type,
+            "symbol":      symbol,
+            "symbol_name": symbol_name,
+            "price":       float(price),
+            "qty":         int(qty),
+            "timestamp":   timestamp,
+            "created_at":  fs.SERVER_TIMESTAMP,
+        }
+
+        try:
+            await asyncio.to_thread(
+                self._db.collection("trade_logs").add, doc_data
+            )
+            logger.debug(
+                f"FirebaseManager: trade_log 저장 완료 "
+                f"[{log_type}] {symbol_name}({symbol}) {qty}주 @ {price:,.0f}원"
+            )
+        except Exception as e:
+            # Fail-Safe: Firebase 전송 실패가 매매 흐름을 절대 중단시키지 않음
+            logger.error(f"FirebaseManager: trade_log 전송 실패 (무시): {e}")
+
+    # ─────────────────────────────────────────────────────────────
+    # Public API - 시스템 상태 업데이트 (Upsert)
+    # ─────────────────────────────────────────────────────────────
+
+    async def update_system_status(self, state: str):
+        """
+        현재 시스템(봇) 상태를 Firestore `system/status` 도큐먼트에 덮어씁니다.
+        모바일 앱에서 봇의 현재 운영 상태를 실시간으로 확인할 수 있습니다.
+
+        Args:
+            state: MarketState 상태 문자열
+                   예) 'BOOTING', 'IDLE', 'PREPARE', 'TRADING',
+                       'CUTOFF', 'LIQUIDATING', 'STOPPED'
+
+        Firestore 저장 포맷 (컬렉션: system / 도큐먼트: status):
+        {
+            "current_state": "TRADING",
+            "updated_at":    <Firestore 서버 타임스탬프>
+        }
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+
+        doc_data = {
+            "current_state": state,
+            "updated_at":    fs.SERVER_TIMESTAMP,
+        }
+
+        try:
+            # merge=True: 도큐먼트가 없으면 생성, 있으면 해당 필드만 갱신
+            await asyncio.to_thread(
+                self._db.collection("system").document("status").set,
+                doc_data,
+                merge=True,
+            )
+            logger.debug(f"FirebaseManager: system/status 업데이트 → {state}")
+        except Exception as e:
+            logger.error(f"FirebaseManager: system/status 업데이트 실패 (무시): {e}")

@@ -22,7 +22,7 @@ class MarketScheduler:
     한국 거래소(KRX) 시간에 맞춰 시스템 상태를 제어하는 스케줄러.
     주말/휴장일 처리 및 강제 시간 조절(디버깅) 기능을 지원합니다.
     """
-    def __init__(self, data_collector=None, order_manager=None, universe_manager=None, telegram_bot=None):
+    def __init__(self, data_collector=None, order_manager=None, universe_manager=None, telegram_bot=None, firebase_manager=None):
         self.logger = logging.getLogger("MarketScheduler")
         self.signals = SchedulerSignals()
 
@@ -30,6 +30,7 @@ class MarketScheduler:
         self.order_manager = order_manager
         self.universe_manager = universe_manager
         self.telegram_bot = telegram_bot
+        self.firebase_manager = firebase_manager  # [Firebase] 시스템 상태 업데이트용
 
         self.current_state = MarketState.IDLE
         self._is_running = False
@@ -158,6 +159,10 @@ class MarketScheduler:
         self.logger.info(f"State Transition: {old_state} -> {new_state}")
         self.current_state = new_state
         self.signals.state_changed.emit(old_state, new_state)
+
+        # [Firebase] 시스템 상태를 Firestore에 실시간 업데이트
+        if self.firebase_manager:
+            asyncio.create_task(self.firebase_manager.update_system_status(new_state))
 
         # Execute actions based on the new state
         if new_state == MarketState.PREPARE:

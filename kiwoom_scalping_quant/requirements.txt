@@ -1,9 +1,9 @@
-PyQt6==6.4.2
+PyQt6
 qasync==0.24.0
 websockets==11.0.3
 numpy
 gymnasium==0.29.1
-stable-baselines3==2.1.0
+stable-baselines3==2.8.0
 torch
 sb3-contrib==2.8.0
 influxdb-client[async]==1.36.0
@@ -19,3 +19,4 @@ python-dotenv==1.0.0
 aiohttp
 pyqtgraph==0.13.3
 tensorboard==2.14.0
+firebase-admin>=6.0.0
