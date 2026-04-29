@@ -42,11 +42,11 @@ class TelegramNotifier:
             async with session.post(url, json=payload, timeout=5) as resp:
                 if resp.status != 200:
                     err_body = await resp.text()
-                    self.logger.error(f"텔레그램 발송 실패 (Status {resp.status}): {err_body}")
+                    self.logger.warning(f"텔레그램 발송 실패 (Status {resp.status}): {err_body}")
                 else:
                     self.logger.debug(f"텔레그램 발송 완료: {text[:20]}...")
         except Exception as e:
-            self.logger.error(f"텔레그램 발송 중 에러 발생: {e}")
+            self.logger.warning(f"텔레그램 발송 중 에러 발생: {e}")
 
     async def notify_app_start(self):
         msg = "🚀 <b>[Antigravity Trading System]</b>\n시스템 부팅 시퀀스가 시작되었습니다."
