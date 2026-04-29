@@ -192,3 +192,95 @@ class FirebaseManager:
             logger.debug(f"FirebaseManager: system/status 업데이트 → {state}")
         except Exception as e:
             logger.error(f"FirebaseManager: system/status 업데이트 실패 (무시): {e}")
+
+    # ─────────────────────────────────────────────────────────────
+    # Public API - 실시간 리스너 (Listen)
+    # ─────────────────────────────────────────────────────────────
+
+    def listen_to_settings(self, callback_func):
+        """
+        settings/core 도큐먼트의 변경사항을 실시간으로 감시합니다.
+        on_snapshot은 백그라운드 스레드에서 실행되므로,
+        callback_func 내부에서 call_soon_threadsafe 등으로 루프와 연결해야 합니다.
+
+        Args:
+            callback_func: 데이터 변경 시 호출될 함수. 매개변수: dict
+        """
+        if not self._initialized or not self._db:
+            logger.warning("FirebaseManager: settings 리스너 비활성 (초기화 실패)")
+            return
+
+        def on_snapshot(doc_snapshot, changes, read_time):
+            for doc in doc_snapshot:
+                if doc.exists:
+                    data = doc.to_dict()
+                    logger.info(f"FirebaseManager: 원격 설정 변경 감지 → {data}")
+                    try:
+                        callback_func(data)
+                    except Exception as e:
+                        logger.error(f"FirebaseManager: settings 콜백 오류: {e}")
+
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            self._settings_watcher = doc_ref.on_snapshot(on_snapshot)
+            logger.info("FirebaseManager: settings/core 리스너 활성화 ✅")
+        except Exception as e:
+            logger.error(f"FirebaseManager: settings 리스너 설정 중 오류: {e}")
+
+    def listen_to_commands(self, callback_func):
+        """
+        commands 컬렉션의 PENDING 상태 명령을 실시간으로 감시합니다.
+        ADDED 이벤트(새 문서 추가)만 처리하여 중복 실행을 방지합니다.
+
+        Args:
+            callback_func: 명령 감지 시 호출될 함수. 매개변수: (doc_id: str, data: dict)
+        """
+        if not self._initialized or not self._db:
+            logger.warning("FirebaseManager: commands 리스너 비활성 (초기화 실패)")
+            return
+
+        def on_snapshot(col_snapshot, changes, read_time):
+            for change in changes:
+                # ADDED만 처리: 최초 연결 시 기존 PENDING 문서 재처리 방지
+                if change.type.name == 'ADDED':
+                    doc = change.document
+                    data = doc.to_dict()
+                    logger.warning(
+                        f"FirebaseManager: 원격 명령 수신 "
+                        f"→ action={data.get('action')} (ID: {doc.id})"
+                    )
+                    try:
+                        callback_func(doc.id, data)
+                    except Exception as e:
+                        logger.error(f"FirebaseManager: commands 콜백 오류: {e}")
+
+        try:
+            query = self._db.collection("commands").where("status", "==", "PENDING")
+            self._commands_watcher = query.on_snapshot(on_snapshot)
+            logger.info("FirebaseManager: commands 리스너 활성화 ✅")
+        except Exception as e:
+            logger.error(f"FirebaseManager: commands 리스너 설정 중 오류: {e}")
+
+    async def update_command_status(self, doc_id: str, status: str):
+        """
+        명령 처리 결과를 Firestore에 기록합니다 (예: PENDING → COMPLETED).
+
+        Args:
+            doc_id: commands 컬렉션의 문서 ID
+            status: 변경할 상태 문자열 (예: 'COMPLETED', 'FAILED')
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+
+        try:
+            doc_ref = self._db.collection("commands").document(doc_id)
+            await asyncio.to_thread(
+                doc_ref.update,
+                {"status": status, "completed_at": fs.SERVER_TIMESTAMP}
+            )
+            logger.info(f"FirebaseManager: 명령 상태 업데이트 완료 ({doc_id} → {status})")
+        except Exception as e:
+            logger.error(f"FirebaseManager: 명령 상태 업데이트 실패: {e}")
+

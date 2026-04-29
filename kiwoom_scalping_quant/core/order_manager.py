@@ -655,6 +655,32 @@ class OrderManager:
                 self.logger.info(f"전체 미체결 취소 요청 (Internal ID: {int_id})")
                 await self.send_order("CANCEL", order['symbol'], 0, order['unexecuted_qty'], orig_order_no=order.get('broker_id'))
 
+    async def emergency_liquidate(self):
+        """
+        [Firebase 원격 명령] 패닉 셀: 모든 미체결 주문을 즉시 취소 후
+        보유 중인 모든 종목을 시장가로 전량 매도합니다.
+        """
+        self.logger.critical("🚨 [PANIC SELL] 긴급 청산 명령 수신! 즉시 모든 포지션을 정리합니다.")
+
+        # 1단계: 미체결 주문 전량 취소
+        await self.cancel_all_orders()
+
+        # 2단계: 보유 수량이 0보다 큰 종목만 추출
+        active_holdings = {sym: qty for sym, qty in self.holdings.items() if qty > 0}
+
+        if not active_holdings:
+            self.logger.info("[PANIC SELL] 정리할 보유 종목이 없습니다.")
+            return
+
+        # 3단계: 모든 보유 종목 시장가 매도 (price=0 → kt10001 trde_tp='3' 시장가)
+        tasks = []
+        for symbol, qty in active_holdings.items():
+            self.logger.warning(f"[PANIC SELL] 시장가 매도: {symbol} {qty}주")
+            tasks.append(self.send_order("SELL", symbol, 0, qty))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.logger.critical(f"[PANIC SELL] {len(tasks)}개 종목 청산 주문 전송 완료. 결과: {results}")
+
     # ─────────────────────────────────────────────────────
     # [신규] 실전 잔고 동기화 로직 (Real Balance Sync)
     # ─────────────────────────────────────────────────────

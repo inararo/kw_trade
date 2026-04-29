@@ -141,6 +141,9 @@ class QuantSystem:
         notifier = self.container.telegram_notifier()
         await notifier.notify_app_start()
 
+        # [Firebase] 원격 설정/명령 리스너 활성화 (백그라운드 스레드 기반)
+        self._setup_firebase_listeners()
+
         # Step 1: 에이전트 무기 장착 (모델 로드) - Fail-Safe 전략
         # (모델 로드 중 오류가 발생해도 random 모델로 자가 복구하도록 StrategyManager에 구현됨)
         print("시스템: [Step 1] Config 기반 에이전트 모델 로드 시작...")
@@ -234,6 +237,57 @@ class QuantSystem:
         finally:
             # 루프를 빠져나올 때 수행될 정리
             print("시스템: 메인 루프 종료됨.")
+
+    def _setup_firebase_listeners(self):
+        """
+        [Firebase] 실시간 리스너를 설정합니다.
+        - settings/core 변경 감지 → ConfigManager 메모리 캐시 즉시 반영
+        - commands PENDING 감지 → PANIC_SELL 실행 후 COMPLETED 보고
+
+        [Thread-Safe 설계]
+        on_snapshot은 Firebase 백그라운드 스레드에서 실행됩니다.
+        - 단순 설정값 변경: call_soon_threadsafe로 메인 루프에 동기화
+        - 비동기 코루틴 실행: run_coroutine_threadsafe로 메인 루프에서 실행
+        """
+        if not hasattr(self, 'firebase_manager') or not self.firebase_manager:
+            return
+
+        loop = asyncio.get_running_loop()
+
+        # ── 1. 설정 변경 리스너 ──────────────────────────────────────
+        def on_settings_changed(data: dict):
+            """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 루프에 전달"""
+            def _apply():
+                config_mgr = self.container.config_manager()
+                for key, value in data.items():
+                    config_mgr._config_cache[key] = value
+                    logging.info(f"[Firebase] 원격 설정 반영 → {key} = {value}")
+            loop.call_soon_threadsafe(_apply)
+
+        self.firebase_manager.listen_to_settings(on_settings_changed)
+
+        # ── 2. 긴급 명령 리스너 ─────────────────────────────────────
+        def on_command_received(doc_id: str, data: dict):
+            """백그라운드 스레드에서 호출됨 → run_coroutine_threadsafe로 코루틴 실행"""
+            action = data.get("action", "")
+            if action != "PANIC_SELL":
+                logging.warning(f"[Firebase] 알 수 없는 명령 무시: {action}")
+                return
+
+            logging.warning(f"[Firebase] PANIC_SELL 명령 수신 (ID: {doc_id})")
+
+            async def _execute():
+                try:
+                    await self.order_manager.emergency_liquidate()
+                    await self.firebase_manager.update_command_status(doc_id, "COMPLETED")
+                    logging.critical(f"[Firebase] 긴급 청산 완료 보고 (ID: {doc_id} → COMPLETED)")
+                except Exception as e:
+                    logging.error(f"[Firebase] 긴급 청산 중 오류: {e}")
+
+            asyncio.run_coroutine_threadsafe(_execute(), loop)
+
+        self.firebase_manager.listen_to_commands(on_command_received)
+        logging.info("[Firebase] 실시간 리스너 설정 완료 ✅")
 
     def _on_market_state_changed(self, old_state: str, new_state: str):
         """스케줄러 상태 변경에 따른 웹소켓 자동 토글 (Event-Driven)"""
