@@ -900,6 +900,15 @@ class SettingsViewModel(QObject):
         else:
             self.save_failed.emit(f"설정 로드 실패: {result.failure()}")
 
+    def on_remote_settings_changed(self, data: dict):
+        """
+        [실시간 동기화] Firebase 등 외부에서 설정이 변경되었을 때 호출되어
+        UI 구성 요소들을 최신값으로 즉시 갱신합니다.
+        """
+        # ConfigManager의 최신 캐시 데이터를 UI로 전달
+        full_config = self.config_manager.get_dict()
+        self.settings_loaded.emit(full_config)
+
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""
         # Convert UI mode string to internal mode string and map to nested structure

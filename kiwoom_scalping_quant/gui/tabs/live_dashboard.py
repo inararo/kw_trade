@@ -170,6 +170,48 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_status_alert.connect(self.on_status_alert)
         self.view_model.sig_error_occurred.connect(self.on_error)
         self.view_model.sig_universe_changed.connect(self.on_universe_changed) # [NEW]
+        # [원격 제어 연동] Firebase에서 제어 명령이 올 때 버튼 UI 상태를 즉시 갱신
+        self.view_model.sig_trading_paused.connect(self.on_ai_trading_toggled)
+        self.view_model.sig_monitoring_stopped.connect(self.on_monitoring_toggled)
+
+    @pyqtSlot(bool)
+    def on_monitoring_toggled(self, stopped: bool):
+        """
+        [원격/로컬 공통] 종목 감시 상태 변경 시 버튼 UI를 동기화합니다.
+        stopped=True: 감시 중단(버튼 눌림 상태)
+        stopped=False: 감시 중(버튼 해제 상태)
+        """
+        # blockSignals: setChecked 호출 시 clicked 시그널이 중복 발생하는 것을 방지
+        self.btn_monitor_toggle.blockSignals(True)
+        self.btn_monitor_toggle.setChecked(stopped)
+        self.btn_monitor_toggle.blockSignals(False)
+
+        if stopped:
+            self.btn_monitor_toggle.setText("📡 종목 감시 재개")
+            self.btn_monitor_toggle.setStyleSheet("background-color: #d32f2f; font-weight: bold; height: 35px;")
+            self.btn_ai_toggle.setEnabled(False)
+        else:
+            self.btn_monitor_toggle.setText("🛰️ 종목 감시 중지")
+            self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
+            self.btn_ai_toggle.setEnabled(True)
+
+    @pyqtSlot(bool)
+    def on_ai_trading_toggled(self, paused: bool):
+        """
+        [원격/로컬 공통] AI 매매 일시정지 상태 변경 시 버튼 UI를 동기화합니다.
+        paused=True: 일시정지(버튼 눌림 상태)
+        paused=False: 정상 작동(버튼 해제 상태)
+        """
+        self.btn_ai_toggle.blockSignals(True)
+        self.btn_ai_toggle.setChecked(paused)
+        self.btn_ai_toggle.blockSignals(False)
+
+        if paused:
+            self.btn_ai_toggle.setText("⛔ AI 매매 일시 정지")
+            self.btn_ai_toggle.setStyleSheet("background-color: #f57c00; font-weight: bold; height: 35px;")
+        else:
+            self.btn_ai_toggle.setText("🤖 AI 자동 매매 재개")
+            self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 35px;")
 
     def _on_table_selection_changed(self):
         selected_items = self.summary_table.selectedItems()

@@ -197,6 +197,30 @@ class FirebaseManager:
     # Public API - 실시간 리스너 (Listen)
     # ─────────────────────────────────────────────────────────────
 
+    async def get_current_settings(self) -> dict:
+        """
+        부팅 시 settings/core 도큐먼트의 현재 상태를 1회 읽어옵니다.
+        실시간 리스너 연결 전, 모바일 앱이 설정해 둔 제어 플래그
+        (is_monitoring_active, is_ai_trading_active 등)의 초기값을 확인하는 데 사용합니다.
+
+        Returns:
+            dict: Firestore의 settings/core 현재 데이터 (읽기 실패 시 빈 dict 반환)
+        """
+        if not self._initialized or not self._db:
+            return {}
+
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            doc = await asyncio.to_thread(doc_ref.get)
+            if doc.exists:
+                data = doc.to_dict()
+                logger.info(f"FirebaseManager: settings/core 부팅 시 현재 상태 읽기 완료 ✅")
+                return data
+            return {}
+        except Exception as e:
+            logger.error(f"FirebaseManager: settings/core 초기 읽기 실패 (무시): {e}")
+            return {}
+
     async def initialize_default_settings(self, default_config: dict):
         """
         부팅 시 settings/core 도큐먼트에 기본 설정값을 안전하게 업로드합니다.
@@ -261,6 +285,9 @@ class FirebaseManager:
             for doc in doc_snapshot:
                 if doc.exists:
                     data = doc.to_dict()
+                    # [DEBUG] 수신 즉시 — 필터링/콜백 이전에 모든 키-값을 무조건 출력
+                    for key, value in data.items():
+                        logger.info(f"[DEBUG] 파이어베이스 수신 데이터: {key} -> {value}")
                     logger.info(f"FirebaseManager: 원격 설정 변경 감지 → {data}")
                     try:
                         callback_func(data)

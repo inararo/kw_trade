@@ -165,6 +165,11 @@ class QuantSystem:
             if key not in _SETTINGS_EXCLUDED_KEYS
             and isinstance(value, (int, float, str, bool))
         }
+        # [제어 플래그 기본값] 첫 설치 시 앱에 기본 ON 상태가 표시되도록 추가
+        # merge=True 적용: 앱에서 이미 변경해 둔 값은 보존됨
+        _default_settings.setdefault("is_monitoring_active", True)
+        _default_settings.setdefault("is_ai_trading_active", True)
+
         asyncio.create_task(
             self.firebase_manager.initialize_default_settings(_default_settings)
         )
@@ -175,6 +180,27 @@ class QuantSystem:
 
         # [Firebase] 원격 설정/명령 리스너 활성화 (백그라운드 스레드 기반)
         self._setup_firebase_listeners()
+
+        # [Firebase] 부팅 시 제어 플래그 초기 상태 동기화 ─────────────────────
+        # 리스너 연결 전 앱이 설정해 둔 is_monitoring_active / is_ai_trading_active 값을
+        # 1회 읽어와 엔진 내부 상태를 원격 설정에 맞게 초기화합니다.
+        try:
+            boot_settings = await self.firebase_manager.get_current_settings()
+            if boot_settings:
+                # 종목 감시 초기 상태
+                if boot_settings.get("is_monitoring_active") is False:
+                    logging.warning("[Firebase] 부팅 시 원격 설정: 종목 감시가 OFF 상태입니다. 웹소켓 연결을 건너뜁니다.")
+                    # collector_task는 Step 3에서 생성되므로 플래그만 기록
+                    self._remote_monitoring_off_at_boot = True
+
+                # AI 매매 초기 상태
+                if boot_settings.get("is_ai_trading_active") is False:
+                    sm = getattr(config_mgr, "_injected_strategy_manager", None)
+                    if sm:
+                        sm.set_ai_paused(True)
+                        logging.warning("[Firebase] 부팅 시 원격 설정: AI 매매가 일시정지 상태로 시작됩니다.")
+        except Exception as e:
+            logging.error(f"[Firebase] 부팅 시 제어 플래그 초기화 실패 (무시): {e}")
 
         # Step 1: 에이전트 무기 장착 (모델 로드) - Fail-Safe 전략
         # (모델 로드 중 오류가 발생해도 random 모델로 자가 복구하도록 StrategyManager에 구현됨)
@@ -244,8 +270,14 @@ class QuantSystem:
         self.influx_task = asyncio.create_task(self.influx_client.start())
         # [스마트 소켓 관리] 장시간 상태에 따라서만 웹소켓 가동
         active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
-        
-        if current_state in active_ws_states:
+
+        # [원격 제어 반영] 부팅 시 is_monitoring_active=False 였다면 장시간이라도 연결을 건너뜁니다.
+        _remote_monitoring_off = getattr(self, "_remote_monitoring_off_at_boot", False)
+
+        if _remote_monitoring_off:
+            print("[Firebase] 원격 제어: 종목 감시 OFF 상태로 부팅합니다. 웹소켓 연결을 보류합니다.")
+            self.collector_task = None
+        elif current_state in active_ws_states:
             print(f"시스템: [Step 3] 장시간({current_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
             self.collector_task = asyncio.create_task(self.data_collector.start())
         else:
@@ -290,23 +322,59 @@ class QuantSystem:
         def on_settings_changed(data: dict):
             """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 메인 루프에서 안전하게 실행"""
             def _apply():
-                # [필터링] yaml에 저장할 필요가 없는 시스템 관리용 필드 제거
-                # hot_reload_settings 내부에서 save_config()를 호출하므로 여기서 미리 걸러야 함
+                # ── [DEBUG] _apply() 실행 확인 ──────────────────────────────
+                logging.info(f"[DEBUG] _apply() 진입 확인 - 수신 키 목록: {list(data.keys())}")
+                for _k, _v in data.items():
+                    logging.info(f"[DEBUG] _apply() 수신 데이터: {_k} -> {_v}")
+
+                # ── [제어 플래그 처리] ──────────────────────────────────────────
+                # is_monitoring_active / is_ai_trading_active 는 yaml에 저장하지 않는
+                # 순수 원격 제어 필드이므로, 설정값 동기화보다 먼저 처리하고 제거합니다.
+                _CONTROL_KEYS = {"is_monitoring_active", "is_ai_trading_active",
+                                  "last_updated_by_engine"}
+
+                # 종목 감시 원격 제어
+                if "is_monitoring_active" in data:
+                    monitoring_active = data["is_monitoring_active"]
+                    logging.info(f"[DEBUG] is_monitoring_active 감지됨: {monitoring_active}")
+                    if monitoring_active:
+                        asyncio.create_task(self.data_collector.start())
+                        logging.info("[Firebase] 📡 원격 명령: 실시간 종목 감시를 재개합니다. (재연결 시도 중...)")
+                    else:
+                        asyncio.create_task(self.data_collector.stop())
+                        logging.warning("[Firebase] 📡 원격 명령: 실시간 종목 감시가 중단되었습니다. (웹소켓 해제)")
+                    # [UI 동기화] 버튼 상태 갱신 — stopped=True가 감시 중단(active=False)
+                    self.live_vm.sig_monitoring_stopped.emit(not monitoring_active)
+
+                # AI 매매 원격 제어
+                if "is_ai_trading_active" in data:
+                    ai_active = data["is_ai_trading_active"]
+                    logging.info(f"[DEBUG] is_ai_trading_active 감지됨: {ai_active}")
+                    sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
+                    if sm:
+                        sm.set_ai_paused(not ai_active)
+                        status = "재개" if ai_active else "일시정지"
+                        logging.info(f"[Firebase] 🤖 원격 명령: AI 매매 의사결정이 {status}되었습니다.")
+                    # [UI 동기화] 버튼 상태 갱신 — paused=True가 AI 정지(active=False)
+                    self.live_vm.sig_trading_paused.emit(not ai_active)
+
+                # ── [설정값 동기화] ──────────────────────────────────────────────
+                # 제어 필드 및 시스템 관리 필드를 제거한 뒤 일반 설정값만 처리합니다.
                 filtered_data = {
-                    k: v for k, v in data.items() 
-                    if k not in ["last_updated_by_engine"]
+                    k: v for k, v in data.items()
+                    if k not in _CONTROL_KEYS
                 }
-                
+
                 if not filtered_data:
                     return
 
                 # 1. 메모리 반영 및 파일 저장 (실제 변경이 있을 때만 True 반환)
                 applied = self.container.config_manager().hot_reload_settings(filtered_data)
-                
+
                 # 2. Firebase에 최종 반영 상태 보고 (실제 변경 시에만 피드백 전송)
                 if applied:
                     asyncio.create_task(self.firebase_manager.report_settings_applied())
-                    
+
                     # 3. GUI 설정 탭 화면 실시간 갱신
                     settings_vm = self.container.settings_view_model()
                     settings_vm.on_remote_settings_changed(filtered_data)
