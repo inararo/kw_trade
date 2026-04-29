@@ -66,31 +66,51 @@ class ConfigManager:
         """현재 캐시된 모든 설정을 딕셔너리 형태로 반환합니다."""
         return self._config_cache
 
-    def hot_reload_settings(self, new_values: Dict[str, Any]) -> None:
+    def hot_reload_settings(self, new_values: Dict[str, Any]) -> bool:
         """
         외부(Firebase 리스너 등)에서 전달받은 설정값으로 메모리 캐시를 즉시 업데이트합니다.
-        파일(config.yaml) 재읽기 없이 메모리 변수만 교체되므로 재시작이 불필요합니다.
-
-        [Thread-Safe 주의]
-        이 메서드는 반드시 asyncio 메인 루프 컨텍스트에서 호출해야 합니다.
-        백그라운드 스레드에서 호출 시 loop.call_soon_threadsafe()로 감싸 사용하세요.
+        실제로 값이 변경된 항목이 있을 경우에만 config.yaml을 저장하고 True를 반환합니다.
 
         Args:
             new_values: Firestore에서 수신한 변경 딕셔너리 {key: new_value}
+        Returns:
+            bool: 실제 변경 사항이 있어 저장까지 완료했는지 여부
         """
         import logging
         logger = logging.getLogger("ConfigManager")
+        
+        changed_keys = []
         for key, value in new_values.items():
-            old_value = self._config_cache.get(key, "<없음>")
-            self._config_cache[key] = value
-            logger.info(f"[설정값 변경 감지] {key}: {old_value} -> {value}")
+            old_value = self._config_cache.get(key)
+            
+            # 값이 실제로 다른 경우에만 처리 (무한 루프 방지 핵심)
+            if old_value != value:
+                self._config_cache[key] = value
+                changed_keys.append(key)
+                logger.info(f"[설정값 변경 감지] {key}: {old_value} -> {value}")
 
-        # 변경된 메모리 캐시를 config.yaml에 영구 저장
+                # [로깅 레벨 즉시 업데이트]
+                if key == "log_level":
+                    try:
+                        new_level = str(value).upper()
+                        numeric_level = getattr(logging, new_level, None)
+                        if isinstance(numeric_level, int):
+                            logging.getLogger().setLevel(numeric_level)
+                            logger.critical(f"🚀 [시스템 로깅 레벨 변경] {new_level}로 즉시 적용되었습니다.")
+                    except Exception as e:
+                        logger.error(f"로깅 레벨 변경 중 오류: {e}")
+
+        if not changed_keys:
+            return False
+
+        # 변경된 항목이 있을 때만 config.yaml에 영구 저장
         result = self.save_config()
         if isinstance(result, Failure):
             logger.error(f"[설정값 파일 저장 실패] {result.failure()}")
-        else:
-            logger.info(f"[설정값 파일 저장 완료] config.yaml 업데이트 ({len(new_values)}개 키)")
+            return False
+        
+        logger.info(f"[설정값 파일 저장 완료] config.yaml 업데이트 (대상: {', '.join(changed_keys)})")
+        return True
 
     def on_settings_changed(self, data: dict, loop: Any):
         """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 메인 루프에서 안전하게 실행"""

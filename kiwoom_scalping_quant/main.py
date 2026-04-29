@@ -155,7 +155,8 @@ class QuantSystem:
             "max_buffer_size", "db_batch_size",
             # ── 복합 타입 (리스트/딕셔너리 — Firestore 별도 관리) ────
             "symbols", "universe", "protected_symbols", "global_max_loss",
-            "slippage", "seq_len", "initial_balance", "live_trading_model_type"
+            "slippage", "seq_len", "initial_balance", "live_trading_model_type",
+            "last_updated_by_engine", # 시스템 관리용 타임스탬프 (yaml 저장 제외)
         }
         # config_mgr에서 스칼라(int/float/str/bool) 값만 추려 업로드
         _default_settings = {
@@ -289,8 +290,26 @@ class QuantSystem:
         def on_settings_changed(data: dict):
             """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 메인 루프에서 안전하게 실행"""
             def _apply():
-                # ConfigManager.hot_reload_settings()가 키별 [설정값 변경 감지] 로그를 출력함
-                self.container.config_manager().hot_reload_settings(data)
+                # [필터링] yaml에 저장할 필요가 없는 시스템 관리용 필드 제거
+                # hot_reload_settings 내부에서 save_config()를 호출하므로 여기서 미리 걸러야 함
+                filtered_data = {
+                    k: v for k, v in data.items() 
+                    if k not in ["last_updated_by_engine"]
+                }
+                
+                if not filtered_data:
+                    return
+
+                # 1. 메모리 반영 및 파일 저장 (실제 변경이 있을 때만 True 반환)
+                applied = self.container.config_manager().hot_reload_settings(filtered_data)
+                
+                # 2. Firebase에 최종 반영 상태 보고 (실제 변경 시에만 피드백 전송)
+                if applied:
+                    asyncio.create_task(self.firebase_manager.report_settings_applied())
+                    
+                    # 3. GUI 설정 탭 화면 실시간 갱신
+                    settings_vm = self.container.settings_view_model()
+                    settings_vm.on_remote_settings_changed(filtered_data)
             loop.call_soon_threadsafe(_apply)
 
         self.firebase_manager.listen_to_settings(on_settings_changed)

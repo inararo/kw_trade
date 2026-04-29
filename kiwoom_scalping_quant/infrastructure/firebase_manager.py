@@ -225,6 +225,25 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"FirebaseManager: settings 초기화 실패 (무시): {e}")
 
+    async def report_settings_applied(self):
+        """
+        엔진이 원격 설정을 성공적으로 반영했음을 Firestore에 기록합니다.
+        모바일 앱 UI에 최종 반영 시각을 표시하기 위한 용도입니다.
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            await asyncio.to_thread(
+                doc_ref.update, 
+                {"last_updated_by_engine": fs.SERVER_TIMESTAMP}
+            )
+            logger.debug("FirebaseManager: settings 반영 시각 업데이트 완료")
+        except Exception as e:
+            logger.error(f"FirebaseManager: settings 반영 보고 실패: {e}")
+
     def listen_to_settings(self, callback_func):
         """
         settings/core 도큐먼트의 변경사항을 실시간으로 감시합니다.
