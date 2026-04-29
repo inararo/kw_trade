@@ -136,7 +136,38 @@ class QuantSystem:
         self.firebase_manager = self.container.firebase_manager()
         asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
         print("시스템: [Firebase] 부팅 상태(BOOTING)를 Firestore에 전송합니다.")
-        
+
+        # [Firebase] settings/core 기본값 업로드 (모바일 앱 설정 화면 초기화)
+        # config.yaml 실제 값을 읽어 업로드하되, 보안·내부 항목은 제외합니다.
+        # merge=True 적용: 이미 변경된 값은 보존, 새 키만 추가
+        _SETTINGS_EXCLUDED_KEYS = {
+            # ── 보안 (인증 / 접속정보) ──────────────────────────────
+            "account_number",
+            "KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN",
+            "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG",
+            "influx_bucket", "INFLUX_BUCKET",
+            "TELEGRAM_BOT_TOKEN", "telegram_chat_id",
+            "FIREBASE_KEY_PATH",
+            # ── 내부 시스템 설정 (모바일 앱에서 수정 불필요) ──────────
+            "active_model_path",
+            "kiwoom",          # 중첩 딕셔너리 (API URL, trading_mode 포함)
+            "ws_url",
+            "max_buffer_size", "db_batch_size",
+            # ── 복합 타입 (리스트/딕셔너리 — Firestore 별도 관리) ────
+            "symbols", "universe", "protected_symbols", "global_max_loss",
+            "slippage", "seq_len", "initial_balance", "live_trading_model_type"
+        }
+        # config_mgr에서 스칼라(int/float/str/bool) 값만 추려 업로드
+        _default_settings = {
+            key: value
+            for key, value in config_mgr._config_cache.items()
+            if key not in _SETTINGS_EXCLUDED_KEYS
+            and isinstance(value, (int, float, str, bool))
+        }
+        asyncio.create_task(
+            self.firebase_manager.initialize_default_settings(_default_settings)
+        )
+
         # 텔레그램 부팅 알림 전송
         notifier = self.container.telegram_notifier()
         await notifier.notify_app_start()

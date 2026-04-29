@@ -197,6 +197,34 @@ class FirebaseManager:
     # Public API - 실시간 리스너 (Listen)
     # ─────────────────────────────────────────────────────────────
 
+    async def initialize_default_settings(self, default_config: dict):
+        """
+        부팅 시 settings/core 도큐먼트에 기본 설정값을 안전하게 업로드합니다.
+
+        [핵심 동작]
+        merge=True를 사용하므로:
+        - 도큐먼트가 없을 경우: default_config 그대로 생성
+        - 도큐먼트가 이미 있을 경우: 모바일 앱에서 변경한 값은 유지하고,
+          default_config에만 존재하는 새 키(신규 설정 항목)만 추가합니다.
+
+        Args:
+            default_config: 업로드할 기본 설정 딕셔너리
+                예) {"max_position_pct": 10.0, "stop_loss_pct": -3.0, ...}
+        """
+        if not self._initialized or not self._db:
+            logger.warning("FirebaseManager: settings 초기화 건너뜀 (Firestore 비활성)")
+            return
+
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            await asyncio.to_thread(doc_ref.set, default_config, merge=True)
+            logger.info(
+                f"FirebaseManager: settings/core 기본값 업로드 완료 ✅ "
+                f"(키 {len(default_config)}개, merge=True)"
+            )
+        except Exception as e:
+            logger.error(f"FirebaseManager: settings 초기화 실패 (무시): {e}")
+
     def listen_to_settings(self, callback_func):
         """
         settings/core 도큐먼트의 변경사항을 실시간으로 감시합니다.
