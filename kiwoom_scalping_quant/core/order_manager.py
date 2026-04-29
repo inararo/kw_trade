@@ -110,8 +110,9 @@ class OrderManager:
             else:
                 current_exposure += holding_qty * self.avg_entry_prices.get(sym, 0)
 
-        if current_exposure + (price * qty) > self.global_max_exposure:
-            self.logger.error(f"Global Risk: 최대 노출 금액({self.global_max_exposure}) 초과. 신규 진입 차단.")
+        limit = self.config.get("global_max_exposure", 50000000)
+        if current_exposure + (price * qty) > limit:
+            self.logger.error(f"Global Risk: 최대 노출 금액({limit}) 초과. 신규 진입 차단.")
             return False
 
         return True

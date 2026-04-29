@@ -116,7 +116,8 @@ class LiveDashboardViewModel(QObject):
                     "change_rate": 0.0, # [신규] 등락률 필드 추가
                     "volume": 0,  # [핵심 패치 2] 거래량 필드 추가!
                     "ai_signal": "-", 
-                    "holdings": 0
+                    "holdings": 0,
+                    "avg_price": 0.0
                 }
         
         # 3. 상세 뷰 대상 초기화 (첫 번째 종목으로 다시 잡히도록)
@@ -133,7 +134,7 @@ class LiveDashboardViewModel(QObject):
             code = s.get("code", "").split('_')[0].strip()
             name = s.get("name", "-")
             if code and code not in self.symbols_summary:
-                self.symbols_summary[code] = {"name": name, "price": 0, "change_rate": 0.0, "volume": 0, "ai_signal": "-", "holdings": 0}
+                self.symbols_summary[code] = {"name": name, "price": 0, "change_rate": 0.0, "volume": 0, "ai_signal": "-", "holdings": 0, "avg_price": 0.0}
         self._ui_dirty = True
 
     def append_log(self, msg: str):
@@ -165,8 +166,9 @@ class LiveDashboardViewModel(QObject):
             if "change_rate" in data:
                 self.symbols_summary[symbol]["change_rate"] = data["change_rate"]
 
-            # 보유량 업데이트 (실시간 반영)
+            # 보유량 및 평균단가 업데이트 (실시간 반영)
             self.symbols_summary[symbol]["holdings"] = self.order_manager.holdings.get(symbol, 0)
+            self.symbols_summary[symbol]["avg_price"] = self.order_manager.avg_entry_prices.get(symbol, 0.0)
 
             # [UI_DEBUG] 100번에 한 번 수신 로그 출력
             if not hasattr(self, "_rx_cnt"): self._rx_cnt = 0

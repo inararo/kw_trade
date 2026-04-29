@@ -20,9 +20,13 @@ class RiskManager:
         self.daily_realized_pnl: float = 0.0
         self.is_stopped_for_day: bool = False
 
+    def get_global_max_exposure(self) -> float:
+        # Default 3,000,000 KRW
+        return float(self.config_manager.get("global_max_exposure", 50000000))
+
     def get_max_invest_per_symbol(self) -> float:
-        # Default 5,000,000 KRW
-        return float(self.config_manager.get("max_invest_per_symbol", 5000000))
+        # Default 3,000,000 KRW
+        return float(self.config_manager.get("max_invest_per_symbol", 50000000))
 
     def get_max_position_pct(self) -> float:
         # Default 100% (All capital allocated to trading)
@@ -100,6 +104,21 @@ class RiskManager:
 
         # 1. 투자 한도 및 종목 수 체크 (BUY 주문인 경우에만 수행)
         if order_type.upper() == "BUY":
+            # [1-0] Global Max Exposure Check (전체 자산 노출 한도 체크)
+            current_exposure = 0
+            # 현재 보유한 모든 종목의 평가 금액 합산
+            for sym, holding_qty in self.order_manager.holdings.items():
+                if holding_qty > 0:
+                    # 현재가가 없을 경우 진입가로 대체
+                    price = self.order_manager.avg_entry_prices.get(sym, 0)
+                    current_exposure += holding_qty * price
+            
+            global_limit = self.get_global_max_exposure()
+            if current_exposure + amount > global_limit:
+                self.logger.warning(f"Risk Check Failed: Global max exposure exceeded. "
+                                    f"Current: {current_exposure:,.0f}, New: {amount:,.0f}, Limit: {global_limit:,.0f}")
+                self.signals.risk_warning.emit(f"계좌 전체 노출 한도({global_limit:,.0f}원) 초과로 매수 거부")
+                return False
             # [1-1] Dynamic Max Invest Check (고정값 대신 동적 계산값 사용)
             current_holding_qty = self.order_manager.holdings.get(symbol, 0)
             avg_price = self.order_manager.avg_entry_prices.get(symbol, 0.0)

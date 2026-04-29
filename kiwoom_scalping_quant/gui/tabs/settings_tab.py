@@ -128,6 +128,12 @@ class SettingsTab(QWidget):
         self.spin_max_open_positions.setRange(1, 100)
         risk_form.addRow("최대 동시 보유 종목 수:", self.spin_max_open_positions)
 
+        self.spin_global_max_exposure = QDoubleSpinBox()
+        self.spin_global_max_exposure.setSuffix(" 원")
+        self.spin_global_max_exposure.setRange(0, 50000000) # 최대 100억
+        self.spin_global_max_exposure.setSingleStep(1000000)
+        risk_form.addRow("전체 자산 노출 한도:", self.spin_global_max_exposure)
+
         self.input_protected_symbols = QLineEdit()
         self.input_protected_symbols.setPlaceholderText("예: 005930, 000660")
         risk_form.addRow("보호 종목 (Protected Symbols):", self.input_protected_symbols)
@@ -242,6 +248,7 @@ class SettingsTab(QWidget):
             "max_invest_per_symbol": self.spin_max_invest_per_symbol.value(),
             "daily_stop_loss_limit": self.spin_daily_stop_loss_limit.value(),
             "max_open_positions": self.spin_max_open_positions.value(),
+            "global_max_exposure": self.spin_global_max_exposure.value(),
             "enable_cutoff": self.chk_enable_cutoff.isChecked(),
             "cutoff_time": self.time_cutoff.time().toString("HH:mm"),
             "protected_symbols": protected_symbols,
@@ -289,9 +296,10 @@ class SettingsTab(QWidget):
         self.combo_log_level.setCurrentText(config.get("log_level", "INFO"))
         self.chk_signal_only.setChecked(config.get("signal_only_mode", False))
 
-        self.spin_max_invest_per_symbol.setValue(float(config.get("max_invest_per_symbol", 5000000)))
+        self.spin_max_invest_per_symbol.setValue(float(config.get("max_invest_per_symbol", 3000000)))
         self.spin_daily_stop_loss_limit.setValue(float(config.get("daily_stop_loss_limit", -500000)))
         self.spin_max_open_positions.setValue(int(config.get("max_open_positions", 3)))
+        self.spin_global_max_exposure.setValue(float(config.get("global_max_exposure", 3000000)))
 
         protected_symbols = config.get("protected_symbols", [])
         self.input_protected_symbols.setText(", ".join(protected_symbols))
@@ -301,7 +309,7 @@ class SettingsTab(QWidget):
         self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
 
         self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.65)))
-        self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.60)))
+        self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.55)))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

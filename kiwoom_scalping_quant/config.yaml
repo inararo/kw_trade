@@ -1,13 +1,13 @@
 account_number: ''
 active_model_path: ./saved_models/random/model_advanced_random_best_fine.zip
-ai_buy_threshold: 0.70
+ai_buy_threshold: 0.7
 ai_sell_threshold: 0.55
 cb_timeout_sec: 3
 cutoff_time: '14:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
 enable_cutoff: true
-global_max_exposure: 2000000
+global_max_exposure: 30000000
 global_max_loss: -500000
 influx_bucket: stock_data
 initial_balance: 10000000

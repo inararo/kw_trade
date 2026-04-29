@@ -41,8 +41,8 @@ class LiveDashboardTab(QWidget):
         master_group = QGroupBox("전체 감시 종목 (Universe)")
         master_layout = QVBoxLayout()
 
-        self.summary_table = QTableWidget(0, 7)
-        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량", "AI 신호", "보유량"])
+        self.summary_table = QTableWidget(0, 8)
+        self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량", "AI 신호", "보유량", "수익률"])
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         
@@ -262,10 +262,42 @@ class LiveDashboardTab(QWidget):
                     item_sig.setForeground(Qt.GlobalColor.blue)
                 self.summary_table.setItem(row, 5, item_sig)
 
-            # 보유량 업데이트 (index 6)
-            holdings_str = str(data.get('holdings', 0))
-            if self.summary_table.item(row, 6) is None or self.summary_table.item(row, 6).text() != holdings_str:
-                self.summary_table.setItem(row, 6, QTableWidgetItem(holdings_str))
+            # 보유량 업데이트 (index 6) + 빨간색 강조
+            holdings = data.get('holdings', 0)
+            holdings_str = str(holdings)
+            hold_item = self.summary_table.item(row, 6)
+            if hold_item is None or hold_item.text() != holdings_str:
+                hold_item = QTableWidgetItem(holdings_str)
+                self.summary_table.setItem(row, 6, hold_item)
+            
+            # 보유 중이면 빨간색, 아니면 기본색
+            if holdings > 0:
+                hold_item.setForeground(Qt.GlobalColor.red)
+                hold_item.setSelected(True) # 시각적 강조 추가
+            else:
+                hold_item.setForeground(Qt.GlobalColor.white)
+
+            # [신규] 수익률 업데이트 (index 7)
+            avg_price = data.get('avg_price', 0.0)
+            price = data.get('price', 0.0)
+            pnl_rate = 0.0
+            pnl_str = "-"
+            pnl_color = Qt.GlobalColor.white
+            
+            if holdings > 0 and avg_price > 0:
+                pnl_rate = ((price - avg_price) / avg_price) * 100
+                pnl_sign = "+" if pnl_rate > 0 else ""
+                pnl_str = f"{pnl_sign}{pnl_rate:.2f}%"
+                if pnl_rate > 0:
+                    pnl_color = Qt.GlobalColor.red
+                elif pnl_rate < 0:
+                    pnl_color = Qt.GlobalColor.blue
+            
+            pnl_item = self.summary_table.item(row, 7)
+            if pnl_item is None or pnl_item.text() != pnl_str:
+                pnl_item = QTableWidgetItem(pnl_str)
+                self.summary_table.setItem(row, 7, pnl_item)
+            pnl_item.setForeground(pnl_color)
 
     @pyqtSlot(dict)
     def on_ai_confidence_updated(self, conf: dict):
