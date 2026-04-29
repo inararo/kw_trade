@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any
 
 logger = logging.getLogger("FirebaseManager")
 
@@ -220,6 +220,25 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"FirebaseManager: settings/core 초기 읽기 실패 (무시): {e}")
             return {}
+
+    async def update_setting_to_remote(self, key: str, value: Any):
+        """
+        로컬에서 변경된 특정 설정값을 Firestore의 settings/core 문서에 즉시 동기화합니다.
+
+        Args:
+            key: Firestore 필드 이름
+            value: 업데이트할 값
+        """
+        if not self._initialized or not self._db:
+            return
+
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            # 딕셔너리 형태로 감싸서 단일 필드 업데이트
+            await asyncio.to_thread(doc_ref.update, {key: value})
+            logger.info(f"[INFO] 로컬 설정 변경사항을 파이어베이스에 성공적으로 동기화했습니다: {key} -> {value}")
+        except Exception as e:
+            logger.error(f"FirebaseManager: 로컬 설정 동기화 실패 ({key}): {e}")
 
     async def initialize_default_settings(self, default_config: dict):
         """

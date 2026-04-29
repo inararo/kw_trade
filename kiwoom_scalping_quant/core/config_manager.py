@@ -18,6 +18,7 @@ class ConfigManager:
         self.env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
         self._config_cache: Dict[str, Any] = {}
         self._env_keys = {"KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "TELEGRAM_BOT_TOKEN", "FIREBASE_KEY_PATH"}
+        self.firebase_manager = None # [NEW] 역방향 동기화를 위한 매니저 주입용
 
         self.load_config(skip_symbols=True) # 초기 생성 시에는 종목 리스트를 비워둠 (이중 로드 방지)
 
@@ -154,8 +155,37 @@ class ConfigManager:
 
     def update_settings(self, updates: Dict[str, Any]) -> Result[bool, Exception]:
         """UI에서 전달받은 수정값들을 캐시에 갱신 후 파일에 저장합니다."""
-        self._config_cache.update(updates)
-        return self.save_config()
+        import asyncio
+        
+        # 1. 캐시 업데이트 전, 실제로 값이 바뀐 항목들만 추출 (무한 루프 방지 및 효율성)
+        actual_updates = {}
+        for k, v in updates.items():
+            if self._config_cache.get(k) != v:
+                actual_updates[k] = v
+        
+        if not actual_updates:
+            return Success(False) # 변경 사항 없음
+
+        self._config_cache.update(actual_updates)
+        
+        # 2. 로컬 파일 저장
+        save_result = self.save_config()
+        if isinstance(save_result, Failure):
+            return save_result
+
+        # 3. [역방향 동기화] Firebase에 즉시 반영
+        if self.firebase_manager:
+            _EXCLUDED = {
+                "account_number", "KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN",
+                "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "influx_bucket", "INFLUX_BUCKET",
+                "TELEGRAM_BOT_TOKEN", "telegram_chat_id", "FIREBASE_KEY_PATH",
+                "kiwoom", "ws_url", "symbols", "universe"
+            }
+            for key, value in actual_updates.items():
+                if key not in _EXCLUDED and isinstance(value, (int, float, str, bool)):
+                    asyncio.create_task(self.firebase_manager.update_setting_to_remote(key, value))
+        
+        return Success(True)
 
     def get_symbols(self) -> List[Dict[str, str]]:
         """저장된 종목 리스트 반환 (symbols를 우선하며 universe를 폴백으로 사용)"""

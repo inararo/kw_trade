@@ -134,8 +134,11 @@ class QuantSystem:
 
         # [Firebase] Firebase 매니저 초기화 및 부팅 상태 전송
         self.firebase_manager = self.container.firebase_manager()
+        # [역방향 동기화 활성화] ConfigManager에 FirebaseManager 주입
+        config_mgr.firebase_manager = self.firebase_manager
+        
         asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
-        print("시스템: [Firebase] 부팅 상태(BOOTING)를 Firestore에 전송합니다.")
+        print("시스템: [Firebase] 부팅 상태(BOOTING)를 Firestore에 전송합니다. (역방향 동기화 활성화)")
 
         # [Firebase] settings/core 기본값 업로드 (모바일 앱 설정 화면 초기화)
         # config.yaml 실제 값을 읽어 업로드하되, 보안·내부 항목은 제외합니다.
