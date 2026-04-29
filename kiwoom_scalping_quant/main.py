@@ -203,7 +203,7 @@ class QuantSystem:
         # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())
         # [스마트 소켓 관리] 장시간 상태에 따라서만 웹소켓 가동
-        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.LIQUIDATING]
+        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
         
         if current_state in active_ws_states:
             print(f"시스템: [Step 3] 장시간({current_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
@@ -232,7 +232,7 @@ class QuantSystem:
 
     def _on_market_state_changed(self, old_state: str, new_state: str):
         """스케줄러 상태 변경에 따른 웹소켓 자동 토글 (Event-Driven)"""
-        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.LIQUIDATING]
+        active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
         
         # 장 개시 (Inactive -> Active)
         if old_state not in active_ws_states and new_state in active_ws_states:

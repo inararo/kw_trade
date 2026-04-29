@@ -60,6 +60,7 @@ class OrderManager:
         self.global_max_loss = config.get("global_max_loss", -500000)
         self.global_max_exposure = config.get("global_max_exposure", 50000000)
         self.daily_realized_pnl = 0.0
+        self._last_sell_fill_time: Dict[str, float] = {} # [신규] 매도 직후 API 지연 방어용
 
         self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://mockapi.kiwoom.com"
         self.rate_limit = 5
@@ -231,7 +232,7 @@ class OrderManager:
                 trde_tp = '0' if price > 0 else '3'
                 body = {
                     "dmst_stex_tp": 'KRX',
-                    "stk_cd":       symbol,
+                    "stk_cd":       clean_symbol,
                     "ord_qty":      str(qty),
                     "ord_uv":       str(price) if price > 0 else '',
                     "trde_tp":      trde_tp,
@@ -242,7 +243,7 @@ class OrderManager:
                 body = {
 					"dmst_stex_tp": 'KRX',
                     "orig_ord_no":   str(orig_order_no),
-                    "stk_cd":        symbol,
+                    "stk_cd":        clean_symbol,
                     "mdfy_qty":      str(qty),
                     "mdfy_uv":       str(price) if price > 0 else '',
                     "mdfy_cond_uv":  '', # 정정 조건 가격 (필요시 추가)
@@ -253,7 +254,7 @@ class OrderManager:
                 body = {
 					"dmst_stex_tp": 'KRX',
                     "orig_ord_no": str(orig_order_no),
-                    "stk_cd":      symbol,
+                    "stk_cd":      clean_symbol,
                     "cncl_qty":    str(qty),
                 }
 
@@ -474,9 +475,16 @@ class OrderManager:
                     self.holdings[symbol] = 0
                     self.avg_entry_prices[symbol] = 0.0
 
-            if order['unexecuted_qty'] <= 0:
-                order['status'] = OrderState.FILLED
-                self.logger.info(f"주문 전량 체결 완료! (Broker ID: {broker_id})")
+                if order['unexecuted_qty'] <= 0:
+                    order['status'] = OrderState.FILLED
+                    self.logger.info(f"주문 전량 체결 완료! (Broker ID: {broker_id})")
+                    # [신규] 매도 완료 시 시간 기록 (API 지연 방어용)
+                    if order['type'] == 'SELL':
+                        self._last_sell_fill_time[symbol] = time.time()
+                else:
+                    order['status'] = OrderState.PARTIAL
+                    self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
+                    self.handle_partial_fill(order)
                 
                 # [내부 예약 해제]
                 if order['type'] == 'BUY':
@@ -700,44 +708,51 @@ class OrderManager:
 
                             # 3. 보유 종목 동기화 (acnt_evlt_remn_indv_tot)
                             holdings_list = res_data.get('acnt_evlt_remn_indv_tot', [])
+                            
+                            # [개선] API 응답이 성공하면 리스트가 비어있더라도 동기화 수행
+                            new_holdings = {}
+                            new_avg_prices = {}
+                            
                             if holdings_list:
-                                new_holdings = {}
-                                new_avg_prices = {}
                                 for item in holdings_list:
                                     raw_code = item.get('stk_cd', '')
                                     # 'A323410' -> '323410'
                                     code = raw_code[1:] if raw_code.startswith('A') else raw_code
                                     qty = int(float(item.get('rmnd_qty', 0)))
                                     price = float(item.get('pur_pric', 0))
-                                    
                                     if code:
                                         new_holdings[code] = new_holdings.get(code, 0) + qty
-                                        new_avg_prices[code] = price # 가중 평균이 필요할 수 있으나 단순화
+                                        new_avg_prices[code] = price
+                            
+                            # 기존 보유 정보 업데이트 (새 리스트에 없으면 0으로 처리)
+                            all_symbols = set(list(self.holdings.keys()) + list(new_holdings.keys()))
+                            for sym in all_symbols:
+                                qty = new_holdings.get(sym, 0)
+                                price = new_avg_prices.get(sym, 0.0)
                                 
-                                # 기존 보유 정보 업데이트 (새 리스트에 없으면 0으로 처리)
-                                all_symbols = set(list(self.holdings.keys()) + list(new_holdings.keys()))
-                                for sym in all_symbols:
-                                    qty = new_holdings.get(sym, 0)
-                                    price = new_avg_prices.get(sym, 0.0)
-                                    
-                                    self.holdings[sym] = qty
-                                    self.bot_holdings[sym] = qty
-                                    if qty > 0:
-                                        self.avg_entry_prices[sym] = price
-                                    else:
-                                        self.avg_entry_prices[sym] = 0.0
-                                        
-                                self.logger.info(f"📊 보유 종목 {len(new_holdings)}개 동기화 완료 (그 외 종목 0 처리)")
+                                # [핵심 패치] 매도 직후 API 지연 방어 로직 (60초로 확장)
+                                last_sell = self._last_sell_fill_time.get(sym, 0)
+                                if qty > 0 and self.holdings.get(sym, 0) == 0 and (time.time() - last_sell < 60):
+                                    self.logger.warning(f"⚠️ [{sym}] API 지연 데이터(잔고 {qty}주) 무시 중... (최근 매도 완료)")
+                                    qty = 0
+                                    price = 0.0
 
-                            if balance > 0:
-                                return balance
-                            else:
-                                self.logger.warning(f"잔고 필드를 찾을 수 없거나 값이 0입니다. 응답 키: {list(output.keys())}")
+                                self.holdings[sym] = qty
+                                self.bot_holdings[sym] = qty
+                                if qty > 0:
+                                    self.avg_entry_prices[sym] = price
+                                else:
+                                    self.avg_entry_prices[sym] = 0.0
+                                    
+                            self.logger.info(f"📊 잔고 동기화 완료: 보유 {len(new_holdings)}종목 (전량 매도 종목 포함)")
+                            
+                            # 성공적으로 도달했다면 balance 반환 (0이라도 유효함)
+                            return balance
                         else:
                             self.logger.error(f"잔고 조회 API 오류: {res_data.get('return_msg')}")
                     elif resp.status == 429:
                         self.logger.warning("⚠️ 잔고 조회 과부하(429): API 요청 제한에 도달했습니다. 잠시 후 재시도합니다.")
-                        await asyncio.sleep(1.0) # 429 발생 시 강제 대기
+                        await asyncio.sleep(1.0)
                     else:
                         self.logger.error(f"잔고 조회 HTTP 오류: {resp.status}")
         except Exception as e:

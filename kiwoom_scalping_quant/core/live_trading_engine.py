@@ -8,6 +8,7 @@ from collections import deque
 from core.historical_fetcher import HistoricalFetcher
 from core.feature_engineer import AdvancedFeatureEngineer
 from core.scheduler import MarketState
+from utils.math_jit import get_valid_tick_price
 from utils.trade_logger import trade_logger
 
 class LiveTradingEngine:
@@ -283,7 +284,8 @@ class LiveTradingEngine:
             
             if qty > 0:
                 self._is_order_pending = True 
-                asyncio.create_task(self._execute_order_background("BUY", int(current_price), qty))
+                valid_price = get_valid_tick_price(current_price, "BUY")
+                asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
                 # 1주조차 살 수 없을 때만 최종 차단
@@ -292,10 +294,15 @@ class LiveTradingEngine:
                 else:
                     self.logger.warning(f"[{self.symbol}] 주문 수량 0: 투자 한도({final_invest_amount:,.0f})가 너무 낮아 주문을 생성할 수 없습니다.")
         elif action == 2: # SELL
-            if holdings > 0:
-                self._is_order_pending = True  # 👈 [여기에 추가!] 매수와 동일하게 즉시 락 설정
-                asyncio.create_task(self._execute_order_background("SELL", int(current_price), holdings))
+            # [강화] 주문 직전 실제 OrderManager 보유 수량 재확인 (지연 데이터로 인한 중복 매도 방지)
+            real_holdings = self.order_manager.holdings.get(self.symbol, 0)
+            if real_holdings > 0:
+                self._is_order_pending = True
+                valid_price = get_valid_tick_price(current_price, "SELL")
+                asyncio.create_task(self._execute_order_background("SELL", valid_price, real_holdings))
                 self.last_action_time = current_time
+            else:
+                self.logger.warning(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
 
     async def _execute_order_background(self, side, price, qty):
         """

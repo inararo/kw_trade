@@ -40,3 +40,31 @@ def jit_calculate_ema(prices: np.ndarray, period: int) -> np.ndarray:
         ema[i] = (prices[i] - ema[i-1]) * multiplier + ema[i-1]
 
     return ema
+
+def get_tick_size(price: float) -> int:
+    """
+    [2023-01-25 개편 기준] 한국 주식 시장 통합 호가 단위
+    """
+    price = abs(price)
+    if price < 2000:
+        return 1
+    elif price < 5000:
+        return 5
+    elif price < 20000:
+        return 10
+    elif price < 50000:
+        return 50
+    elif price < 200000:
+        return 100
+    elif price < 500000:
+        return 500
+    else:
+        return 1000
+
+def get_valid_tick_price(price: float, side: str = "BUY") -> int:
+    """
+    가격을 유효한 호가 단위로 보정합니다.
+    """
+    if price <= 0: return 0
+    tick = get_tick_size(price)
+    return int((price // tick) * tick)

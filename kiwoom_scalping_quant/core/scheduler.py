@@ -219,7 +219,7 @@ class MarketScheduler:
                     target_qty = min(qty, bot_qty)
                     self.logger.info(f"Liquidating {target_qty} shares of {symbol} (Bot managed)")
                     # Execute market sell (03)
-                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty, order_type="03")
+                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty)
 
         elif new_state == MarketState.STOPPED:
             self.logger.info("Market Closed: Flushing data and disconnecting.")
@@ -262,7 +262,7 @@ class MarketScheduler:
 
                     target_qty = min(qty, bot_qty)
                     self.logger.critical(f"Emergency Liquidating {target_qty} shares of {symbol}")
-                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty, order_type="03")
+                    await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty)
 
         elif new_state == MarketState.POST_MARKET:
             self.logger.info("Post-Market: 장 종료 및 정산 시점입니다. (자동 수집은 사용자의 요청에 의해 생략됩니다.)")
