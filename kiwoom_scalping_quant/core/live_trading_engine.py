@@ -316,6 +316,11 @@ class LiveTradingEngine:
 
             internal_id = result.unwrap() if hasattr(result, 'unwrap') else result
             
+            # [신규] 주문 전송 성공 즉시 UI 알림
+            success_msg = f"📤 [{self.symbol}] {side} 주문 {qty}주 @ {price:,}원 전송 성공"
+            self.logger.error(success_msg)
+            self._ui_log(success_msg)
+
             # [알림] 텔레그램 전송
             notifier = getattr(self.order_manager, 'notifier', None)
             if notifier:
@@ -325,32 +330,41 @@ class LiveTradingEngine:
             # 2. 5초간 체결 대기 (타임아웃 감시)
             await asyncio.sleep(5.0)
 
-            # 3. 미체결 잔량 확인 및 자동 취소 프로세스
+            # 3. 체결 상태 확인 및 기록 (이미 체결되어 active_orders에 없을 수도 있음)
             order_info = self.order_manager.active_orders.get(internal_id)
+            unexecuted = 0
+            status = "FILLED (EXPECTED)"
+            
             if order_info:
                 unexecuted = order_info.get('unexecuted_qty', 0)
-                status = order_info.get('status')
+                status = order_info.get('status', 'PENDING')
                 
                 if unexecuted > 0 and status not in ["FILLED", "CANCELLED", "FAILED"]:
                     msg = f"⏰ [{self.symbol}] 5초 타임아웃! 미체결 잔량 {unexecuted}주 취소 절차 시작."
                     self.logger.error(msg)
                     self._ui_log(msg)
                     await self.order_manager.cancel_order(internal_id)
-                    await asyncio.sleep(2.0) # 서버 처리 시간 대기
-                else:
-                    # [파일 기록] 매매 결과 기록
-                    pnl, pnl_pct = 0, 0.0
-                    if side == "SELL":
-                        avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
-                        if avg_price > 0:
-                            pnl_pct = (price - avg_price) / avg_price
-                            pnl = (price - avg_price) * qty
-                    
-                    trade_logger.log_trade(self.symbol, side, qty, price, pnl=pnl, pnl_pct=pnl_pct, note=f"Status: {status}")
-                    
-                    res_msg = f"🎯 [{self.symbol}] 주문 처리 완료 (결과: {status}, 수익률: {pnl_pct*100:.2f}%)"
-                    self.logger.error(res_msg)
-                    self._ui_log(res_msg)
+                    status = "TIMEOUT_CANCELLED"
+                    await asyncio.sleep(1.5)
+            else:
+                # 주문 정보가 없다면 이미 체결되어 사라진 것으로 간주
+                status = "FILLED"
+
+            # 4. [파일/UI 기록] 최종 매매 결과 기록
+            executed_qty = qty - unexecuted
+            if executed_qty > 0:
+                pnl, pnl_pct = 0, 0.0
+                if side == "SELL":
+                    avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
+                    if avg_price > 0:
+                        pnl_pct = (price - avg_price) / avg_price
+                        pnl = (price - avg_price) * executed_qty
+                
+                trade_logger.log_trade(self.symbol, side, executed_qty, price, pnl=pnl, pnl_pct=pnl_pct, note=f"Status: {status}")
+                
+                res_msg = f"🎯 [{self.symbol}] {side} 체결 완료 ({executed_qty}주, 수익률: {pnl_pct*100:+.2f}%)"
+                self.logger.error(res_msg)
+                self._ui_log(res_msg)
 
         except Exception as e:
             self.logger.error(f"🔥 주문 파이프라인 치명적 오류: {e}")

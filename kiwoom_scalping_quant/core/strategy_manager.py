@@ -9,6 +9,7 @@ import numpy as np
 from env.trading_env import ScalpingTradingEnv
 from models.agent import TradingAgentWrapper
 from utils.daily_logger import log_universe_snapshot
+from core.scheduler import MarketState
 
 class StrategyManager:
     """
@@ -178,7 +179,9 @@ class StrategyManager:
         self.is_running = True
         self.logger.info(f"StrategyManager: 멀티 종목({len(self.symbols)}개) 전략 루프 시작.")
 
-        current_state = getattr(scheduler, "current_state", MarketState.OUT_OF_MARKET)
+        # [수정] 주입된 스케줄러를 통해 현재 장 상태 확인
+        scheduler = getattr(self.config_manager, "_injected_scheduler", None)
+        current_state = getattr(scheduler, "current_state", MarketState.IDLE)
 
         if current_state == MarketState.TRADING:
             self.logger.info("StrategyManager: 장중 부팅 - 종목별 순차 웜업(백그라운드)을 시작합니다.")
