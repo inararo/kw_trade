@@ -4,6 +4,7 @@ import asyncio
 import yaml
 from dotenv import load_dotenv
 from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QObject, QEvent
 from qasync import QEventLoop
 
 from core.container import Container
@@ -15,6 +16,18 @@ import logging
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+
+class WheelEventFilter(QObject):
+    """
+    마우스 휠로 인한 QSpinBox, QComboBox 등의 값 변경을 방지하는 이벤트 필터
+    """
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            from PyQt6.QtWidgets import QAbstractSpinBox, QComboBox
+            if isinstance(obj, (QAbstractSpinBox, QComboBox)):
+                # 휠 이벤트를 무시하여 값 변경 방지
+                return True
+        return super().eventFilter(obj, event)
 
 class QuantSystem:
     def __init__(self):
@@ -528,6 +541,10 @@ class QuantSystem:
 def main():
     app = QApplication(sys.argv)
     
+    # [추가] 마우스 휠 값 변경 방지 필터 설치
+    wheel_filter = WheelEventFilter()
+    app.installEventFilter(wheel_filter)
+    
     # [프리미엄 다크 테마 적용]
     app.setStyleSheet("""
         QMainWindow, QWidget {
@@ -593,11 +610,47 @@ def main():
             border: 1px solid #444;
             border-radius: 4px;
             padding: 5px;
+            padding-right: 30px; /* 에디트 박스와 버튼 간 확실한 유격 확보 */
             selection-background-color: #007acc;
         }
         
-        QLineEdit:focus, QSpinBox:focus {
+        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
             border: 1px solid #007acc;
+        }
+
+        /* SpinBox 버튼 스타일 개선: 겹침 방지 및 클릭 영역 최적화 */
+        QSpinBox::up-button, QDoubleSpinBox::up-button, QTimeEdit::up-button {
+            subcontrol-origin: padding;
+            subcontrol-position: top right;
+            width: 25px;
+            background-color: #454545;
+            border-left: 1px solid #333;
+            border-bottom: 0.5px solid #333;
+            border-top-right-radius: 3px;
+            margin-right: 1px;
+            margin-top: 1px;
+        }
+        
+        QSpinBox::down-button, QDoubleSpinBox::down-button, QTimeEdit::down-button {
+            subcontrol-origin: padding;
+            subcontrol-position: bottom right;
+            width: 25px;
+            background-color: #454545;
+            border-left: 1px solid #333;
+            border-top: 0.5px solid #333;
+            border-bottom-right-radius: 3px;
+            margin-right: 1px;
+            margin-bottom: 1px;
+        }
+
+        QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QTimeEdit::up-button:hover,
+        QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover, QTimeEdit::down-button:hover {
+            background-color: #606060;
+        }
+
+        QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed, QTimeEdit::up-button:pressed,
+        QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed, QTimeEdit::down-button:pressed {
+            background-color: #007acc;
         }
         
         QTableWidget {

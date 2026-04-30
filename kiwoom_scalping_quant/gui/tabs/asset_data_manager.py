@@ -71,10 +71,10 @@ class AssetDataManagerTab(QWidget):
         self.spin_top_n.setMinimumSize(90, 30) # 너비와 높이를 충분히 확보
         self.spin_top_n.setStyleSheet("""
             QSpinBox {
-                padding-right: 15px; 
-                background-color: #333; 
+                padding-right: 30px; 
+                background-color: #2b2b2b; 
                 color: white; 
-                border: 1px solid #555;
+                border: 1px solid #444;
             }
         """)
         univ_ctrl_layout.addWidget(self.spin_top_n)
