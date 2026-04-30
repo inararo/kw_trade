@@ -145,7 +145,11 @@ class ConfigManager:
                     dotenv.set_key(self.env_path, key, str(self._config_cache[key]))
 
             # 2. Save config.yaml (env 키를 제외한 나머지)
-            yaml_data = {k: v for k, v in self._config_cache.items() if k not in self._env_keys}
+            # [안전 장치] YAML 저장 시 복잡한 Python 객체(Firestore Timestamp 등)가 포함되지 않도록 기본 타입만 필터링
+            yaml_data = {
+                k: v for k, v in self._config_cache.items() 
+                if k not in self._env_keys and isinstance(v, (str, int, float, bool, list, dict))
+            }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 yaml.dump(yaml_data, f, default_flow_style=False, allow_unicode=True)
 

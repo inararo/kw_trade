@@ -138,7 +138,10 @@ class QuantSystem:
         config_mgr.firebase_manager = self.firebase_manager
         
         asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
-        print("시스템: [Firebase] 부팅 상태(BOOTING)를 Firestore에 전송합니다. (역방향 동기화 활성화)")
+        asyncio.create_task(self.firebase_manager.update_engine_status("RUNNING"))
+        self._heartbeat_task = asyncio.create_task(self.firebase_manager.start_heartbeat())
+        
+        print("시스템: [Firebase] 부팅 상태(BOOTING) 및 가동 상태(RUNNING)를 Firestore에 전송합니다.")
 
         # [Firebase] settings/core 기본값 업로드 (모바일 앱 설정 화면 초기화)
         # config.yaml 실제 값을 읽어 업로드하되, 보안·내부 항목은 제외합니다.
@@ -302,8 +305,16 @@ class QuantSystem:
             # 종료 시그널이 올 때까지 이벤트 루프 유지
             await self.shutdown_event.wait()
         finally:
+            # [Firebase] 종료 상태 보고 및 하트비트 정지
+            if hasattr(self, 'firebase_manager'):
+                # 동기적으로 실행되는 것이 아니므로 create_task 후 잠시 대기하거나 direct 호출 고려
+                # 여기서는 루프 종료 직전이므로 마지막 인사를 건넵니다.
+                await self.firebase_manager.update_engine_status("OFFLINE")
+                if hasattr(self, '_heartbeat_task'):
+                    self._heartbeat_task.cancel()
+            
             # 루프를 빠져나올 때 수행될 정리
-            print("시스템: 메인 루프 종료됨.")
+            print("시스템: 메인 루프 종료됨. (Firebase: OFFLINE 보고 완료)")
 
     def _setup_firebase_listeners(self):
         """
@@ -333,8 +344,10 @@ class QuantSystem:
                 # ── [제어 플래그 처리] ──────────────────────────────────────────
                 # is_monitoring_active / is_ai_trading_active 는 yaml에 저장하지 않는
                 # 순수 원격 제어 필드이므로, 설정값 동기화보다 먼저 처리하고 제거합니다.
-                _CONTROL_KEYS = {"is_monitoring_active", "is_ai_trading_active",
-                                  "last_updated_by_engine"}
+                _CONTROL_KEYS = {
+                    "is_monitoring_active", "is_ai_trading_active",
+                    "last_updated_by_engine", "last_heartbeat", "engine_status"
+                }
 
                 # 종목 감시 원격 제어
                 if "is_monitoring_active" in data:

@@ -156,6 +156,53 @@ class FirebaseManager:
     # Public API - 시스템 상태 업데이트 (Upsert)
     # ─────────────────────────────────────────────────────────────
 
+    async def update_engine_status(self, status: str):
+        """
+        엔진 가동 상태를 settings/core 문서에 기록합니다.
+        
+        Args:
+            status: "RUNNING" 또는 "OFFLINE"
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+        try:
+            doc_ref = self._db.collection("settings").document("core")
+            await asyncio.to_thread(
+                doc_ref.update,
+                {
+                    "engine_status": status,
+                    "last_heartbeat": fs.SERVER_TIMESTAMP
+                }
+            )
+            logger.info(f"FirebaseManager: 엔진 상태 업데이트 → {status}")
+        except Exception as e:
+            logger.error(f"FirebaseManager: 엔진 상태 업데이트 실패: {e}")
+
+    async def start_heartbeat(self):
+        """
+        1분마다 last_heartbeat 필드를 갱신하는 백그라운드 태스크를 실행합니다.
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+        logger.info("FirebaseManager: 실시간 하트비트(Heartbeat) 태스크를 시작합니다.")
+        
+        while True:
+            try:
+                doc_ref = self._db.collection("settings").document("core")
+                await asyncio.to_thread(
+                    doc_ref.update,
+                    {"last_heartbeat": fs.SERVER_TIMESTAMP}
+                )
+                logger.debug("FirebaseManager: Heartbeat 갱신 완료")
+            except Exception as e:
+                logger.warning(f"FirebaseManager: Heartbeat 갱신 실패 (재시도 예정): {e}")
+            
+            await asyncio.sleep(60) # 1분 대기
+
     async def update_system_status(self, state: str):
         """
         현재 시스템(봇) 상태를 Firestore `system/status` 도큐먼트에 덮어씁니다.
