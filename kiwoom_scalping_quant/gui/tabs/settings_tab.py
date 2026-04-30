@@ -23,6 +23,23 @@ class SettingsTab(QWidget):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
 
+        # 버튼 레이아웃 (상단 고정)
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(15, 10, 15, 0)
+        
+        self.btn_test = QPushButton("연결 테스트")
+        self.btn_test.setFixedHeight(35)
+        self.btn_test.clicked.connect(self._on_test_clicked)
+
+        self.btn_save = QPushButton("설정 저장")
+        self.btn_save.setFixedHeight(35)
+        self.btn_save.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
+        self.btn_save.clicked.connect(self._on_save_clicked)
+
+        btn_layout.addWidget(self.btn_test)
+        btn_layout.addWidget(self.btn_save)
+        outer_layout.addLayout(btn_layout)
+
         # 스크롤 영역 생성
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -199,19 +216,6 @@ class SettingsTab(QWidget):
         # 컬럼 하단 여백 채우기
         left_column.addStretch()
         right_column.addStretch()
-
-        # 5. 하단 제어 버튼
-        btn_layout = QHBoxLayout()
-        self.btn_test = QPushButton("연결 테스트")
-        self.btn_test.clicked.connect(self._on_test_clicked)
-
-        self.btn_save = QPushButton("설정 저장")
-        self.btn_save.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
-        self.btn_save.clicked.connect(self._on_save_clicked)
-
-        btn_layout.addWidget(self.btn_test)
-        btn_layout.addWidget(self.btn_save)
-        main_v_layout.addLayout(btn_layout)
 
         scroll.setWidget(content_widget)
         outer_layout.addWidget(scroll)
