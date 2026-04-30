@@ -14,6 +14,7 @@ class DataCollector:
     # [핵심 패치] 인스턴스 변수가 아닌 '클래스 변수'로 선언하여
     # 어떤 DataCollector 객체에서도 동일한 콜백 리스트를 공유하게 함
     on_state_updated_callbacks = []
+    on_execution_callbacks = [] # [신규] 체결/주문 상태 업데이트 콜백
 
     def __init__(self, config):
         self.config = config
@@ -134,6 +135,7 @@ class DataCollector:
             return
         
         self.is_running = True
+        self.logger.info(f"DataCollector: 수집을 시작합니다. (등록된 체결 콜백: {len(self.on_execution_callbacks)}개)")
         # 상태 이벤트 초기화
         self.ws_connected_event.clear()
         self.first_data_received_event.clear()
@@ -274,8 +276,20 @@ class DataCollector:
                     recv_time = time.time()
                     self.last_receive_time = recv_time
                     
+                    # [재적용] 키움증권 PING 메시지 처리 (Heartbeat 대응 및 R10002 방지)
+                    if isinstance(message, str) and "PING" in message.upper():
+                        self.logger.debug("📡 [키움 API] PING 수신 -> PONG 응답 전송")
+                        # 서버 연결 유지를 위해 반드시 PONG을 보내야 합니다 (R10002 방지 핵심)
+                        # 이 로직은 JSON 파싱 이전에 수행되므로 파싱 에러가 발생하지 않습니다.
+                        await websocket.send(json.dumps({"trnm": "PONG"}))
+                        continue
+
                     # 데이터 파싱
-                    data = json.loads(message)
+                    try:
+                        data = json.loads(message)
+                    except json.JSONDecodeError:
+                        self.logger.error(f"JSON 파싱 에러 (비정상 메시지): {message}")
+                        continue
 
                     # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
                     root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
@@ -319,8 +333,49 @@ class DataCollector:
             entries = [message_data]
 
         for entry in entries:
-            # 2. 실시간 데이터 타입 식별 (0B: 체결, 0D: 호가)
+            # 2. 실시간 데이터 타입 식별
             msg_type = entry.get("type") or message_data.get("type") or message_data.get("tr_id") or message_data.get("trnm")
+            
+            # [디버그] 시장가 데이터가 아닌 모든 메시지 로깅
+            if msg_type not in ["0B", "0D"]:
+                self.logger.error(f"🔍 [WS Message] Type: {msg_type} | Content: {str(entry)[:200]}")
+            
+            # [신규] 주문/체결(Chejan) 데이터 처리
+            # Kiwoom REST/WS API에서 주문/체결은 보통 trnm이 'ORDR' 또는 'CNTG'로 오거나, ord_no 필드가 포함됩니다.
+            has_order_info = "ord_no" in entry or "ord_no" in message_data or msg_type in ['ORDR', 'CNTG', 'K1', 'H1', 'SC']
+            
+            if has_order_info:
+                self.logger.error(f"🔔 [Chejan] 주문 관련 데이터 감지 (Type: {msg_type})")
+                
+                # 데이터 병합 (entry와 message_data에서 정보 추출)
+                combined = {**message_data, **entry} if isinstance(message_data, dict) and isinstance(entry, dict) else entry
+                
+                broker_id = str(combined.get("ord_no") or combined.get("broker_id") or "")
+                
+                if broker_id:
+                    chejan_data = {
+                        "msg_type": "접수" if msg_type == "ORDR" or "접수" in str(combined.get("return_msg", "")) else "체결",
+                        "broker_id": broker_id,
+                        "exec_qty": int(float(combined.get("exec_qty") or combined.get("exec_qty", 0))),
+                        "exec_price": float(combined.get("exec_prc") or combined.get("exec_price") or combined.get("exec_prc", 0)),
+                        "symbol": combined.get("stk_cd") or combined.get("symbol"),
+                        "timestamp": combined.get("timestamp") or combined.get("time") or combined.get("curr_time")
+                    }
+                    
+                    self.logger.error(f"🚀 [Chejan Dispatch] {chejan_data}")
+
+                    # 등록된 콜백(OrderManager 등)으로 전달
+                    for callback in self.on_execution_callbacks:
+                        if asyncio.iscoroutinefunction(callback):
+                            asyncio.create_task(callback(chejan_data))
+                        else:
+                            try:
+                                callback(chejan_data)
+                            except Exception as e:
+                                self.logger.error(f"Chejan 콜백 실행 에러: {e}")
+                    
+                    if msg_type in ["ORDR", "CNTG"]:
+                        continue # 주문 데이터 처리를 마쳤으면 다음 엔트리로
             
             # [수정] raw_code 추출 로직 강화
             # Kiwoom Websocket entries usually have the stock code in 'item' or 'stk_cd'

@@ -38,6 +38,10 @@ class StrategyManager:
         self.cooldown_seconds = 3.0
         self._swap_lock = asyncio.Lock()
         self.is_ai_paused = False
+        self.last_global_buy_time = 0.0 # [신규] 전역 매수 쿨타임 관리용
+        self.global_buy_cooldown = 2.5  # [신규] 글로벌 매수 쿨타임 (초)
+        self._order_lock = asyncio.Lock() # [신규] 비동기 레이스 컨디션 방지용 락
+        self._pending_buy_symbols: set = set() # [신규] 동기적 중복 진입 차단용 집합
 
     def set_ai_paused(self, paused: bool):
         self.is_ai_paused = paused
@@ -97,6 +101,15 @@ class StrategyManager:
             self.logger.error(f"StrategyManager: 부팅 중 모델 로드 프로세스 실패 ({e}). 폴백 모드로 전환합니다.")
             self._fallback_empty_model()
 
+    def can_execute_buy(self) -> bool:
+        """글로벌 매수 쿨타임 상태를 확인합니다."""
+        now = time.time()
+        return (now - self.last_global_buy_time) >= self.global_buy_cooldown
+
+    def record_buy(self):
+        """글로벌 매수 발생 시점을 기록합니다."""
+        self.last_global_buy_time = time.time()
+
     def init_engines(self, universe_list: List[Dict[str, Any]]):
         """유니버스 확정 후 실시간 매매 엔진 초기화 (Lazy Initialization)"""
         # [NEW] 유니버스 전체 스냅샷 로깅
@@ -136,7 +149,8 @@ class StrategyManager:
         new_engines = []
         for sym in self.symbols:
             from core.live_trading_engine import LiveTradingEngine
-            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
+            # [수정] StrategyManager(self)를 엔진에 전달하여 글로벌 쿨타임 공유
+            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent, strategy_manager=self)
             self.envs[sym] = engine
             new_engines.append(engine)
             self.last_action_times[sym] = 0.0
@@ -279,18 +293,22 @@ class StrategyManager:
 
     async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
         if not self.is_running or self.is_ai_paused: return
+        
+        # [개선] _order_lock은 update_tick 전체를 감싸면 모든 종목 틱이 직렬화되어 AI 추론이 가로막힙니다.
+        # 대신 _pending_buy_symbols(CPython GIL로 보호되는 동기적 set 연산)만으로 레이스 컨디션을 방어합니다.
         try:
-            # [단일화] 무조건 순수 코드로 엔진 조회
             clean_symbol = symbol.split('_')[0]
             engine = self.envs.get(clean_symbol)
 
             if engine and price > 0 and timestamp:
-                # ==============================================================
-                # [긴급 패치] 엔진이 오해하지 않도록 인자 개수와 키워드를 완벽하게 맞춰서 던짐!
-                # ==============================================================
+                # [중복 진입 차단] 이미 매수 요청이 진행 중인 종목은 즐시 바이패스
+                if clean_symbol in self._pending_buy_symbols:
+                    self.logger.warning(f"🛡️ [Lock 방어] {clean_symbol}은 이미 주문 진행 중이므로 중복 진입을 차단합니다.")
+                    return
+
                 await engine.update_tick(symbol, normalized_state, price=price, volume=int(volume), timestamp=timestamp)
         except Exception as e:
-            self.logger.error(f"[StrategyManager] _on_tick_event 오류: {e}")
+            self.logger.error(f"StrategyManager: 틱 이벤트 처리 중 에러 ({symbol}): {e}")
 
     async def _empty_candle_watchdog(self):
         from datetime import datetime

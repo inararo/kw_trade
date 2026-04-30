@@ -98,11 +98,12 @@ class HistoricalFetcher:
         # 2. 시도할 종목코드 형식 목록 생성 (SOR 데이터 수집 최적화)
         symbol_only = symbol.split("_")[0] if "_" in symbol else symbol
         if symbol.endswith("_AL"):
-            formats_to_try = [f"SOR:{symbol}", symbol, f"SOR:{symbol_only}", f"KRX:{symbol_only}"]
+            # [수정] Kiwoom REST API 규격에 맞춰 순수 6자리 코드를 최우선으로 시도 (KRX: 접두사 오류 방지)
+            formats_to_try = [symbol_only, symbol, f"SOR:{symbol_only}", f"KRX:{symbol_only}"]
         elif symbol.endswith("_NX"):
-            formats_to_try = [f"NXT:{symbol}", symbol, f"NXT:{symbol_only}", f"KRX:{symbol_only}"]
+            formats_to_try = [symbol_only, symbol, f"NXT:{symbol_only}", f"KRX:{symbol_only}"]
         else:
-            formats_to_try = [f"KRX:{symbol}", symbol]
+            formats_to_try = [symbol_only, symbol, f"KRX:{symbol_only}"]
 
         final_data = []
         
@@ -144,22 +145,31 @@ class HistoricalFetcher:
                             next_key = resp_headers.get("next-key", "")
                             
                             if response.status != 200:
-                                self.logger.error(f"[HistoricalFetcher] HTTP {response.status} 오류 ({formatted_symbol})")
+                                try:
+                                    err_body = await response.text()
+                                    self.logger.error(f"[HistoricalFetcher] HTTP {response.status} 오류 ({formatted_symbol}) - 상세: {err_body[:200]}")
+                                except:
+                                    self.logger.error(f"[HistoricalFetcher] HTTP {response.status} 오류 ({formatted_symbol})")
                                 break
 
                             data = await response.json()
                             
+                            # [로그 강화] 응답 데이터 구조 확인
+                            if not data or "return_code" not in data:
+                                self.logger.debug(f"[HistoricalFetcher] {formatted_symbol} 응답 구조 이상: {str(data)[:200]}")
+
                             if str(data.get("return_code")) == "3" or "Token이 유효하지 않습니다" in data.get("return_msg", ""):
+                                self.logger.error(f"[HistoricalFetcher] 토큰 만료 에러 감지 (Return Code 3)")
                                 return Failure("TOKEN_EXPIRED")
 
-                            # 리스트 추출
+                            # 리스트 추출 (다양한 출력 필드 대응)
                             items = data.get("stk_min_pole_chart_qry") or data.get("output2") or data.get("grid") or data.get("output")
                             
                             if not items or not isinstance(items, list):
-                                self.logger.debug(f"[HistoricalFetcher] {formatted_symbol} 결과 없음 ({data.get('return_msg')})")
+                                self.logger.debug(f"[HistoricalFetcher] {formatted_symbol} 결과 데이터셋 없음 (메시지: {data.get('return_msg')})")
                                 break
                             
-                            self.logger.info(f"[HistoricalFetcher] {formatted_symbol} 수집 성공: {len(items)}개")
+                            self.logger.info(f"[HistoricalFetcher] {formatted_symbol} 데이터 {len(items)}개 수신 성공 (Page {current_page+1})")
 
                             batch_data = []
                             last_timestamp_in_batch = ""

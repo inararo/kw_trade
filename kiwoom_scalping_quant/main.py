@@ -111,6 +111,10 @@ class QuantSystem:
         # [안정화] DataCollector에 TokenManager 참조 주입
         self.data_collector.config._token_manager = self.token_manager
 
+        # [핵심] 실시간 체결(Chejan) 데이터 연동 콜백 등록
+        if hasattr(self.data_collector, 'on_execution_callbacks'):
+            self.data_collector.on_execution_callbacks.append(self.order_manager.on_receive_chejan_data)
+
         # Inject references for background managers safely
         config_mgr = self.container.config_manager()
         config_mgr._injected_scheduler = self.market_scheduler
@@ -346,7 +350,8 @@ class QuantSystem:
                 # 순수 원격 제어 필드이므로, 설정값 동기화보다 먼저 처리하고 제거합니다.
                 _CONTROL_KEYS = {
                     "is_monitoring_active", "is_ai_trading_active",
-                    "last_updated_by_engine", "last_heartbeat", "engine_status"
+                    "last_updated_by_engine", "last_heartbeat", "engine_status",
+                    "current_state", "updated_at"
                 }
 
                 # 종목 감시 원격 제어

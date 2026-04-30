@@ -3,7 +3,8 @@ import time
 import logging
 import json
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from utils.math_jit import get_valid_tick_price
 from returns.result import Result, Success, Failure
 from returns.future import FutureResult, future_safe
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -125,6 +126,14 @@ class OrderManager:
         REST API를 통한 주문 발송 (신규/정정/취소)
         orig_order_no가 있으면 정정/취소 주문으로 간주.
         """
+        # [안전장치] 모든 주문 가격을 유효한 호가 단위(Tick Size)로 강제 보정
+        # 시장가(price=0)인 경우는 get_valid_tick_price에서 0을 반환함
+        original_price = price
+        price = get_valid_tick_price(float(price), order_type)
+        
+        if original_price != price and original_price != 0:
+            self.logger.warning(f"⚠️ 주문 가격 보정 발생: {original_price} -> {price} (호가 단위 준수)")
+
         if not orig_order_no:
             if self.risk_manager and not self.risk_manager.can_order(symbol, price * qty, order_type):
                 raise Exception(f"RiskManager: 글로벌 세이프티 가드 제한으로 인해 신규 주문({order_type} {symbol})이 거부되었습니다.")
@@ -304,6 +313,16 @@ class OrderManager:
 
                         else:
                             self.logger.error(f"❌ 키움 주문 거부: [{return_code}] {return_msg}")
+                            
+                            # [핵심 패치] 매도가능수량 부족 시 잔고 강제 동기화 (무한 매도 시도 방지)
+                            if "매도가능수량" in return_msg or "800033" in return_msg:
+                                self.logger.warning(f"⚠️ [잔고 불일치] 브로커와 엔진의 수량이 다릅니다. {symbol} 보유 수량을 0으로 강제 초기화합니다.")
+                                self.holdings[symbol] = 0
+                                if symbol in self.bot_holdings:
+                                    self.bot_holdings[symbol] = 0
+                                # 실잔고 다시 불러오기 (백그라운드)
+                                asyncio.create_task(self.fetch_real_balance())
+
                             self.active_orders[internal_id]['status'] = OrderState.FAILED
                             self.active_orders[internal_id]['ack_event'].set()
                             
@@ -405,18 +424,24 @@ class OrderManager:
 
     def on_receive_chejan_data(self, data: Dict[str, Any]):
         """
-        키움 웹소켓(또는 REST 폴링)에서 수신된 실시간 체결/잔고(t1301 등) 데이터 파싱.
+        키움 웹소켓(또는 REST 폴링)에서 수신된 실시간 체결/잔고 데이터 파싱.
         """
+        # [디버그] 수신 데이터 확인
+        self.logger.error(f"📥 [Chejan Raw] {data}")
+
         internal_id = data.get('internal_id')
-        broker_id = data.get('broker_id')
+        broker_id = str(data.get('broker_id', '')) # 문자열 정규화
         msg_type = data.get('msg_type') # '접수', '체결', '취소확인' 등
 
         order = self.active_orders.get(internal_id)
         if not order:
             # broker_id로 역추적
-            internal_id = self.broker_id_map.get(broker_id)
-            order = self.active_orders.get(internal_id)
+            if broker_id:
+                internal_id = self.broker_id_map.get(broker_id)
+                order = self.active_orders.get(internal_id)
+            
             if not order:
+                self.logger.warning(f"⚠️ [Chejan] 매칭되는 주문을 찾을 수 없습니다. (Internal ID: {internal_id}, Broker ID: {broker_id})")
                 return
 
         if msg_type == '접수':
@@ -425,6 +450,17 @@ class OrderManager:
             self.broker_id_map[broker_id] = internal_id
             order['ack_event'].set() # 타임아웃 해제
             self.logger.info(f"브로커 접수 완료. (Broker ID: {broker_id})")
+
+            # [Firebase] 주문 접수 로그 전송 (연동 확인용)
+            if self.firebase_manager:
+                asyncio.create_task(self.firebase_manager.add_trade_log({
+                    "symbol": order['symbol'],
+                    "type": order['type'] + "_RECEIPT",
+                    "price": float(order.get('price', 0)),
+                    "quantity": int(order.get('qty', 0)),
+                    "profit_loss": 0,
+                    "broker_id": broker_id
+                }))
 
         elif msg_type == '체결':
             exec_qty = data.get('exec_qty', 0)
@@ -519,25 +555,24 @@ class OrderManager:
                     pnl=pnl
                 ))
 
-            # [Firebase] 체결 로그 Firestore 전송
+            # [Firebase] 체결 로그 Firestore 전송 (사용자 요청 포맷 적용)
             if self.firebase_manager:
-                # 종목명 확인 (텔레그램 알림에서 구한 값 재사용 또는 재탐색)
-                fb_symbol_name = symbol
-                universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
-                for s in universe:
-                    if s.get('code') == symbol:
-                        fb_symbol_name = s.get('name', symbol)
-                        break
+                # 1. 실현 손익 계산 (SELL일 때만 의미 있음, KeyError 방지)
+                avg_price = self.avg_entry_prices.get(symbol, 0)
+                pnl = (exec_price - avg_price) * exec_qty if order['type'] == 'SELL' and avg_price > 0 else 0
+                
+                # 2. 사용자 요청 딕셔너리 구성
+                trade_data = {
+                    "symbol":      symbol,
+                    "type":        order['type'],      # "BUY" 또는 "SELL"
+                    "price":       float(exec_price),
+                    "quantity":    int(exec_qty),
+                    "profit_loss": float(pnl),         # 실현 손익
+                    # "timestamp"는 FirebaseManager.add_trade_log 내부에서 SERVER_TIMESTAMP로 추가됨
+                }
 
-                from datetime import datetime
-                asyncio.create_task(self.firebase_manager.send_trade_log(
-                    log_type=order['type'],
-                    symbol=symbol,
-                    symbol_name=fb_symbol_name,
-                    price=float(exec_price),
-                    qty=int(exec_qty),
-                    timestamp=datetime.now().isoformat(timespec='seconds'),
-                ))
+                # 3. 비동기 업로드 (메인 루프 블로킹 방지)
+                asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
 
         elif msg_type == '취소확인':
             order['status'] = OrderState.CANCELLED

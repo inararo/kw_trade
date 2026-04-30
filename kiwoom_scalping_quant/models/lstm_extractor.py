@@ -19,8 +19,11 @@ class OnlineRollingNormalizer:
 
         history_array = np.array(self.history)
         mean = np.mean(history_array, axis=0)
-        std = np.std(history_array, axis=0) + 1e-8
-
+        std = np.std(history_array, axis=0)
+        
+        # [안정화] 변화가 없는(std=0) 피처에 대한 분모 폭발 방지
+        std[std < 1e-8] = 1.0
+        
         normalized_vector = (new_feature_vector - mean) / std
         return normalized_vector
 

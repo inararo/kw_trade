@@ -10,17 +10,19 @@ from core.feature_engineer import AdvancedFeatureEngineer
 from core.scheduler import MarketState
 from utils.math_jit import get_valid_tick_price
 from utils.trade_logger import trade_logger
+from models.lstm_extractor import OnlineRollingNormalizer
 
 class LiveTradingEngine:
     """
     개별 종목에 대해 실시간 틱(Tick) 수신, 1분봉 병합(OHLCV), 웜업, 
     Feature Engineering 및 RL Agent 시그널 추론을 전담하는 엔진입니다.
     """
-    def __init__(self, symbol: str, config_manager, order_manager, shared_agent):
+    def __init__(self, symbol: str, config_manager, order_manager, shared_agent, strategy_manager=None):
         self.symbol = symbol
         self.config_manager = config_manager
         self.order_manager = order_manager
         self.agent = shared_agent
+        self.strategy_manager = strategy_manager # [신규] 글로벌 쿨타임 확인용
         self.logger = logging.getLogger(f"LiveEngine[{self.symbol}]")
         
         # 1분봉 버퍼 (MA20 등을 계산하기 위해 최소 40개 이상 유지, 넉넉히 100개)
@@ -55,13 +57,18 @@ class LiveTradingEngine:
         # [신규] 주문 진행 상태 Lock 플래그 (중복 주문 방지)
         self._is_order_pending = False
 
+        # [신규] 실시간 피처 정규화기 (Z-score Scaling)
+        # AI 모델의 신뢰도 포화(Saturation) 현상을 방지하기 위해 학습 시와 동일한 통계량으로 정규화 수행
+        self.normalizer = OnlineRollingNormalizer(window_size=200) 
+
     async def warmup(self, access_token: str):
         """부팅 시 최근 약 1시간 정도의 데이터를 로드하여 지표 계산 기반을 마련합니다."""
         fetcher = HistoricalFetcher(self.config_manager)
         today_str = datetime.now().strftime("%Y%m%d")
         
         self.logger.info(f"최소 웜업 시작... (Token 보유 여부: {bool(access_token)})")
-        data_result = await fetcher.fetch_historical_data(self.symbol, today_str, access_token, max_pages=1)
+        # [수정] max_pages=5로 변경하여 약 하루치(500분)의 데이터를 수집합니다 (1페이지=100분)
+        data_result = await fetcher.fetch_historical_data(self.symbol, today_str, access_token, max_pages=5)
         
         if data_result is None or (hasattr(data_result, 'is_failure') and data_result.is_failure()):
             self.logger.warning(f"웜업 실패: {getattr(data_result, 'failure', lambda: 'Data is None')()}")
@@ -80,7 +87,30 @@ class LiveTradingEngine:
                     if row["timestamp"] in existing_timestamps: continue
                     self.minute_buffer.append(row)
                     added_count += 1
-            self.logger.info(f"웜업 완료: 과거 데이터 {added_count}개 적재됨.")
+            
+            # [신규] 정규화기(Normalizer) 사전 워밍업
+            # 과거 데이터를 피처로 변환하여 정규화기에 미리 주입해야 부팅 즉시 정상적인 AI 추론이 가능합니다.
+            if len(self.minute_buffer) >= 30:
+                try:
+                    all_features = AdvancedFeatureEngineer.process_historical_data(list(self.minute_buffer))
+                    seq_len = getattr(self.agent, 'seq_len', 10)
+                    
+                    # [핵심 수정] _run_inference와 동일한 차원(seq_len * num_features)으로 주입
+                    # 기존에 단일 시점(11차원)으로 주입하여 발생하던 shape 불일치 에러를 해결합니다.
+                    self.normalizer.history.clear() # 웜업 전 초기화
+                    for i in range(seq_len, len(all_features) + 1):
+                        window_obs = all_features[i-seq_len : i].flatten()
+                        if len(window_obs) > 0:
+                            self.normalizer.normalize(window_obs)
+                    
+                    self.logger.info(f"정규화기 웜업 완료: {len(all_features)}개 분봉 기반 {len(self.normalizer.history)}개 윈도우 학습됨.")
+                except Exception as e:
+                    self.logger.error(f"정규화기 웜업 중 오류: {e}")
+
+            if added_count == 0:
+                self.logger.warning(f"⚠️ [{self.symbol}] 웜업 완료되었으나 적재된 데이터가 0개입니다. (서버 응답 없음 또는 형식 불일치)")
+            else:
+                self.logger.info(f"✅ [{self.symbol}] 웜업 완료: 과거 데이터 {added_count}개 적재됨.")
             self.is_warmed_up = True
             
             if self.minute_buffer:
@@ -148,7 +178,8 @@ class LiveTradingEngine:
                             
                             # [개선] 하드 손절 시 체결 확률을 높이기 위해 현재가보다 1호가 아래로 주문 (Slippage 대응)
                             # 매도의 경우 price * 0.999 정도면 충분히 최우선 매수호가에 체결됨
-                            sell_price = int(price * 0.999) if reason == "스탑로스" else int(price)
+                            raw_sell_price = price * 0.999 if reason == "스탑로스" else price
+                            sell_price = get_valid_tick_price(raw_sell_price, "SELL")
                             asyncio.create_task(self._execute_order_background("SELL", sell_price, holdings))
                             return
 
@@ -221,6 +252,12 @@ class LiveTradingEngine:
         seq_len = getattr(self.agent, 'seq_len', 10)
         if len(features) < seq_len: return
         obs_1d = features[-seq_len:].flatten()
+        
+        # 1.5. 피처 정규화 (Z-score Scaling) - [핵심 패치]
+        # 학습 시와 동일한 통계량 분포를 유지하기 위해 실시간 정규화 적용
+        if self.normalizer and len(obs_1d) > 0:
+            obs_1d = self.normalizer.normalize(obs_1d)
+            # self.logger.debug(f"[{self.symbol}] 피처 정규화 완료 (평균: {np.mean(obs_1d):.4f}, 표준편차: {np.std(obs_1d):.4f})")
 
         # 2. Observation Padding (Target Dim 동기화)
         obs_shape = getattr(self.agent.env, 'observation_space', None)
@@ -236,19 +273,50 @@ class LiveTradingEngine:
         balance = self.order_manager.get_balance() if hasattr(self.order_manager, 'get_balance') else 0
         holdings = self.order_manager.holdings.get(self.symbol, 0)
         
-        if balance < current_price: action_masks[1] = False
-        if holdings <= 0: action_masks[2] = False
+        # [중복 진입 방지] 이미 보유 중이거나 주문이 진행 중이면 매수 차단
+        if balance < current_price or holdings > 0 or self._is_order_pending: 
+            action_masks[1] = False
+            
+        if holdings <= 0: 
+            action_masks[2] = False
         
+        # [검증] AI 모델 주입 직전 데이터 상태 정밀 로깅
+        try:
+            state_min = np.min(obs_1d)
+            state_max = np.max(obs_1d)
+            state_mean = np.mean(obs_1d)
+            has_nan = np.isnan(obs_1d).any()
+            has_inf = np.isinf(obs_1d).any()
+            
+            self.logger.error(f"🔍 [State 검증] {self.symbol} | Shape: {obs_1d.shape} | Min: {state_min:.4f} | Max: {state_max:.4f} | Mean: {state_mean:.4f} | NaN: {has_nan} | Inf: {has_inf}")
+            self.logger.error(f"🔍 [State 샘플] {self.symbol} 데이터 앞부분: {obs_1d.flatten()[:5]}")
+        except Exception as e:
+            self.logger.error(f"🔍 [State 검증 실패] {e}")
+
         action, probs = self.agent.predict(np.expand_dims(obs_1d, axis=0), action_masks=np.array(action_masks), return_probs=True)
         if isinstance(action, np.ndarray): action = int(action[0])
         
-        # 신뢰도 필터 (매수/매도 임계값 분리 적용)
+        # [이중 안전장치] 마스킹된 액션이 선택되었을 경우 강제 홀딩 (SB3 버그 방어)
+        if not action_masks[action]:
+            action = 0
+
+        # 신뢰도 필터 (매수/매도 임계값 분리 적용 및 타입 안정성 확보)
         if action == 1: # BUY
             buy_threshold = self.config_manager.get("ai_buy_threshold", 0.6)
-            if probs[1] < buy_threshold: action = 0
+            confidence = probs[1]
+            
+            # [강제 로깅] 타입과 값 명시적 출력
+            self.logger.error(f"🧠 [AI 판단] {self.symbol} | 신뢰도: {confidence} | 임계값: {buy_threshold} | 타입: {type(confidence)} vs {type(buy_threshold)} | Masked: {not action_masks[1]}")
+            
+            if float(confidence) < float(buy_threshold): 
+                action = 0
         elif action == 2: # SELL
             sell_threshold = self.config_manager.get("ai_sell_threshold", 0.6)
-            if probs[2] < sell_threshold: action = 0
+            confidence = probs[2]
+            self.logger.error(f"[AI 판단] 종목 {self.symbol} 매도 신뢰도: {confidence:.4f} (기준: {sell_threshold:.4f})")
+            
+            if float(confidence) < float(sell_threshold): 
+                action = 0
         
         self._update_ui_signals(action, {0:"Hold", 1:"Buy", 2:"Sell"}.get(action, "Hold"), probs)
 
@@ -268,6 +336,11 @@ class LiveTradingEngine:
             max_invest = self.config_manager.get("max_invest_per_symbol", 1000000)
 
         if action == 1: # BUY
+            # [안전장치] 글로벌 매수 쿨타임(Circuit Breaker) 체크
+            if self.strategy_manager and not self.strategy_manager.can_execute_buy():
+                self.logger.warning(f"[{self.symbol}] 🛡️ 글로벌 매수 쿨타임 가동 중 - 주문을 차단합니다.")
+                return
+
             # [신규] 매수 주문 전 최신 잔고 동기화
             await self.order_manager.sync_balance(force=True)
             
@@ -283,6 +356,15 @@ class LiveTradingEngine:
             qty = int(final_invest_amount // current_price)
             
             if qty > 0:
+                # [안전장치 1] StrategyManager의 _pending_buy_symbols에 동기적으로 등록
+                # await send_order() 호출 전에 일려두어 콘텍스트 스위칭 레이스 컨디션을 방지합니다.
+                if self.strategy_manager:
+                    self.strategy_manager._pending_buy_symbols.add(self.symbol)
+
+                # [안전장치 2] 글로벌 매수 시점 기록
+                if self.strategy_manager:
+                    self.strategy_manager.record_buy()
+
                 self._is_order_pending = True 
                 valid_price = get_valid_tick_price(current_price, "BUY")
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
@@ -315,13 +397,23 @@ class LiveTradingEngine:
             
             # 1. 주문 전송
             result = await self.order_manager.send_order(side, self.symbol, price, qty)
-            if hasattr(result, 'is_failure') and result.is_failure():
-                err_msg = f"❌ [{self.symbol}] {side} 전송 실패: {result.failure()}"
-                self.logger.error(err_msg)
-                self._ui_log(err_msg)
-                return
-
-            internal_id = result.unwrap() if hasattr(result, 'unwrap') else result
+            
+            # [방어 로직] returns 라이브러리의 Result 객체 안전한 언래핑
+            from returns.pipeline import is_successful
+            
+            if hasattr(result, 'unwrap'):
+                if is_successful(result):
+                    # 성공 시 내부 ID(internal_id) 추출
+                    internal_id = result.unwrap()
+                else:
+                    # 실패 시(Failure) 크래시 방지를 위해 unwrap()을 호출하지 않고 로그 출력 후 종료
+                    # RiskManager 차단 등 정상적인 거부 사유를 로깅합니다.
+                    failure_reason = result.failure()
+                    self.logger.warning(f"🚫 [주문 스킵] RiskManager 차단 또는 에러: {failure_reason}")
+                    return
+            else:
+                # Result 객체가 아닌 일반 값인 경우 그대로 사용
+                internal_id = result
             
             # [신규] 주문 전송 성공 즉시 UI 알림
             success_msg = f"📤 [{self.symbol}] {side} 주문 {qty}주 @ {price:,}원 전송 성공"
@@ -374,9 +466,12 @@ class LiveTradingEngine:
                 self._ui_log(res_msg)
 
         except Exception as e:
-            self.logger.error(f"🔥 주문 파이프라인 치명적 오류: {e}")
+            self.logger.error(f"🔥 주문 파이프라인 치명적 오류: {e}", exc_info=True)
         finally:
             self._is_order_pending = False
+            # [안전장치] 주문 파이프라인 종료 시(성공/실패 무관) pending 최소화
+            if self.strategy_manager:
+                self.strategy_manager._pending_buy_symbols.discard(self.symbol)
             self.logger.info(f"🔒 {self.symbol} 주문 락 해제 완료.")
 
     def _update_ui_signals(self, action, signal_text, probs):

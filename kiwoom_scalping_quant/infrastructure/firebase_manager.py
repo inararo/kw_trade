@@ -3,7 +3,7 @@ FirebaseManager - 인프라 계층 (Infrastructure Layer)
 
 Firebase Cloud Firestore를 통한 외부 서비스 연동 모듈.
 - 체결 로그를 Firestore `trade_logs` 컬렉션에 기록
-- 시스템 상태를 Firestore `system/status` 도큐먼트에 실시간 업데이트
+- 시스템 상태 및 엔진 하트비트를 Firestore `system_status/engine` 문서에 실시간 업데이트
 
 [비동기 처리 전략]
 firebase-admin의 Firestore SDK는 동기(Blocking) API입니다.
@@ -125,32 +125,52 @@ class FirebaseManager:
             "created_at":  <Firestore 서버 타임스탬프>
         }
         """
-        if not self._initialized or not self._db:
-            return
-
-        from firebase_admin import firestore as fs
-
-        doc_data = {
+        trade_data = {
             "log_type":    log_type,
             "symbol":      symbol,
             "symbol_name": symbol_name,
             "price":       float(price),
             "qty":         int(qty),
-            "timestamp":   timestamp,
-            "created_at":  fs.SERVER_TIMESTAMP,
+            "timestamp_str": timestamp, # 기존 필드명과 충돌 피하기 위해 변경
         }
+        await self.add_trade_log(trade_data)
+
+    async def add_trade_log(self, trade_data: dict):
+        """
+        체결 내역을 Firestore trade_logs 컬렉션에 실시간으로 업로드합니다.
+        
+        Args:
+            trade_data: 체결 정보 딕셔너리
+                        (symbol, type, price, quantity, profit_loss 등 포함)
+        """
+        if not self._initialized:
+            self.logger.error("FirebaseManager: 초기화되지 않아 로그를 전송할 수 없습니다.")
+            return
+        if not self._db:
+            self.logger.error("FirebaseManager: DB 연결(Firestore)이 없어 로그를 전송할 수 없습니다.")
+            return
+
+        from firebase_admin import firestore as fs
+        
+        # 1. 서버 타임스탬프 강제 포함 (앱 정렬용)
+        trade_data["timestamp"] = fs.SERVER_TIMESTAMP
+        
+        # 2. 전송 데이터 복사 (원본 딕셔너리 변조 방지)
+        doc_data = trade_data.copy()
+        self.logger.error(f"📤 [Firestore Payload] {doc_data}")
 
         try:
+            # 3. asyncio.to_thread를 사용하여 블로킹 방지 (SDK가 동기 방식이므로 필수)
             await asyncio.to_thread(
                 self._db.collection("trade_logs").add, doc_data
             )
-            logger.debug(
-                f"FirebaseManager: trade_log 저장 완료 "
-                f"[{log_type}] {symbol_name}({symbol}) {qty}주 @ {price:,.0f}원"
+            self.logger.error(
+                f"✅ FirebaseManager: 체결 로그 실시간 업로드 완료 "
+                f"({doc_data.get('symbol', 'UNKNOWN')})"
             )
         except Exception as e:
             # Fail-Safe: Firebase 전송 실패가 매매 흐름을 절대 중단시키지 않음
-            logger.error(f"FirebaseManager: trade_log 전송 실패 (무시): {e}")
+            logger.error(f"FirebaseManager: 체결 로그 업로드 중 에러 발생 (무시): {e}")
 
     # ─────────────────────────────────────────────────────────────
     # Public API - 시스템 상태 업데이트 (Upsert)
@@ -158,7 +178,7 @@ class FirebaseManager:
 
     async def update_engine_status(self, status: str):
         """
-        엔진 가동 상태를 settings/core 문서에 기록합니다.
+        엔진 가동 상태를 system_status/engine 문서에 기록합니다. (설정값과 분리)
         
         Args:
             status: "RUNNING" 또는 "OFFLINE"
@@ -168,34 +188,37 @@ class FirebaseManager:
 
         from firebase_admin import firestore as fs
         try:
-            doc_ref = self._db.collection("settings").document("core")
+            # [리팩토링] settings/core에서 system_status/engine으로 경로 변경
+            doc_ref = self._db.collection("system_status").document("engine")
             await asyncio.to_thread(
-                doc_ref.update,
+                doc_ref.set,
                 {
                     "engine_status": status,
                     "last_heartbeat": fs.SERVER_TIMESTAMP
-                }
+                },
+                merge=True
             )
-            logger.info(f"FirebaseManager: 엔진 상태 업데이트 → {status}")
+            logger.info(f"FirebaseManager: 엔진 상태 업데이트 (system_status/engine) → {status}")
         except Exception as e:
             logger.error(f"FirebaseManager: 엔진 상태 업데이트 실패: {e}")
 
     async def start_heartbeat(self):
         """
-        1분마다 last_heartbeat 필드를 갱신하는 백그라운드 태스크를 실행합니다.
+        1분마다 system_status/engine 문서의 last_heartbeat 필드를 갱신합니다.
         """
         if not self._initialized or not self._db:
             return
 
         from firebase_admin import firestore as fs
-        logger.info("FirebaseManager: 실시간 하트비트(Heartbeat) 태스크를 시작합니다.")
+        logger.info("FirebaseManager: 실시간 하트비트(Heartbeat) 태스크를 시작합니다. (대상: system_status/engine)")
         
         while True:
             try:
-                doc_ref = self._db.collection("settings").document("core")
+                doc_ref = self._db.collection("system_status").document("engine")
                 await asyncio.to_thread(
-                    doc_ref.update,
-                    {"last_heartbeat": fs.SERVER_TIMESTAMP}
+                    doc_ref.set,
+                    {"last_heartbeat": fs.SERVER_TIMESTAMP},
+                    merge=True
                 )
                 logger.debug("FirebaseManager: Heartbeat 갱신 완료")
             except Exception as e:
@@ -205,7 +228,7 @@ class FirebaseManager:
 
     async def update_system_status(self, state: str):
         """
-        현재 시스템(봇) 상태를 Firestore `system/status` 도큐먼트에 덮어씁니다.
+        현재 시스템(봇) 상태를 Firestore `system_status/engine` 문서에 업데이트합니다. (경로 통합)
         모바일 앱에서 봇의 현재 운영 상태를 실시간으로 확인할 수 있습니다.
 
         Args:
@@ -213,7 +236,7 @@ class FirebaseManager:
                    예) 'BOOTING', 'IDLE', 'PREPARE', 'TRADING',
                        'CUTOFF', 'LIQUIDATING', 'STOPPED'
 
-        Firestore 저장 포맷 (컬렉션: system / 도큐먼트: status):
+        Firestore 저장 포맷 (컬렉션: system_status / 도큐먼트: engine):
         {
             "current_state": "TRADING",
             "updated_at":    <Firestore 서버 타임스탬프>
@@ -232,13 +255,13 @@ class FirebaseManager:
         try:
             # merge=True: 도큐먼트가 없으면 생성, 있으면 해당 필드만 갱신
             await asyncio.to_thread(
-                self._db.collection("system").document("status").set,
+                self._db.collection("system_status").document("engine").set,
                 doc_data,
                 merge=True,
             )
-            logger.debug(f"FirebaseManager: system/status 업데이트 → {state}")
+            logger.debug(f"FirebaseManager: system_status/engine 업데이트 → {state}")
         except Exception as e:
-            logger.error(f"FirebaseManager: system/status 업데이트 실패 (무시): {e}")
+            logger.error(f"FirebaseManager: system_status/engine 업데이트 실패 (무시): {e}")
 
     # ─────────────────────────────────────────────────────────────
     # Public API - 실시간 리스너 (Listen)
@@ -307,6 +330,21 @@ class FirebaseManager:
 
         try:
             doc_ref = self._db.collection("settings").document("core")
+            
+            # [리팩토링] 기존 settings/core에 남아있을 수 있는 엔진 상태 키들을 제거
+            from firebase_admin import firestore as fs
+            cleanup_data = {
+                "engine_status": fs.DELETE_FIELD,
+                "last_heartbeat": fs.DELETE_FIELD,
+                "last_updated_by_engine": fs.DELETE_FIELD
+            }
+            # DELETE_FIELD는 update()에서만 동작합니다.
+            try:
+                await asyncio.to_thread(doc_ref.update, cleanup_data)
+                logger.info("FirebaseManager: settings/core 내 엔진 상태 필드 정리 완료 (Path 분리 대응)")
+            except:
+                pass # 필드가 이미 없으면 에러날 수 있음 (무시)
+
             await asyncio.to_thread(doc_ref.set, default_config, merge=True)
             logger.info(
                 f"FirebaseManager: settings/core 기본값 업로드 완료 ✅ "
@@ -317,20 +355,21 @@ class FirebaseManager:
 
     async def report_settings_applied(self):
         """
-        엔진이 원격 설정을 성공적으로 반영했음을 Firestore에 기록합니다.
-        모바일 앱 UI에 최종 반영 시각을 표시하기 위한 용도입니다.
+        엔진이 원격 설정을 성공적으로 반영했음을 system_status/engine에 기록합니다.
+        (settings/core의 에코 방지를 위해 경로를 분리했습니다.)
         """
         if not self._initialized or not self._db:
             return
 
         from firebase_admin import firestore as fs
         try:
-            doc_ref = self._db.collection("settings").document("core")
+            doc_ref = self._db.collection("system_status").document("engine")
             await asyncio.to_thread(
-                doc_ref.update, 
-                {"last_updated_by_engine": fs.SERVER_TIMESTAMP}
+                doc_ref.set, 
+                {"last_updated_by_engine": fs.SERVER_TIMESTAMP},
+                merge=True
             )
-            logger.debug("FirebaseManager: settings 반영 시각 업데이트 완료")
+            logger.debug("FirebaseManager: settings 반영 시각 보고 완료 (system_status/engine)")
         except Exception as e:
             logger.error(f"FirebaseManager: settings 반영 보고 실패: {e}")
 
@@ -348,13 +387,32 @@ class FirebaseManager:
             return
 
         def on_snapshot(doc_snapshot, changes, read_time):
+            # [신규] 무시할 시스템 필드 목록 (엔진 스스로 업데이트하는 값들)
+            IGNORE_KEYS = ['last_heartbeat', 'engine_status', 'last_updated_by_engine', 'current_state', 'updated_at']
+
             for doc in doc_snapshot:
                 if doc.exists:
                     data = doc.to_dict()
-                    # [DEBUG] 수신 즉시 — 필터링/콜백 이전에 모든 키-값을 무조건 출력
-                    for key, value in data.items():
-                        logger.info(f"[DEBUG] 파이어베이스 수신 데이터: {key} -> {value}")
-                    logger.info(f"FirebaseManager: 원격 설정 변경 감지 → {data}")
+                    
+                    # 1. 실제 설정값만 추출 (시스템 필드 제외)
+                    filtered_data = {k: v for k, v in data.items() if k not in IGNORE_KEYS}
+                    
+                    # 2. 에코 방지 로직: 로컬 메모리의 설정값과 실제로 다른 항목이 있는지 검사
+                    has_real_change = False
+                    if self.config_manager:
+                        for k, v in filtered_data.items():
+                            if self.config_manager.get(k) != v:
+                                has_real_change = True
+                                break
+                    else:
+                        has_real_change = True # 비교 대상이 없으면 일단 통과
+
+                    # 3. 하트비트만 변경된 경우 로그 없이 즉시 리턴하여 루프 차단
+                    if not has_real_change:
+                        continue
+
+                    # 실제 사용자가 값을 바꿨을 때만 로그 출력 및 적용
+                    logger.info(f"FirebaseManager: 원격 설정 변경 감지 (실제 변경 있음) → {filtered_data}")
                     try:
                         callback_func(data)
                     except Exception as e:
