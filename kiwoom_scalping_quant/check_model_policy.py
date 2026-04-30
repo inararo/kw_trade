@@ -61,7 +61,7 @@ async def run_diagnosis(symbol="001440"):
         print("⚠️ KIWOOM_ACCESS_TOKEN이 없습니다. 데이터 페칭이 불가능할 수 있습니다.")
     
     today_str = datetime.now().strftime("%Y%m%d")
-    data_result = await fetcher.fetch_historical_data(symbol, today_str, token, max_pages=5)
+    data_result = await fetcher.fetch_historical_data(symbol, today_str, token, max_pages=1)
     
     if not data_result or (hasattr(data_result, 'is_failure') and data_result.is_failure()):
         print("❌ 데이터 페칭 실패. 토큰 만료 또는 네트워크 상태를 확인하세요.")
@@ -147,8 +147,8 @@ async def run_diagnosis(symbol="001440"):
         # [신규] 매수 신호 시 상세 로깅 (0.9999 포화 여부 확인용)
         if action == 1: # Buy
             buy_confidences.append(buy_prob)
-            if buy_prob > 0.9:
-                print(f"  [!] {sorted_data[i]['timestamp']} | Buy 신뢰도: {buy_prob:.6f} | Probs: [H:{hold_prob:.4f}, B:{buy_prob:.4f}, S:{sell_prob:.4f}]")
+            # if buy_prob > 0.9:
+            print(f"  [!] {sorted_data[i]['timestamp']} | Buy 신뢰도: {buy_prob:.6f} | Probs: [H:{hold_prob:.4f}, B:{buy_prob:.4f}, S:{sell_prob:.4f}]")
         elif action == 2: # Sell
             print(f"  [-] {sorted_data[i]['timestamp']} | Sell 신뢰도: {sell_prob:.6f} | Probs: [H:{hold_prob:.4f}, B:{buy_prob:.4f}, S:{sell_prob:.4f}]")
             

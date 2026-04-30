@@ -162,8 +162,12 @@ class LiveTradingEngine:
 
             ts_str = timestamp if isinstance(timestamp, str) else timestamp.strftime("%Y-%m-%d %H:%M:%S")
 
-            # 4. 기존 스탑로스 / 익절 로직 유지
-            if not self._is_order_pending:
+            # 4. 기존 스탑로스 / 익절 로직 유지 (단, 장 운영 시간 중에만 작동)
+            now = datetime.now()
+            market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+            market_end = now.replace(hour=15, minute=20, second=0, microsecond=0)
+            
+            if (market_start <= now <= market_end) and not self._is_order_pending:
                 holdings = getattr(self.order_manager, 'holdings', {}).get(self.symbol, 0)
                 if holdings > 0:
                     avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
@@ -232,6 +236,15 @@ class LiveTradingEngine:
 
     async def _run_inference(self):
         """AI 추론 및 주문 결정"""
+        # [신규] 장 운영 시간(Market Hours) 하드락: 09:00:00 ~ 15:20:00
+        now = datetime.now()
+        market_start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        market_end = now.replace(hour=15, minute=20, second=0, microsecond=0)
+        
+        if not (market_start <= now <= market_end):
+            self.logger.debug(f"[{self.symbol}] 장외 시간(현재 {now.strftime('%H:%M:%S')}) - 추론 및 주문 파이프라인 바이패스")
+            return
+
         # [디버그 로그 추가] AI가 깨어있는지 확인
         self.logger.info(f"[{self.symbol}] AI 추론 시도... (현재 버퍼 크기: {len(self.minute_buffer)})")
 
