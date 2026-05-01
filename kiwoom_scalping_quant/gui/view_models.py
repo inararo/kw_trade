@@ -1232,10 +1232,7 @@ class BacktestViewModel(QObject):
             self.logger.error(f"Backtest 결과 Export 중 오류 발생: {export_e}")
 
     def start_auto_backtest_batch(self, start_date: str, end_date: str):
-        """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행 (무조건 당일 데이터만 사용)"""
-        import datetime
-        today = datetime.datetime.now().strftime("%Y%m%d")
-        
+        """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행 (선택한 종료일 데이터 사용)"""
         if not self.model_path:
             # 설정의 active_model_path 확인
             self.model_path = self.config_manager.get("active_model_path")
@@ -1243,8 +1240,9 @@ class BacktestViewModel(QObject):
                 self.sig_bt_error.emit("활성화된 모델이 없거나 파일이 존재하지 않습니다. 모델 로드를 먼저 해주세요.")
                 return
         
-        # [수정] 사용자가 선택한 날짜와 관계없이 무조건 '당일' 데이터로 고정
-        asyncio.create_task(self._run_auto_batch_task(today, today))
+        # [수정] 무조건 '당일'이 아니라 사용자가 선택한 '종료일(end_date)'을 기준으로 배치 실행
+        self.logger.info(f"Top 30 자동 백테스트 시작: 기준일={end_date}")
+        asyncio.create_task(self._run_auto_batch_task(end_date, end_date))
 
     async def _run_auto_batch_task(self, start_date: str, end_date: str):
         try:
