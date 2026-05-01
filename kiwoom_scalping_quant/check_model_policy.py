@@ -63,15 +63,30 @@ async def run_diagnosis(symbol="001440"):
     today_str = datetime.now().strftime("%Y%m%d")
     data_result = await fetcher.fetch_historical_data(symbol, today_str, token, max_pages=1)
     
-    if not data_result or (hasattr(data_result, 'is_failure') and data_result.is_failure()):
-        print("❌ 데이터 페칭 실패. 토큰 만료 또는 네트워크 상태를 확인하세요.")
+    from returns.pipeline import is_successful
+    
+    # 1. Result 객체 성공 여부 체크
+    if not is_successful(data_result):
+        error_msg = data_result.failure()
+        print(f"❌ 데이터 페칭 실패: {error_msg}")
+        if "Return Code 3" in str(error_msg):
+            print("💡 조치: 키움 API 토큰이 만료되었습니다. main.py를 실행하여 토큰을 갱신하세요.")
         return
 
-    data = data_result.unwrap() if hasattr(data_result, 'unwrap') else data_result
-    if hasattr(data, '_inner_value'): data = data._inner_value
+    # 2. 안전하게 데이터 추출 (Success인 경우에만 실행됨)
+    data = data_result.unwrap()
     
-    if not data or len(data) < 50:
-        print(f"❌ 데이터가 너무 부족합니다. (현재 {len(data) if data else 0}개)")
+    # [방어] 리스트 형태가 아닌 경우 처리
+    if not isinstance(data, list):
+        if hasattr(data, "_inner_value") and isinstance(data._inner_value, list):
+            data = data._inner_value
+        else:
+            print(f"❌ 데이터 형식이 올바르지 않습니다: {type(data)}")
+            return
+
+    # 3. 데이터 길이 체크
+    if len(data) < 50:
+        print(f"❌ 데이터가 너무 부족합니다. (현재 {len(data)}개)")
         return
 
     sorted_data = sorted(data, key=lambda x: x["timestamp"])
