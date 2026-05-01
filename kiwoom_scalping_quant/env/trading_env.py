@@ -278,7 +278,7 @@ class ScalpingTradingEnv(gym.Env):
                 
                 # % 수익률 기반 보상 (x10 도파민 가중치 유지)
                 profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
-                step_reward = profit_pct * 10.0
+                step_reward = profit_pct * 20.0
                 
                 self.holdings = 0
                 self.avg_entry_price = 0.0
@@ -316,7 +316,7 @@ class ScalpingTradingEnv(gym.Env):
                 
                 # [FIX] 보상 폭발 버그 수정 (총액 revenue 대신 단가 sell_price 사용)
                 profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
-                step_reward += profit_pct * 10.0
+                step_reward += profit_pct * 20.0
                 
                 self.balance += revenue
                 self.holdings = 0
