@@ -12,77 +12,85 @@ class BacktestStudioTab(QWidget):
         self.progress_dialog = None
         self._init_ui()
         self._connect_signals()
-        
-        # 버튼 상태 업데이트 타이머 (1분마다 체크)
-        self.state_timer = QTimer(self)
-        self.state_timer.timeout.connect(self._update_button_states)
-        self.state_timer.start(60000)
-        self._update_button_states() # 초기 설정
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
 
         # --- 1. Top Control Panel ---
         ctrl_group = QGroupBox("백테스트 설정")
-        ctrl_layout = QHBoxLayout()
-        ctrl_layout.setContentsMargins(10, 5, 10, 5)
-        ctrl_layout.setSpacing(5) # [핵심] 레이블과 컨트롤은 서로 밀착
-
-        # 그룹 1: 종목 선택
-        ctrl_layout.addWidget(QLabel("종목 선택:"))
-        self.combo_symbol = QComboBox()
-        self.combo_symbol.setMinimumWidth(120) # 150 -> 120으로 소폭 축소
-        self._populate_symbols()
-        ctrl_layout.addWidget(self.combo_symbol)
+        group_layout = QVBoxLayout() # 세로 레이아웃으로 변경
         
-        ctrl_layout.addSpacing(25)
+        # 1-1. 설정 행 (종목, 날짜, 모델 로드)
+        settings_layout = QHBoxLayout()
+        settings_layout.setContentsMargins(0, 5, 0, 5)
+        settings_layout.setSpacing(15)
 
-        # 그룹 2: 시작일
-        ctrl_layout.addWidget(QLabel("시작일:"))
+        settings_layout.addWidget(QLabel("종목 선택:"))
+        self.combo_symbol = QComboBox()
+        self.combo_symbol.setMinimumWidth(150)
+        self._populate_symbols()
+        settings_layout.addWidget(self.combo_symbol)
+        
+        settings_layout.addWidget(QLabel("시작일:"))
         self.date_start = QDateEdit(QDate.currentDate().addMonths(-1))
         self.date_start.setCalendarPopup(True)
-        self.date_start.setMinimumWidth(110) # 110px로 확장하여 날짜 가독성 확보
-        ctrl_layout.addWidget(self.date_start)
+        self.date_start.setMinimumWidth(110)
+        self.date_start.wheelEvent = lambda event: None # 휠 스크롤에 의한 날짜 변경 방지
+        settings_layout.addWidget(self.date_start)
         
-        ctrl_layout.addSpacing(25)
-
-        # 그룹 3: 종료일
-        ctrl_layout.addWidget(QLabel("종료일:"))
+        settings_layout.addWidget(QLabel("종료일:"))
         self.date_end = QDateEdit(QDate.currentDate())
         self.date_end.setCalendarPopup(True)
-        self.date_end.setMinimumWidth(110) # 110px로 확장하여 날짜 가독성 확보
-        ctrl_layout.addWidget(self.date_end)
+        self.date_end.setMinimumWidth(110)
+        self.date_end.wheelEvent = lambda event: None # 휠 스크롤에 의한 날짜 변경 방지
+        settings_layout.addWidget(self.date_end)
         
-        ctrl_layout.addSpacing(25) # [그룹 간격]
-
-        # 그룹 4: 모델 로드
+        # 모델 로드 버튼 및 경로 레이블
         self.btn_load_model = QPushButton("모델 로드 (.zip)")
         self.btn_load_model.clicked.connect(self._on_load_model)
-        ctrl_layout.addWidget(self.btn_load_model)
+        settings_layout.addWidget(self.btn_load_model)
         
         self.lbl_model_path = QLabel("선택된 모델: 없음")
         self.lbl_model_path.setStyleSheet("color: #888888; font-size: 11px;")
-        ctrl_layout.addWidget(self.lbl_model_path)
+        settings_layout.addWidget(self.lbl_model_path)
         
-        ctrl_layout.addStretch(1) # [유연한 공간]
+        settings_layout.addStretch(1)
+        group_layout.addLayout(settings_layout)
 
-        # 그룹 5: 실행 버튼
+        # 1-2. 버튼 행 (실행 버튼들)
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(0, 5, 0, 5)
+        btn_layout.setSpacing(10)
+
+        # 실행 버튼 1: 단일 백테스트
         self.btn_start = QPushButton("백테스트 시작")
-        self.btn_start.setMinimumWidth(120)
-        self.btn_start.setFixedHeight(30)
+        self.btn_start.setMinimumWidth(150)
+        self.btn_start.setFixedHeight(35)
         self.btn_start.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
         self.btn_start.clicked.connect(self._on_start_backtest)
-        ctrl_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_start)
 
-        # 그룹 6: 자동 배치 버튼 (Top 30)
+        # 실행 버튼 2: 자동 배치 (Top 30)
         self.btn_auto_batch = QPushButton("자동 백테스트 시작 (Top 30)")
-        self.btn_auto_batch.setMinimumWidth(180)
-        self.btn_auto_batch.setFixedHeight(30)
-        # 초기 스타일은 _update_button_states에서 결정됨
+        self.btn_auto_batch.setMinimumWidth(200)
+        self.btn_auto_batch.setFixedHeight(35)
+        self.btn_auto_batch.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+        self.btn_auto_batch.setToolTip("상위 30개 종목에 대해 일괄 백테스트를 수행합니다.")
         self.btn_auto_batch.clicked.connect(self._on_start_auto_batch)
-        ctrl_layout.addWidget(self.btn_auto_batch)
+        btn_layout.addWidget(self.btn_auto_batch)
 
-        ctrl_group.setLayout(ctrl_layout)
+        # 실행 버튼 3: 다중 모델 일괄 배치
+        self.btn_multi_batch = QPushButton("일괄 백테스트 (다중 모델 x 전체 종목)")
+        self.btn_multi_batch.setMinimumWidth(250)
+        self.btn_multi_batch.setFixedHeight(35)
+        self.btn_multi_batch.setStyleSheet("background-color: #673AB7; color: white; font-weight: bold;")
+        self.btn_multi_batch.clicked.connect(self._on_start_multi_model_batch)
+        btn_layout.addWidget(self.btn_multi_batch)
+
+        btn_layout.addStretch(1) # 버튼들을 왼쪽으로 정렬 (필요시 양쪽에 Stretch를 주어 가운데 정렬 가능)
+        group_layout.addLayout(btn_layout)
+
+        ctrl_group.setLayout(group_layout)
         main_layout.addWidget(ctrl_group)
 
         # Splitter for Chart and Results
@@ -152,7 +160,16 @@ class BacktestStudioTab(QWidget):
             self.lbl_model_path.setText(f"선택된 모델: {os.path.basename(file_path)}")
             self.view_model.set_model_path(file_path)
 
+    def _validate_dates(self) -> bool:
+        """시작일이 종료일보다 늦은지 검사"""
+        if self.date_start.date() > self.date_end.date():
+            QMessageBox.warning(self, "날짜 설정 오류", 
+                                "시작일이 종료일보다 늦을 수 없습니다.\n날짜 범위를 다시 확인해 주세요.")
+            return False
+        return True
+
     def _on_start_backtest(self):
+        if not self._validate_dates(): return
         start_dt = self.date_start.date().toString("yyyyMMdd")
         end_dt = self.date_end.date().toString("yyyyMMdd")
         symbol = self.combo_symbol.currentData() # code
@@ -194,6 +211,7 @@ class BacktestStudioTab(QWidget):
 
     def _on_start_auto_batch(self):
         """자동 백테스트 배치 시작 호출"""
+        if not self._validate_dates(): return
         start_dt = self.date_start.date().toString("yyyyMMdd")
         end_dt = self.date_end.date().toString("yyyyMMdd")
 
@@ -218,6 +236,37 @@ class BacktestStudioTab(QWidget):
 
             self.view_model.start_auto_backtest_batch(start_dt, end_dt)
 
+    def _on_start_multi_model_batch(self):
+        """다중 모델 x 전 종목 일괄 백테스트 시작"""
+        if not self._validate_dates(): return
+        base_dir = os.path.join(os.getcwd(), "saved_models")
+        files, _ = QFileDialog.getOpenFileNames(self, "백테스트 모델 다중 선택", base_dir, "Model Files (*.zip)")
+        
+        if not files:
+            return
+
+        start_dt = self.date_start.date().toString("yyyyMMdd")
+        end_dt = self.date_end.date().toString("yyyyMMdd")
+
+        reply = QMessageBox.question(
+            self, "일괄 백테스트 확인",
+            f"선택한 {len(files)}개의 모델과 모든 유니버스 종목에 대해 일괄 테스트를 시작하시겠습니까?\n"
+            f"기간: {start_dt} ~ {end_dt}\n(결과는 CSV 파일로 저장됩니다.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.btn_multi_batch.setEnabled(False)
+            self.lbl_progress.setText("일괄 백테스트 대기 중...")
+            
+            self.progress_dialog = QProgressDialog("다중 모델 일괄 백테스트 진행 중...", "중단", 0, 100, self)
+            self.progress_dialog.setWindowTitle("일괄 시뮬레이션")
+            self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self.progress_dialog.canceled.connect(self.view_model.stop_batch_backtest)
+            self.progress_dialog.show()
+
+            self.view_model.start_batch_backtest(files, start_dt, end_dt)
+
     @pyqtSlot(dict)
     def on_bt_finished(self, kpi: dict):
         if self.progress_dialog:
@@ -228,7 +277,12 @@ class BacktestStudioTab(QWidget):
 
         if "Batch Count" in kpi:
             count = kpi["Batch Count"]
-            QMessageBox.information(self, "자동 백테스트 완료", f"총 {count}개 종목에 대한 일괄 백테스트 및 리포트(CSV) 생성이 완료되었습니다.")
+            path = kpi.get("CSV_Path", "알 수 없음")
+            QMessageBox.information(self, "백테스트 완료", 
+                                    f"일괄 백테스트가 완료되었습니다.\n\n"
+                                    f"- 총 결과 수: {count}건\n"
+                                    f"- 저장 경로: {path}")
+            self.btn_multi_batch.setEnabled(True)
             return
 
         self.lbl_return.setText(f"총 수익률: {kpi.get('Total Return', 0):.2f} %")
@@ -287,20 +341,3 @@ class BacktestStudioTab(QWidget):
         self.lbl_progress.setText("진행률: 에러 발생")
         QMessageBox.critical(self, "백테스트 에러", f"시뮬레이션 중 오류가 발생했습니다:\n{err_msg}")
 
-    def _update_button_states(self):
-        """시간에 따른 자동 백테스트 버튼 활성화/비활성화 제어"""
-        from datetime import datetime
-        now = datetime.now().time()
-        start_time = datetime.strptime("16:00", "%H:%M").time()
-        end_time = datetime.strptime("23:50", "%H:%M").time()
-        
-        # 16:00 ~ 23:50 사이에만 활성화
-        is_active = start_time <= now <= end_time
-        
-        self.btn_auto_batch.setEnabled(is_active)
-        if is_active:
-            self.btn_auto_batch.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
-            self.btn_auto_batch.setToolTip("자동 백테스트 실행 가능")
-        else:
-            self.btn_auto_batch.setStyleSheet("background-color: #888888; color: #cccccc; font-weight: bold;")
-            self.btn_auto_batch.setToolTip("자동 백테스트는 장 종료 후(16:00~23:50)에만 가능합니다.")

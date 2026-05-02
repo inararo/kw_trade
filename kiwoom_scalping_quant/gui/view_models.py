@@ -1062,6 +1062,8 @@ class SettingsViewModel(QObject):
         # 실제로는 TokenManager나 Auth 모듈을 호출해야 하지만 여기서는 메시지만 에뮬레이션
         self.sig_menu_action_result.emit("토큰 갱신", "새로운 Kiwoom REST API 토큰 발급을 요청했습니다.")
 
+from gui.batch_backtest_worker import BatchBacktestWorker
+
 class BacktestViewModel(QObject):
     """
     백테스트 스튜디오 ViewModel.
@@ -1085,6 +1087,7 @@ class BacktestViewModel(QObject):
         from core.backtester import BacktestEngine
         self.engine = BacktestEngine(self.data_collector, self.config_manager.get_symbols())
         self.model_path = None
+        self.batch_worker = None # [신규] 일괄 백테스트 워커 참조 저장
 
     def set_model_path(self, path: str):
         self.model_path = path
@@ -1418,3 +1421,41 @@ class BacktestViewModel(QObject):
 
         except Exception as e:
             self.logger.error(f"CSV 저장 중 오류: {e}")
+
+    def start_batch_backtest(self, model_paths: List[str], start_date: str, end_date: str):
+        """[NEW] 다중 모델 x 전 종목 일괄 백테스트 실행 (QThread 기반)"""
+        if not model_paths:
+            self.sig_bt_error.emit("선택된 모델 파일이 없습니다.")
+            return
+
+        symbols = self.config_manager.get_symbols()
+        if not symbols:
+            self.sig_bt_error.emit("유니버스에 등록된 종목이 없습니다.")
+            return
+
+        # 이전 워커가 있다면 정리
+        if self.batch_worker and self.batch_worker.isRunning():
+            self.batch_worker.stop()
+            self.batch_worker.wait()
+
+        self.logger.info(f"일괄 백테스트 시작: 모델 {len(model_paths)}개, 종목 {len(symbols)}개")
+        
+        self.batch_worker = BatchBacktestWorker(
+            model_paths, symbols, start_date, end_date, 
+            self.engine, self.influx_client, self.config_manager
+        )
+        
+        # 워커 시그널 연결
+        self.batch_worker.sig_progress.connect(self.sig_bt_progress.emit)
+        self.batch_worker.sig_status.connect(lambda msg: self.logger.info(f"BT Batch Status: {msg}"))
+        self.batch_worker.sig_finished.connect(self.sig_bt_finished.emit)
+        self.batch_worker.sig_error.connect(self.sig_bt_error.emit)
+        
+        # 스레드 시작
+        self.batch_worker.start()
+
+    def stop_batch_backtest(self):
+        """일괄 백테스트 중단 요청"""
+        if self.batch_worker and self.batch_worker.isRunning():
+            self.batch_worker.stop()
+            self.logger.info("일괄 백테스트 중단 요청됨.")

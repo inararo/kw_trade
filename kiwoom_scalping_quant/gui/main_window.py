@@ -8,6 +8,7 @@ from gui.tabs.asset_data_manager import AssetDataManagerTab
 from gui.tabs.ai_training_studio import AITrainingStudioTab
 from gui.tabs.settings_tab import SettingsTab
 from gui.tabs.backtest_tab import BacktestStudioTab
+from gui.tabs.policy_inspector_tab import PolicyInspectorTab
 
 class MainWindow(QMainWindow):
     """
@@ -76,11 +77,15 @@ class MainWindow(QMainWindow):
         action_model_val.triggered.connect(lambda: self.tabs.setCurrentIndex(3))
         ai_menu.addAction(action_model_val)
 
+        action_policy_check = QAction("모델 정책 진단 열기", self)
+        action_policy_check.triggered.connect(lambda: self.tabs.setCurrentIndex(4))
+        ai_menu.addAction(action_policy_check)
+
         # Settings Menu
         settings_menu = menu_bar.addMenu("설정")
 
         action_open_settings = QAction("환경 설정 창 열기", self)
-        action_open_settings.triggered.connect(lambda: self.tabs.setCurrentIndex(4))
+        action_open_settings.triggered.connect(lambda: self.tabs.setCurrentIndex(5))
         settings_menu.addAction(action_open_settings)
 
         action_force_token = QAction("API 토큰 강제 갱신", self)
@@ -132,6 +137,10 @@ class MainWindow(QMainWindow):
 
         self.tab_settings = SettingsTab(settings_vm)
 
+        # 모델 정책 진단 탭 초기화
+        config_mgr = self.system.container.config_manager()
+        self.tab_policy = PolicyInspectorTab(config_mgr)
+
         from PyQt6.QtCore import Qt
 
         # Connect settings VM menu actions
@@ -154,7 +163,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_asset, "데이터 관리")
         self.tabs.addTab(self.tab_ai, "AI 학습 스튜디오")
         self.tabs.addTab(self.tab_bt, "Backtest Studio")
-        self.tabs.addTab(self.tab_settings, "환경 설정")
+        self.tabs.addTab(self.tab_policy, "모델 정책 진단") # 인덱스 4
+        self.tabs.addTab(self.tab_settings, "환경 설정")      # 인덱스 5
 
     @pyqtSlot(str, str)
     def _on_menu_action_result(self, title: str, message: str):
