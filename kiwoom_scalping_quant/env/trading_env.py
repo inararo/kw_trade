@@ -238,8 +238,21 @@ class ScalpingTradingEnv(gym.Env):
         curr_p = self._get_current_price()
         if curr_p <= 0: return masks
         
+        # [당일 청산 규칙] 15:20 ~ 15:30 사이에는 매수(Buy) 차단
+        is_closing_time = False
+        if self.historical_data is not None:
+            import datetime
+            idx = min(self.current_step, len(self.historical_data)-1)
+            ts = self.historical_data[idx].get("timestamp")
+            if ts and hasattr(ts, "hour"):
+                # UTC -> KST 보정 (+9시간)
+                kst_ts = ts + datetime.timedelta(hours=9)
+                if kst_ts.hour == 15 and kst_ts.minute >= 20:
+                    is_closing_time = True
+
         if self.balance >= curr_p * 1.001 and self.holdings == 0 and self.steps_since_sell >= self.cooldown_steps:
-            masks[1] = True
+            if not is_closing_time: # 마감 시간에는 매수 금지
+                masks[1] = True
         if self.holdings > 0 and self.steps_since_buy >= self.cooldown_steps:
             masks[2] = True
         return masks
@@ -249,6 +262,20 @@ class ScalpingTradingEnv(gym.Env):
         slippage = self.config.get('slippage', 0.0005)
         step_reward = 0.0
         action_executed = action
+        
+        # [당일 청산 규칙] 15:20 이후 강제 청산 오버라이드
+        if self.historical_data is not None:
+            import datetime
+            idx = min(self.current_step, len(self.historical_data)-1)
+            ts = self.historical_data[idx].get("timestamp")
+            if ts and hasattr(ts, "hour"):
+                # UTC -> KST 보정 (+9시간)
+                kst_ts = ts + datetime.timedelta(hours=9)
+                if kst_ts.hour == 15 and kst_ts.minute >= 20:
+                    if self.holdings > 0:
+                        action = 2 # 강제 매도 결정
+                        action_executed = 2 # UI 표시를 위해 실행 액션 업데이트
+                        self.logger.debug(f"[DayTrading] 15:20 데드라인 도달 - 강제 청산 실행 ({kst_ts})")
         
         # 1. Action Execution
         if action == 1: # Buy
@@ -320,8 +347,12 @@ class ScalpingTradingEnv(gym.Env):
                 
                 self.balance += revenue
                 self.holdings = 0
+                action_executed = 2 # 강제 종료 시 매도 표식 남김
 
-        return self._get_observation(), float(np.clip(step_reward, -10, 10)), terminated, truncated, self._get_info()
+        info = self._get_info()
+        info["action_executed"] = action_executed
+        
+        return self._get_observation(), float(np.clip(step_reward, -10, 10)), terminated, truncated, info
 
     def _get_current_price(self):
         if self.historical_data is None: return 0.0

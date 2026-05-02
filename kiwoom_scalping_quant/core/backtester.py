@@ -152,17 +152,17 @@ class KPICalculator:
         final_balance = history_df.iloc[-1]['balance']
         total_return = ((final_balance - initial_balance) / initial_balance) * 100
 
-        # 2. 매매 기록 필터링 (Hold 제외)
-        trades = history_df[history_df['action'].isin(['Buy', 'Sell'])]
+        # 2. 매매 기록 필터링 (완료된 매매인 Sell 기반으로 성과 측정)
+        sell_trades = history_df[history_df['action'] == 'Sell']
         
-        # 승률: reward 기반 (단순화)
-        win_trades = len(trades[trades['reward'] > 0])
-        total_trades = len(trades)
-        win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+        # 승률: Sell 시점의 reward가 양수인 경우를 승리로 판단
+        win_trades = len(sell_trades[sell_trades['reward'] > 0])
+        total_sells = len(sell_trades)
+        win_rate = (win_trades / total_sells * 100) if total_sells > 0 else 0.0
 
-        # Profit Factor (총수익 / 총손실)
-        gross_profit = trades[trades['reward'] > 0]['reward'].sum()
-        gross_loss = abs(trades[trades['reward'] < 0]['reward'].sum())
+        # Profit Factor (매도 시 발생한 총수익 / 총손실)
+        gross_profit = sell_trades[sell_trades['reward'] > 0]['reward'].sum()
+        gross_loss = abs(sell_trades[sell_trades['reward'] < 0]['reward'].sum())
         profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
 
         # 3. MDD (Max Drawdown) - 전체 이력의 balance 기준
