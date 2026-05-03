@@ -725,7 +725,8 @@ class AITrainingViewModel(QObject):
         self.worker = None
         self.prep_task = None # [신규] 데이터 조회 및 준비 태스크 추적용
 
-    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, feature_mode: str = "basic", use_smart_sampling: bool = False):
+    def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, 
+                       feature_mode: str = "basic", use_smart_sampling: bool = False, ppo_params: dict = None):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
@@ -735,9 +736,12 @@ class AITrainingViewModel(QObject):
         if self.prep_task and not self.prep_task.done():
             self.prep_task.cancel()
 
-        self.prep_task = asyncio.create_task(self._prepare_and_start_training(total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling))
+        self.prep_task = asyncio.create_task(self._prepare_and_start_training(
+            total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling, ppo_params
+        ))
 
-    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, feature_mode: str, use_smart_sampling: bool = False):
+    async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, 
+                                          feature_mode: str, use_smart_sampling: bool = False, ppo_params: dict = None):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
         # [안정성 강화] 동시 조회 개수를 3개로 제한
         sem = asyncio.Semaphore(3)
@@ -814,7 +818,10 @@ class AITrainingViewModel(QObject):
         agent_config = {
             "seq_len": current_seq_len,
             "learning_rate": lr,
-            "ent_coef": ent_coef,
+            "ent_coef": ppo_params.get("ent_coef", 0.01) if ppo_params else 0.01,
+            "clip_range": ppo_params.get("clip_range", 0.2) if ppo_params else 0.2,
+            "gamma": ppo_params.get("gamma", 0.99) if ppo_params else 0.99,
+            "gae_lambda": ppo_params.get("gae_lambda", 0.95) if ppo_params else 0.95,
             "feature_mode": feature_mode,
             "model_save_dir": model_save_dir,
             "tensorboard_log": tb_log_dir,

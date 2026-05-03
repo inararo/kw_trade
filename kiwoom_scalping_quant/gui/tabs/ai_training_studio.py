@@ -104,8 +104,38 @@ class AITrainingStudioTab(QWidget):
 
         self.combo_feature_mode = QComboBox()
         self.combo_feature_mode.addItems(["Basic (단순 가격/거래량)", "Advanced (보조지표 추가)"])
-        self.combo_feature_mode.setCurrentIndex(1)  # [추가] 기본값을 Advanced로 설정
+        self.combo_feature_mode.setCurrentIndex(1)
         form_layout.addRow("데이터 분석 모드:", self.combo_feature_mode)
+
+        # --- Advanced PPO Settings ---
+        self.spin_ent = QDoubleSpinBox()
+        self.spin_ent.setRange(0.0, 0.1)
+        self.spin_ent.setValue(0.01)
+        self.spin_ent.setSingleStep(0.01)
+        self.spin_ent.setToolTip("Entropy Coef: 낮을수록 기존 타점 유지, 높을수록 새로운 탐험 시도")
+        create_h_spin(self.spin_ent, "탐험 계수 (Entropy):", form_layout)
+
+        self.spin_clip = QDoubleSpinBox()
+        self.spin_clip.setRange(0.0, 0.4)
+        self.spin_clip.setValue(0.15)
+        self.spin_clip.setSingleStep(0.05)
+        self.spin_clip.setToolTip("Clip Range: 정책 업데이트 시 변화폭 제한 (안정성)")
+        create_h_spin(self.spin_clip, "클립 범위 (Clip):", form_layout)
+
+        self.spin_gamma = QDoubleSpinBox()
+        self.spin_gamma.setRange(0.8, 0.999)
+        self.spin_gamma.setValue(0.995)
+        self.spin_gamma.setSingleStep(0.001)
+        self.spin_gamma.setDecimals(3)
+        self.spin_gamma.setToolTip("Gamma: 할인율. 낮을수록 단기 수익, 높을수록 장기 수익 중시")
+        create_h_spin(self.spin_gamma, "할인율 (Gamma):", form_layout)
+
+        self.spin_gae = QDoubleSpinBox()
+        self.spin_gae.setRange(0.8, 1.0)
+        self.spin_gae.setValue(0.95)
+        self.spin_gae.setSingleStep(0.01)
+        self.spin_gae.setToolTip("GAE Lambda: 어드밴티지 추정 시 편향-분산 트레이드오프 조절")
+        create_h_spin(self.spin_gae, "GAE 람다:", form_layout)
 
         # [스마트 샘플링 토글] 데이터 분석 모드 바로 아래
         self.chk_smart_sampling = QCheckBox("활황장(Volume Spike) 구간 집중 학습")
@@ -195,10 +225,14 @@ class AITrainingStudioTab(QWidget):
         self.view_model.sig_training_finished.connect(self.on_training_finished)
         self.view_model.sig_error.connect(self.on_error)
         
-        # [신규] 분석 모드 변경 시 정보 패널 즉시 갱신
+        # [신규] 분석 모드 및 하이퍼파라미터 변경 시 정보 패널 즉시 갱신
         self.combo_feature_mode.currentIndexChanged.connect(self._update_info_summary)
-        # [신규] 스마트 샘플링 토글 변경 시 정보 패널 즉시 갱신
         self.chk_smart_sampling.stateChanged.connect(self._update_info_summary)
+        self.spin_lr.valueChanged.connect(self._update_info_summary)
+        self.spin_ent.valueChanged.connect(self._update_info_summary)
+        self.spin_clip.valueChanged.connect(self._update_info_summary)
+        self.spin_gamma.valueChanged.connect(self._update_info_summary)
+        self.spin_gae.valueChanged.connect(self._update_info_summary)
 
     def _on_start_clicked(self):
         timesteps = self.spin_steps.value()
@@ -206,17 +240,28 @@ class AITrainingStudioTab(QWidget):
         max_records = self.spin_max_records.value()
         feature_mode = "advanced" if self.combo_feature_mode.currentIndex() == 1 else "basic"
         use_smart_sampling = self.chk_smart_sampling.isChecked()
+        
+        # 신규 하이퍼파라미터 추출
+        ppo_params = {
+            "ent_coef": self.spin_ent.value(),
+            "clip_range": self.spin_clip.value(),
+            "gamma": self.spin_gamma.value(),
+            "gae_lambda": self.spin_gae.value()
+        }
 
         # [즉각 반응] 시작 버튼을 먼저 비활성화하여 중복 클릭 방지
         self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(True) # [수정] 데이터 로딩 단계에서도 중지 가능하도록 즉시 활성화
+        self.btn_stop.setEnabled(True)
 
         self._step_data.clear()
         self._reward_data.clear()
         self.reward_curve.setData([], [])
         self.log_list.clear()
 
-        self.view_model.start_training(timesteps, lr, max_records, feature_mode=feature_mode, use_smart_sampling=use_smart_sampling)
+        self.view_model.start_training(timesteps, lr, max_records, 
+                                     feature_mode=feature_mode, 
+                                     use_smart_sampling=use_smart_sampling,
+                                     ppo_params=ppo_params)
 
     def _on_stop_clicked(self):
         self.btn_stop.setEnabled(False) # 중복 중단 요청 방지
@@ -288,6 +333,14 @@ class AITrainingStudioTab(QWidget):
     <li><b>승수:</b> 실현 수익률 10x 가중치 적용 (도파민 강화)</li>
     <li><b>인내심:</b> 초기 {grace_period}스텝 패널티 유예 (패닉셀 방지)</li>
     <li><b>감가:</b> 보유 시간당 -0.005 패널티 (장기보유 방지)</li>
+</ul>
+<b>⚙️ 하이퍼파라미터 (Hyperparams):</b>
+<ul>
+    <li><b>Learning Rate:</b> {self.spin_lr.value():.6f}</li>
+    <li><b>Entropy:</b> {self.spin_ent.value()}</li>
+    <li><b>Clip Range:</b> {self.spin_clip.value()}</li>
+    <li><b>Gamma:</b> {self.spin_gamma.value()}</li>
+    <li><b>GAE Lambda:</b> {self.spin_gae.value()}</li>
 </ul>
         """
         self.txt_info_summary.setHtml(summary)

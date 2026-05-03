@@ -79,7 +79,10 @@ class TradingAgentWrapper:
             self.env,
             policy_kwargs=policy_kwargs,
             learning_rate=self.config.get("learning_rate", 3e-4),
-            ent_coef=self.config.get("ent_coef", 0.01), # [탐험 강도] 기본 0.01로 상향
+            ent_coef=self.config.get("ent_coef", 0.01),
+            clip_range=self.config.get("clip_range", 0.2),
+            gamma=self.config.get("gamma", 0.99),
+            gae_lambda=self.config.get("gae_lambda", 0.95),
             tensorboard_log=tb_log_dir,
             verbose=1
         )
