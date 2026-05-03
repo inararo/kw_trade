@@ -58,6 +58,10 @@ class LiveDashboardViewModel(QObject):
         self._pending_price = None
         self._ui_dirty = False  # 변경이 있을 때만 emit
 
+        # [제어 상태 추적] 파이어베이스 동기화용
+        self._is_monitoring_stopped = False
+        self._is_ai_paused = False
+
         # 종목명 캐시 (Code -> Name): 접미사(_AL) 제거 후 순수 코드와 매핑
         self._symbol_names = {
             s.get("code", "").split('_')[0]: s.get("name") 
@@ -270,26 +274,42 @@ class LiveDashboardViewModel(QObject):
         """AI의 매매 판단(추론)만 일시적으로 정지하거나 재개"""
         sm = getattr(self.config_manager, "_injected_strategy_manager", None)
         if sm:
+            self._is_ai_paused = paused
             sm.set_ai_paused(paused)
             self.sig_trading_paused.emit(paused)
             status = "일시정지" if paused else "재개"
             msg = f"[시스템] 🤖 AI 매매 의사결정이 {status}되었습니다."
             self.sig_log_appended.emit(msg)
 
+            # [Firebase] 제어 상태 동기화
+            fb = getattr(self.config_manager, "firebase_manager", None)
+            if fb:
+                asyncio.create_task(fb.update_control_status(
+                    is_monitoring_active=not self._is_monitoring_stopped,
+                    is_ai_trading_active=not paused
+                ))
+
     def toggle_monitoring(self, stopped: bool):
         """실시간 데이터 수집(웹소켓) 자체를 중단하거나 재개"""
+        self._is_monitoring_stopped = stopped
         if stopped:
-            self._is_monitoring_stopped = True
             asyncio.create_task(self.data_collector.stop())
             self.sig_monitoring_stopped.emit(True)
             self.sig_log_appended.emit("[시스템] 📡 실시간 종목 감시가 중단되었습니다. (웹소켓 연결 해제)")
         else:
-            self._is_monitoring_stopped = False
             # 재시작 전 안전하게 플래그 리셋
             self.data_collector.is_running = True 
             asyncio.create_task(self.data_collector.start())
             self.sig_monitoring_stopped.emit(False)
             self.sig_log_appended.emit("[시스템] 📡 실시간 종목 감시를 재개합니다. (재연결 시도 중...)")
+
+        # [Firebase] 제어 상태 동기화
+        fb = getattr(self.config_manager, "firebase_manager", None)
+        if fb:
+            asyncio.create_task(fb.update_control_status(
+                is_monitoring_active=not stopped,
+                is_ai_trading_active=not self._is_ai_paused
+            ))
 
     async def _execute_panic_sell(self):
         try:

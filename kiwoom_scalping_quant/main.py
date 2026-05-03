@@ -155,6 +155,11 @@ class QuantSystem:
         config_mgr.firebase_manager = self.firebase_manager
         
         asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
+        # 초기 제어 상태도 함께 보고 (기본값: Monitoring=False, AI=True)
+        asyncio.create_task(self.firebase_manager.update_control_status(
+            is_monitoring_active=True,
+            is_ai_trading_active=True
+        ))
         asyncio.create_task(self.firebase_manager.update_engine_status("RUNNING"))
         self._heartbeat_task = asyncio.create_task(self.firebase_manager.start_heartbeat())
         
@@ -448,6 +453,11 @@ class QuantSystem:
             print(f"시스템: [알림] 장 개시 타이머 작동({new_state})! 웹소켓 연결을 자동으로 재개합니다.")
             if not self.data_collector.is_running:
                 self.collector_task = asyncio.create_task(self.data_collector.start())
+                # [Firebase] 제어 상태 동기화
+                asyncio.create_task(self.firebase_manager.update_control_status(
+                    is_monitoring_active=True,
+                    is_ai_trading_active=not self.strategy_manager.is_ai_paused
+                ))
         
         # 장 마감 (Active -> Inactive)
         elif old_state in active_ws_states and new_state not in active_ws_states:
@@ -455,6 +465,11 @@ class QuantSystem:
             if self.data_collector.is_running:
                 asyncio.create_task(self.data_collector.stop())
                 self.collector_task = None
+                # [Firebase] 제어 상태 동기화
+                asyncio.create_task(self.firebase_manager.update_control_status(
+                    is_monitoring_active=False,
+                    is_ai_trading_active=not self.strategy_manager.is_ai_paused
+                ))
 
     async def stop(self):
         """비동기 파이프라인 안전 종료 로직 (Graceful Shutdown)"""

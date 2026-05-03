@@ -482,3 +482,30 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"FirebaseManager: 명령 상태 업데이트 실패: {e}")
 
+    async def update_control_status(self, is_monitoring_active: bool, is_ai_trading_active: bool):
+        """
+        종목 감시 및 AI 매매 활성화 상태를 system_status/engine 문서에 기록합니다.
+        
+        Args:
+            is_monitoring_active: 실시간 데이터 수집 활성화 여부
+            is_ai_trading_active: AI 매매 결정 활성화 여부
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+        try:
+            doc_ref = self._db.collection("system_status").document("engine")
+            await asyncio.to_thread(
+                doc_ref.set,
+                {
+                    "is_monitoring_active": is_monitoring_active,
+                    "is_ai_trading_active": is_ai_trading_active,
+                    "updated_at": fs.SERVER_TIMESTAMP
+                },
+                merge=True
+            )
+            logger.info(f"FirebaseManager: 제어 상태 업데이트 (Monitoring: {is_monitoring_active}, AI: {is_ai_trading_active})")
+        except Exception as e:
+            logger.error(f"FirebaseManager: 제어 상태 업데이트 실패: {e}")
+
