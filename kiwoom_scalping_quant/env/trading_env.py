@@ -303,9 +303,17 @@ class ScalpingTradingEnv(gym.Env):
                 revenue = self.holdings * sell_price
                 self.balance += revenue
                 
-                # % 수익률 기반 보상 (x10 도파민 가중치 유지)
+                # % 수익률 기반 보상 계산
                 profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
-                step_reward = profit_pct * 20.0
+
+                # [규칙 A] 손실 회피 강화: profit_pct < 0 인 경우 페널티 1.5배 (20.0 -> 30.0)
+                reward_multiplier = 30.0 if profit_pct < 0 else 20.0
+                step_reward = profit_pct * reward_multiplier
+                
+                # [규칙 B] 빠른 수익 실현 보너스: 5분 이내 익절 시 추가 보너스 (+0.1)
+                if self.steps_since_buy < 5 and profit_pct > 0:
+                    step_reward += 0.1
+                    self.logger.debug(f"⚡ 속전속결 익절 보너스! (Hold: {self.steps_since_buy}스텝)")
                 
                 self.holdings = 0
                 self.avg_entry_price = 0.0
@@ -313,11 +321,18 @@ class ScalpingTradingEnv(gym.Env):
             else:
                 action_executed = 0
 
-        # 4. [FIX] 모든 시간 패널티 제거 (에이전트의 인내심 확보)
-        # 포지션 보유 중 매 스텝 부과되던 감점(-0.0050 등)을 완전히 삭제하여 수익 구간까지 무한 홀딩을 가능하게 함
+        # 4. 시간 흐름 업데이트 및 타임 스탑 페널티
         self.current_step += 1
         self.steps_since_buy += 1
         self.steps_since_sell += 1
+        
+        # [규칙 C] 타임 스탑 / 질병 치료: 20분 이상 손실 포지션 방치 시 미세 페널티 (-0.001)
+        if self.holdings > 0 and self.steps_since_buy > 20:
+            current_profit = (current_price - self.avg_entry_price) / self.avg_entry_price * 100.0
+            if current_profit < 0:
+                step_reward -= 0.001
+                if self.steps_since_buy % 10 == 0:
+                    self.logger.debug(f"⏳ 타임 스탑 페널티 적용 중... (Hold: {self.steps_since_buy}스텝)")
         
         # 상태 업데이트
         self.lookback_buffer.append(self._extract_single_feature(self.current_step))

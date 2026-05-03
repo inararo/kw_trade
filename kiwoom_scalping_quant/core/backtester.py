@@ -1,5 +1,6 @@
 import asyncio
 import time
+import torch
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List
@@ -43,8 +44,12 @@ class BacktestEngine:
             # 1. Action Masking 적용
             action_masks = env.get_wrapper_attr('action_masks')()
 
-            # 2. Agent 예측
-            action = int(agent.predict(obs, action_masks=action_masks))
+            # 2. Agent 예측 (Confidence 필터링 적용)
+            action, confidence = self._predict_with_confidence(agent, obs, action_masks)
+            
+            # [규칙] 매수(1) 예측 시 확률이 60% 미만이면 강제 Hold(0)
+            if action == 1 and confidence < 0.6:
+                action = 0
 
             # 3. 환경 Step 실행
             next_obs, reward, done, truncated, info = env.step(action)
@@ -74,6 +79,56 @@ class BacktestEngine:
 
         self.is_running = False
         return pd.DataFrame(self.history)
+
+    def _predict_with_confidence(self, agent, obs, action_masks=None):
+        """에이전트로부터 액션과 해당 액션의 확률(Confidence)을 추출"""
+        try:
+            # 1. TradingAgentWrapper인 경우 (우리가 만든 래퍼 클래스)
+            if hasattr(agent, 'model') and hasattr(agent, 'predict'):
+                result = agent.predict(obs, action_masks=action_masks, return_probs=True)
+                if isinstance(result, tuple) and len(result) == 2:
+                    action, probs = result
+                    confidence = float(probs[action])
+                    return int(action), confidence
+                else:
+                    return int(result), 1.0
+
+            # 2. SB3 모델인 경우 직접 policy 활용
+            if hasattr(agent, 'policy'):
+                import torch
+                obs_tensor = torch.as_tensor(obs).unsqueeze(0).to(agent.device)
+                
+                with torch.no_grad():
+                    # MaskablePPO 여부 확인
+                    if action_masks is not None and hasattr(agent.policy, "get_distribution"):
+                        masks_tensor = torch.as_tensor(action_masks).unsqueeze(0).to(agent.device)
+                        # MaskablePPO의 경우 masking이 적용된 분포를 가져옴
+                        latent_pi, _, latent_sde = agent.policy._get_latent(obs_tensor)
+                        distribution = agent.policy._get_action_dist_from_latent(latent_pi, latent_sde)
+                        distribution.apply_masking(masks_tensor)
+                        probs = distribution.distribution.probs.cpu().numpy()[0]
+                    else:
+                        # 일반 PPO
+                        dist = agent.policy.get_distribution(obs_tensor)
+                        probs = dist.distribution.probs.cpu().numpy()[0]
+                
+                action = int(probs.argmax())
+                confidence = float(probs[action])
+                return action, confidence
+            else:
+                # 일반 객체인 경우 (0-d array 언패킹 방지)
+                result = agent.predict(obs, action_masks=action_masks)
+                if isinstance(result, tuple):
+                    return int(result[0]), 1.0
+                return int(result), 1.0
+        except Exception as e:
+            # 에러 시 기본 추론으로 폴백
+            try:
+                result = agent.predict(obs, action_masks=action_masks)
+                action = result[0] if isinstance(result, tuple) else result
+                return int(action), 0.5
+            except:
+                return 0, 0.0
 
     def stop(self):
         self.is_running = False
