@@ -77,9 +77,9 @@ class LiveDashboardViewModel(QObject):
         # DataCollector 측에서 데이터가 들어올 때 콜백받을 수 있도록 설정
         self.data_collector.set_ui_callback(self._on_data_received)
 
-        # [핵심 수정] QTimer로 200ms마다 배치 emit → 매 틱 emit 대신 주기적으로 최신 상태를 한 번에 전송
+        # [핵심 수정] QTimer로 100ms마다 배치 emit → 매 틱 emit 대신 주기적으로 최신 상태를 한 번에 전송
         self._ui_flush_timer = QTimer(self)
-        self._ui_flush_timer.setInterval(200)  # 200ms = 초당 5회 갱신
+        self._ui_flush_timer.setInterval(100)  # 100ms = 초당 10회 갱신
         self._ui_flush_timer.timeout.connect(self._flush_ui_update)
         self._ui_flush_timer.start()
         
@@ -183,6 +183,7 @@ class LiveDashboardViewModel(QObject):
             # [자동 선택] 만약 선택된 종목이 없다면, 첫 번째로 데이터가 들어온 종목을 상세 뷰 대상으로 지정
             if self.selected_symbol is None:
                 self.selected_symbol = symbol
+                self.logger.info(f"[시스템] 첫 번째 수신 종목({symbol})을 상세 뷰로 자동 선택했습니다.")
                 self.sig_log_appended.emit(f"[시스템] 첫 번째 수신 종목({symbol})을 상세 뷰로 자동 선택했습니다.")
 
             # 선택된 종목의 데이터만 상세 시그널용으로 임시 저장
@@ -201,11 +202,11 @@ class LiveDashboardViewModel(QObject):
 
     def _flush_ui_update(self):
         """QTimer 100ms 주기로 호출: 변경이 있을 때만 최신 상태 스냅샷을 UI로 emit"""
-        # [UI_DEBUG] 50번에 한 번(5초) 타이머 동작 로그 출력
+        # [UI_DEBUG] 100번에 한 번(10초) 타이머 동작 로그 출력
         if not hasattr(self, "_flush_cnt"): self._flush_cnt = 0
         self._flush_cnt += 1
-        if self._flush_cnt % 50 == 0:
-            self.logger.info(f"[UI_DEBUG] UI Flush 타이머 작동 중 (Dirty={self._ui_dirty})")
+        if self._flush_cnt % 100 == 0:
+            self.logger.info(f"[UI_DEBUG] UI Flush 타이머 작동 중 (Dirty={self._ui_dirty}, Symbols={len(self.symbols_summary)})")
 
         if not self._ui_dirty:
             return

@@ -238,28 +238,25 @@ class StrategyManager:
             new_symbols_list = list(unique_symbols)
             current_symbols = list(self.symbols)
 
-            # 1. 기존 유니버스에서 빠진 종목 정리
+            # 1. 기존 유니버스에서 빠진 종목 및 추가될 종목 분류
+            to_remove = []
+            to_add = []
+
             for sym in current_symbols:
                 if sym not in new_symbols_list:
-                    # [중요] 보호 종목은 잔고 상관없이 무조건 제거!
                     if sym in protected_symbols:
-                        self.logger.warning(f"🚫 [보호 종목] {sym} 종목은 잔고 여부와 상관없이 감시 리스트에서 즉시 제거됩니다.")
-                    else:
-                        # 실제 잔고가 있거나 봇 관리 종목이면 유지 (clean 코드로 비교)
-                        if sym in self.order_manager.bot_holdings or self.order_manager.holdings.get(sym, 0) > 0:
-                            self.logger.warning(f"⚠️ [Zombie Position 방어] {sym} 종목이 탈락했으나 잔고/미체결로 인해 강제 유지됩니다.")
-                            continue
+                        self.logger.warning(f"🚫 [보호 종목] {sym} 즉시 제거")
+                    elif sym in self.order_manager.bot_holdings or self.order_manager.holdings.get(sym, 0) > 0:
+                        continue
                     
+                    to_remove.append(sym)
                     self.symbols.remove(sym)
                     if sym in self.envs: del self.envs[sym]
-                    if hasattr(self.data_collector, 'unsubscribe_symbol'):
-                        await self.data_collector.unsubscribe_symbol(sym)
 
             # 2. 새로운 종목 추가 및 엔진 생성
             new_engines = []
             for sym in new_symbols_list:
                 if sym not in self.symbols:
-                    # [이중 안전장치] 여기서도 보호 종목 체크
                     if sym in protected_symbols: continue
                     
                     self.symbols.append(sym)
@@ -267,10 +264,18 @@ class StrategyManager:
                     new_engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
                     self.envs[sym] = new_engine
                     new_engines.append(new_engine)
-                    if hasattr(self.data_collector, 'subscribe_symbol'):
-                        await self.data_collector.subscribe_symbol(sym)
+                    to_add.append(sym)
 
-            # 3. 새로 추가된 엔진들만 모아서 순차 웜업 큐로 넘김
+            # 3. DataCollector에 일괄 업데이트 요청
+            if to_add or to_remove:
+                if hasattr(self.data_collector, 'update_subscriptions'):
+                    await self.data_collector.update_subscriptions(to_add, to_remove)
+                else:
+                    # 폴백: 일괄 메서드 없을 경우 (구버전 대응)
+                    for s in to_remove: await self.data_collector.unsubscribe_symbol(s)
+                    for s in to_add: await self.data_collector.subscribe_symbol(s)
+
+            # 4. 새로 추가된 엔진들만 모아서 순차 웜업 큐로 넘김
             if new_engines:
                 token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
                 if token:

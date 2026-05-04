@@ -301,10 +301,10 @@ class LiveTradingEngine:
             has_nan = np.isnan(obs_1d).any()
             has_inf = np.isinf(obs_1d).any()
             
-            self.logger.error(f"🔍 [State 검증] {self.symbol} | Shape: {obs_1d.shape} | Min: {state_min:.4f} | Max: {state_max:.4f} | Mean: {state_mean:.4f} | NaN: {has_nan} | Inf: {has_inf}")
-            self.logger.error(f"🔍 [State 샘플] {self.symbol} 데이터 앞부분: {obs_1d.flatten()[:5]}")
+            self.logger.info(f"🔍 [State 검증] {self.symbol} | Shape: {obs_1d.shape} | Min: {state_min:.4f} | Max: {state_max:.4f} | Mean: {state_mean:.4f} | NaN: {has_nan} | Inf: {has_inf}")
+            self.logger.info(f"🔍 [State 샘플] {self.symbol} 데이터 앞부분: {obs_1d.flatten()[:5]}")
         except Exception as e:
-            self.logger.error(f"🔍 [State 검증 실패] {e}")
+            self.logger.info(f"🔍 [State 검증 실패] {e}")
 
         action, probs = self.agent.predict(np.expand_dims(obs_1d, axis=0), action_masks=np.array(action_masks), return_probs=True)
         if isinstance(action, np.ndarray): action = int(action[0])

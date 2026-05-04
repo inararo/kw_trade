@@ -6,6 +6,7 @@ import websockets
 from collections import deque
 import numpy as np
 import logging
+from typing import List
 from core.feature_engineer import FeatureEngineer
 from env.normalizer import OnlineRollingNormalizer
 from core.subscription_manager import SymbolSubscriptionManager
@@ -128,6 +129,72 @@ class DataCollector:
             })
             await self.ws_connection.send(msg)
             await asyncio.sleep(0.1)
+
+    async def update_subscriptions(self, to_add: List[str], to_remove: List[str]):
+        """
+        [최적화] 장중 유니버스 교체 시 다수의 종목을 일괄적으로 구독 해제 및 등록합니다.
+        """
+        if not self.is_running or not self.ws_connection:
+            # 연결 전이면 관리자에게만 반영 (나중에 start 시점에 일괄 처리됨)
+            for sym in to_remove: self.subscription_manager.remove_symbol(sym)
+            for sym in to_add: 
+                self.subscription_manager.add_symbol(sym)
+                self._ensure_buffers(sym)
+            self._update_symbol_map()
+            return
+
+        # 1. 일괄 해제 (UNREG)
+        if to_remove:
+            clean_removes = []
+            for sym in to_remove:
+                self.subscription_manager.remove_symbol(sym)
+                clean_removes.append(sym.split('_')[0])
+            
+            msg = json.dumps({
+                "trnm": "UNREG",
+                "data": [
+                    {"type": ["0B"], "item": clean_removes},
+                    {"type": ["0D"], "item": clean_removes}
+                ]
+            })
+            await self.ws_connection.send(msg)
+            self.logger.info(f"DataCollector: {len(clean_removes)}개 종목 일괄 구독 해제 전송")
+            await asyncio.sleep(0.5)
+
+        # 2. 일괄 등록 (REG)
+        if to_add:
+            clean_adds = []
+            for sym in to_add:
+                if self.subscription_manager.add_symbol(sym):
+                    self._ensure_buffers(sym)
+                    clean_adds.append(sym.split('_')[0])
+            
+            if clean_adds:
+                msg = json.dumps({
+                    "trnm": "REG",
+                    "grp_no": "1",
+                    "refresh": "0",
+                    "data": [
+                        {"type": ["0B"], "item": clean_adds},
+                        {"type": ["0D"], "item": clean_adds}
+                    ]
+                })
+                await self.ws_connection.send(msg)
+                self.logger.info(f"DataCollector: {len(clean_adds)}개 종목 일괄 구독 등록 전송")
+                await asyncio.sleep(0.5)
+
+        # 3. 맵 갱신 및 워치독 타이머 리셋 (재연결 방지)
+        self._update_symbol_map()
+        self.last_receive_time = time.time()
+
+    def _ensure_buffers(self, symbol: str):
+        """종목별 피처 엔진 및 버퍼가 없으면 생성합니다."""
+        if symbol not in self.feature_engineers:
+            self.feature_engineers[symbol] = FeatureEngineer(max_ticks=100)
+            self.normalizers[symbol] = OnlineRollingNormalizer(window_size=1000, bypass_indices=[2])
+            self.state_buffers[symbol] = deque(maxlen=self.max_buffer_size)
+            self.tick_buffers[symbol] = deque(maxlen=self.max_buffer_size)
+            self.min1_buffers[symbol] = deque(maxlen=self.max_buffer_size // 10)
 
     async def start(self):
         if self.is_running:
