@@ -138,6 +138,9 @@ class QuantSystem:
         # GUI 초기화: ViewModel 주입 및 MainWindow 생성
         self.main_window = MainWindow(self.live_vm, self)
         
+        # [신규] 대시보드 자산/현금 폴링 루프 시작 (1초 주기 UI 갱신)
+        asyncio.create_task(self.live_vm.start_polling())
+        
         # Connect Signals
         self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
         self.token_manager.signals.token_updated.connect(self._on_token_updated)

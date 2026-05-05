@@ -759,46 +759,72 @@ class OrderManager:
                         self.logger.debug(f"잔고 조회 API 응답: {res_data}")
                         
                         if str(res_data.get('return_code')) == '0':
-                            # output이 딕셔너리일 수도 있고, 바로 데이터가 있을 수도 있음
+                            # 1. 데이터 추출 대상 (output이 있을 수도, 최상위에 데이터가 있을 수도 있음)
                             output = res_data.get('output', {})
-                            if not output: output = res_data # 폴백
+                            target = output if output else res_data
                             
-                            # 1. 총 자산 (Equity) 파싱
-                            candidates = ['prsm_dpst_aset_amt', 'estm_dpst_ast_amt', 'tot_evlt_amt']
-                            balance = 0
-                            for key in candidates:
-                                val = output.get(key)
+                            # 2. 총 자산 (Equity) 파싱 - 가능한 모든 후보군 체크
+                            balance_candidates = [
+                                'prsm_dpst_aset_amt', 'estm_dpst_ast_amt', 'tot_evlt_amt', 
+                                'tot_asst_amt', 'aset_amt', 'tot_evl_amt', 'tot_evlt_pnl_amt_2'
+                            ]
+                            balance = self.current_balance # 기본값으로 현재 잔고 유지
+                            for key in balance_candidates:
+                                val = target.get(key)
                                 if val is not None:
                                     try:
-                                        balance = float(val)
-                                        if balance > 0: break
+                                        temp_val = float(val)
+                                        if temp_val > 0:
+                                            balance = temp_val
+                                            break
                                     except: continue
                             
-                            # 2. 실제 주문 가능 현금 계산 (Total Orderable Cash)
-                            # 공식: 순자산 - (주식 평가액 - 신용 융자액)
-                            tot_evlt_amt = float(output.get('tot_evlt_amt', 0))
-                            tot_loan_amt = float(output.get('tot_crd_loan_amt', 0)) + float(output.get('tot_loan_amt', 0))
-                            stock_equity = max(0, tot_evlt_amt - tot_loan_amt)
+                            # 3. 당일 실현손익 (Daily Realized PnL) 파싱
+                            # thst_exca_amt(당일정산금액), tot_pnl_amt(총손익금액), pnl_amt(손익금액)
+                            pnl_candidates = ['thst_exca_amt', 'tot_pnl_amt', 'tdy_pnl_amt', 'pnl_amt', 'tot_evlt_pnl_amt']
+                            for key in pnl_candidates:
+                                pnl_val = target.get(key)
+                                if pnl_val is not None:
+                                    try:
+                                        self.daily_realized_pnl = float(pnl_val)
+                                        self.logger.debug(f"증권사 확인 당일 손익: {self.daily_realized_pnl:,.0f} 원 ({key})")
+                                        break
+                                    except: continue
+
+                            # 4. 실제 주문 가능 현금 (Orderable Cash)
+                            # puse_amt(주문가능금액), d2_dpst_amt(D+2예수금)
+                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_cash']
+                            cash_val = 0.0
+                            for key in cash_candidates:
+                                val = target.get(key)
+                                if val is not None:
+                                    try:
+                                        cash_val = float(val)
+                                        if cash_val > 0: break
+                                    except: continue
                             
-                            # API에서 puse_amt를 직접 주면 그것을 사용, 없으면 계산
-                            self._broker_orderable_cash = float(output.get('puse_amt') or (balance - stock_equity))
+                            if cash_val > 0:
+                                self._broker_orderable_cash = cash_val
+                            else:
+                                # 자동 계산 로직 (Equity - 주식평가액)
+                                tot_evlt_amt = float(target.get('tot_evlt_amt', 0))
+                                tot_loan_amt = float(target.get('tot_crd_loan_amt', 0)) + float(target.get('tot_loan_amt', 0))
+                                stock_equity = max(0, tot_evlt_amt - tot_loan_amt)
+                                self._broker_orderable_cash = balance - stock_equity
+
                             self.logger.debug(f"증권사 확인 현금: {self._broker_orderable_cash:,.0f} 원")
 
-                            # [신규] 동기화 시점에 체결 완료된 건들에 대해 예약 금액 정산 가능하지만,
-                            # 여기서는 단순하게 API 값을 기준점으로 잡고, pending_buy_amount는 
-                            # 주문 시점과 체결/취소 시점에만 관리하여 오차를 최소화합니다.
-
-                            # 3. 보유 종목 동기화 (acnt_evlt_remn_indv_tot)
+                            # 5. 보유 종목 동기화 (리스트 위치가 유동적일 수 있음)
                             holdings_list = res_data.get('acnt_evlt_remn_indv_tot', [])
+                            if not holdings_list and isinstance(output, dict):
+                                holdings_list = output.get('acnt_evlt_remn_indv_tot', [])
                             
-                            # [개선] API 응답이 성공하면 리스트가 비어있더라도 동기화 수행
                             new_holdings = {}
                             new_avg_prices = {}
                             
                             if holdings_list:
                                 for item in holdings_list:
                                     raw_code = item.get('stk_cd', '')
-                                    # 'A323410' -> '323410'
                                     code = raw_code[1:] if raw_code.startswith('A') else raw_code
                                     qty = int(float(item.get('rmnd_qty', 0)))
                                     price = float(item.get('pur_pric', 0))
@@ -806,29 +832,23 @@ class OrderManager:
                                         new_holdings[code] = new_holdings.get(code, 0) + qty
                                         new_avg_prices[code] = price
                             
-                            # 기존 보유 정보 업데이트 (새 리스트에 없으면 0으로 처리)
+                            # 기존 보유 정보 업데이트
                             all_symbols = set(list(self.holdings.keys()) + list(new_holdings.keys()))
                             for sym in all_symbols:
                                 qty = new_holdings.get(sym, 0)
                                 price = new_avg_prices.get(sym, 0.0)
                                 
-                                # [핵심 패치] 매도 직후 API 지연 방어 로직 (60초로 확장)
                                 last_sell = self._last_sell_fill_time.get(sym, 0)
                                 if qty > 0 and self.holdings.get(sym, 0) == 0 and (time.time() - last_sell < 60):
-                                    self.logger.warning(f"⚠️ [{sym}] API 지연 데이터(잔고 {qty}주) 무시 중... (최근 매도 완료)")
                                     qty = 0
                                     price = 0.0
 
                                 self.holdings[sym] = qty
                                 self.bot_holdings[sym] = qty
-                                if qty > 0:
-                                    self.avg_entry_prices[sym] = price
-                                else:
-                                    self.avg_entry_prices[sym] = 0.0
+                                self.avg_entry_prices[sym] = price if qty > 0 else 0.0
                                     
-                            self.logger.info(f"📊 잔고 동기화 완료: 보유 {len(new_holdings)}종목 (전량 매도 종목 포함)")
+                            self.logger.info(f"📊 잔고 동기화 완료: 총자산 {balance:,.0f}원 | 당일손익 {self.daily_realized_pnl:,.0f}원 | 가용현금 {self._broker_orderable_cash:,.0f}원")
                             
-                            # 성공적으로 도달했다면 balance 반환 (0이라도 유효함)
                             return balance
                         else:
                             self.logger.error(f"잔고 조회 API 오류: {res_data.get('return_msg')}")
@@ -860,7 +880,6 @@ class OrderManager:
 
                 # 2. 강제 동기화(force=True) 보호: 최소 2초 간격 유지
                 if force and now - self._last_real_sync_time < 2.0:
-                    # self.logger.debug("잔고 동기화 보호: 최근 2초 내 동기화가 수행되어 API 호출을 스킵합니다.")
                     return
 
                 real_balance = await self.fetch_real_balance()
@@ -872,11 +891,13 @@ class OrderManager:
                     self.current_balance = real_balance
                     self.last_sync_time = now
                     self._last_real_sync_time = now
-                    # 시그널 발생 (총자산과 주문가능현금 함께 전달)
-                    self.signals.balance_synced.emit(self.current_balance)
-        else:
-            # 가상 매매 모드에서는 동기화 시그널만 발생 (내부 계산 유지)
-            self.signals.balance_synced.emit(self.current_balance)
+
+        # [모드 공통] 실현손익 및 리스크 지표 동기화
+        if self.risk_manager:
+            self.risk_manager.daily_realized_pnl = self.daily_realized_pnl
+        
+        # 시그널 발생 (총자산과 주문가능현금 함께 전달)
+        self.signals.balance_synced.emit(self.current_balance)
 
     def _save_bot_holdings(self):
         """현재 봇이 관리 중인 종목 수량을 파일에 저장합니다."""
