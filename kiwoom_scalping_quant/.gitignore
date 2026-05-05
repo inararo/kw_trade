@@ -11,3 +11,4 @@ profiles_settings.xml
 pyProjectModel.xml
 vcs.xml
 *.ckpt
+/config.env
