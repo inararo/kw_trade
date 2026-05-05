@@ -400,13 +400,14 @@ class AssetDataViewModel(QObject):
     fetch_completed = pyqtSignal(str)
     fetch_failed = pyqtSignal(str)
 
-    def __init__(self, config_manager, historical_fetcher, influx_client, universe_manager, token_manager):
+    def __init__(self, config_manager, historical_fetcher, influx_client, universe_manager, token_manager, firebase_manager=None):
         super().__init__()
         self.config_manager = config_manager
         self.historical_fetcher = historical_fetcher
         self.influx_client = influx_client
         self.universe_manager = universe_manager
         self.token_manager = token_manager
+        self.firebase_manager = firebase_manager
         self.logger = logging.getLogger("AssetDataViewModel")
 
     def build_universe(self, top_n: int = 20):
@@ -588,6 +589,40 @@ class AssetDataViewModel(QObject):
             self.symbols_loaded.emit(symbols)
         else:
             self.symbol_update_failed.emit(f"설정 로드 실패: {result.failure()}")
+
+    def send_test_trade_log(self, log_type: str):
+        """[테스트] 샘플 체결 로그를 파이어베이스로 전송합니다."""
+        if not self.firebase_manager:
+            self.symbol_update_failed.emit("파이어베이스 매니저가 초기화되지 않았습니다.")
+            return
+
+        import datetime
+        import random
+        
+        # 샘플 데이터 생성
+        symbol = "005930" # 삼성전자
+        symbol_name = "삼성전자(테스트)"
+        price = random.randint(70000, 80000)
+        qty = random.randint(1, 10)
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        async def _send():
+            try:
+                # FirebaseManager에 정의된 send_trade_log 호출
+                await self.firebase_manager.send_trade_log(
+                    log_type=log_type,
+                    symbol=symbol,
+                    symbol_name=symbol_name,
+                    price=price,
+                    qty=qty,
+                    timestamp=timestamp
+                )
+                self.symbol_update_success.emit(f"[테스트] {log_type} 로그 전송 성공!")
+            except Exception as e:
+                self.logger.error(f"테스트 로그 전송 실패: {e}")
+                self.symbol_update_failed.emit(f"로그 전송 실패: {e}")
+
+        asyncio.create_task(_send())
 
     def add_symbol(self, code: str, name: str):
         result = self.config_manager.add_symbol(code, name)

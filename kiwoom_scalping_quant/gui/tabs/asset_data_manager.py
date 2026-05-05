@@ -137,6 +137,24 @@ class AssetDataManagerTab(QWidget):
         data_layout.addWidget(self.progress_bar)
 
         data_layout.addStretch()
+
+        # [신규] Firebase 테스트 로그 전송 섹션
+        test_group = QGroupBox("Firebase 연동 테스트")
+        test_layout = QHBoxLayout()
+        
+        self.btn_test_buy = QPushButton("테스트 BUY 로그 전송")
+        self.btn_test_buy.setStyleSheet("background-color: #d32f2f; color: white; font-weight: bold;")
+        self.btn_test_buy.clicked.connect(self._on_btn_test_buy_clicked)
+        
+        self.btn_test_sell = QPushButton("테스트 SELL 로그 전송")
+        self.btn_test_sell.setStyleSheet("background-color: #1976d2; color: white; font-weight: bold;")
+        self.btn_test_sell.clicked.connect(self._on_btn_test_sell_clicked)
+        
+        test_layout.addWidget(self.btn_test_buy)
+        test_layout.addWidget(self.btn_test_sell)
+        test_group.setLayout(test_layout)
+        data_layout.addWidget(test_group)
+
         data_group.setLayout(data_layout)
         main_splitter.addWidget(data_group)
         
@@ -268,6 +286,14 @@ class AssetDataManagerTab(QWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             self.view_model.delete_db_data(checked_symbols)
+
+    def _on_btn_test_buy_clicked(self):
+        """테스트 BUY 로그를 전송합니다."""
+        self.view_model.send_test_trade_log("BUY")
+
+    def _on_btn_test_sell_clicked(self):
+        """테스트 SELL 로그를 전송합니다."""
+        self.view_model.send_test_trade_log("SELL")
 
     # --- Slots (ViewModel -> View) ---
     @pyqtSlot(list)

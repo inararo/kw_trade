@@ -3,6 +3,7 @@ import time
 import logging
 import json
 import os
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from utils.math_jit import get_valid_tick_price
 from returns.result import Result, Success, Failure
@@ -570,23 +571,31 @@ class OrderManager:
                     pnl=pnl
                 ))
 
-            # [Firebase] 체결 로그 Firestore 전송 (사용자 요청 포맷 적용)
+            # [Firebase] 체결 로그 Firestore 전송 (테스트 스키마와 통합)
             if self.firebase_manager:
-                # 1. 실현 손익 계산 (SELL일 때만 의미 있음, KeyError 방지)
+                # 1. 추가 정보 수집
+                symbol_name = symbol
+                universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
+                for s in universe:
+                    if s.get('code') == symbol:
+                        symbol_name = s.get('name', symbol)
+                        break
+                
                 avg_price = self.avg_entry_prices.get(symbol, 0)
                 pnl = (exec_price - avg_price) * exec_qty if order['type'] == 'SELL' and avg_price > 0 else 0
                 
-                # 2. 사용자 요청 딕셔너리 구성
+                # 2. 테스트 스키마에 맞춘 딕셔너리 구성
                 trade_data = {
-                    "symbol":      symbol,
-                    "type":        order['type'],      # "BUY" 또는 "SELL"
-                    "price":       float(exec_price),
-                    "quantity":    int(exec_qty),
-                    "profit_loss": float(pnl),         # 실현 손익
-                    # "timestamp"는 FirebaseManager.add_trade_log 내부에서 SERVER_TIMESTAMP로 추가됨
+                    "log_type":      order['type'],      # "BUY" 또는 "SELL" (필드명 통합)
+                    "symbol":        symbol,
+                    "symbol_name":   symbol_name,        # 종목명 추가
+                    "price":         float(exec_price),
+                    "qty":           int(exec_qty),      # "quantity" -> "qty" (필드명 통합)
+                    "profit_loss":   float(pnl),         # 실현 손익 유지
+                    "timestamp_str": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), # 시각 문자열 추가
                 }
 
-                # 3. 비동기 업로드 (메인 루프 블로킹 방지)
+                # 3. 비동기 업로드
                 asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
 
         elif msg_type == '취소확인':

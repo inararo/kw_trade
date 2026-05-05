@@ -144,10 +144,10 @@ class FirebaseManager:
                         (symbol, type, price, quantity, profit_loss 등 포함)
         """
         if not self._initialized:
-            self.logger.error("FirebaseManager: 초기화되지 않아 로그를 전송할 수 없습니다.")
+            logger.error("FirebaseManager: 초기화되지 않아 로그를 전송할 수 없습니다.")
             return
         if not self._db:
-            self.logger.error("FirebaseManager: DB 연결(Firestore)이 없어 로그를 전송할 수 없습니다.")
+            logger.error("FirebaseManager: DB 연결(Firestore)이 없어 로그를 전송할 수 없습니다.")
             return
 
         from firebase_admin import firestore as fs
@@ -157,14 +157,14 @@ class FirebaseManager:
         
         # 2. 전송 데이터 복사 (원본 딕셔너리 변조 방지)
         doc_data = trade_data.copy()
-        self.logger.error(f"📤 [Firestore Payload] {doc_data}")
+        logger.error(f"📤 [Firestore Payload] {doc_data}")
 
         try:
             # 3. asyncio.to_thread를 사용하여 블로킹 방지 (SDK가 동기 방식이므로 필수)
             await asyncio.to_thread(
                 self._db.collection("trade_logs").add, doc_data
             )
-            self.logger.error(
+            logger.error(
                 f"✅ FirebaseManager: 체결 로그 실시간 업로드 완료 "
                 f"({doc_data.get('symbol', 'UNKNOWN')})"
             )

@@ -114,7 +114,8 @@ class Container(containers.DeclarativeContainer):
         historical_fetcher=historical_fetcher,
         influx_client=influx_client,
         universe_manager=universe_manager,
-        token_manager=token_manager
+        token_manager=token_manager,
+        firebase_manager=firebase_manager
     )
 
     settings_view_model = providers.Singleton(
