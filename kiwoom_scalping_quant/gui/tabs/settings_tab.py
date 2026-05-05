@@ -170,6 +170,10 @@ class SettingsTab(QWidget):
         self.time_cutoff.setTime(QTime(13, 0))
         time_form.addRow("신규 진입 마감 시간:", self.time_cutoff)
 
+        self.chk_enable_universe_update = QCheckBox("유니버스 자동 갱신 활성화 (9시 1분 및 30분 주기)")
+        self.chk_enable_universe_update.setChecked(True)
+        time_form.addRow("갱신 설정:", self.chk_enable_universe_update)
+
         time_group.setLayout(time_form)
         right_column.addWidget(time_group)
 
@@ -255,6 +259,7 @@ class SettingsTab(QWidget):
             "global_max_exposure": self.spin_global_max_exposure.value(),
             "enable_cutoff": self.chk_enable_cutoff.isChecked(),
             "cutoff_time": self.time_cutoff.time().toString("HH:mm"),
+            "enable_universe_update": self.chk_enable_universe_update.isChecked(),
             "protected_symbols": protected_symbols,
             "ai_buy_threshold": self.spin_buy_threshold.value(),
             "ai_sell_threshold": self.spin_sell_threshold.value()
@@ -311,6 +316,7 @@ class SettingsTab(QWidget):
         self.chk_enable_cutoff.setChecked(config.get("enable_cutoff", False))
         cutoff_str = config.get("cutoff_time", "13:00")
         self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
+        self.chk_enable_universe_update.setChecked(config.get("enable_universe_update", True))
 
         self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.65)))
         self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.55)))

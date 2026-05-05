@@ -166,11 +166,15 @@ class MarketScheduler:
 
         # Execute actions based on the new state
         if new_state == MarketState.PREPARE:
-            self.logger.info("Market Prepare: Requesting dynamic universe generation...")
-            # Use the injected AssetDataViewModel if available to trigger the UI-bound universe logic
-            vm = getattr(self.config_manager, "_injected_asset_data_vm", None) if hasattr(self, 'config_manager') else None
-            if vm and hasattr(vm, 'build_universe'):
-                vm.build_universe()
+            # [수정] 자동 갱신 설정 확인
+            if config_mgr and not config_mgr.get("enable_universe_update", True):
+                self.logger.info("Market Prepare: 유니버스 자동 갱신 설정이 꺼져 있어 갱신을 건너뜁니다.")
+            else:
+                self.logger.info("Market Prepare: Requesting dynamic universe generation...")
+                # Use the injected AssetDataViewModel if available to trigger the UI-bound universe logic
+                vm = getattr(self.config_manager, "_injected_asset_data_vm", None) if hasattr(self, 'config_manager') else None
+                if vm and hasattr(vm, 'build_universe'):
+                    vm.build_universe()
 
         elif new_state == MarketState.TRADING:
             self.logger.info("Market Open: Activating trading agents.")
@@ -288,23 +292,32 @@ class MarketScheduler:
 
                 while self._is_running and self.current_state == MarketState.TRADING:
                     async with self._universe_lock:
-                        self.logger.info("Intraday Scanner: 장중 주도주 재검색 시작...")
+                        # [추가] config_manager 참조 다시 확인
+                        config_mgr = None
                         if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
-                            token = self.universe_manager.config_manager.get("KIWOOM_ACCESS_TOKEN")
-                            if token:
-                                from returns.io import IOFailure, IOSuccess
-                                result = await self.universe_manager.build_top_n_universe(token, top_n=20)
+                            config_mgr = self.universe_manager.config_manager
 
-                                if isinstance(result, IOFailure):
-                                    self.logger.error("Intraday Scanner: 유니버스 업데이트 실패")
-                                else:
-                                    new_universe = result.unwrap()._inner_value
-                                    if new_universe:
-                                        # Safe Swap Logic Delegate
-                                        try:
-                                            await self._safe_swap_universe(new_universe)
-                                        except Exception as e:
-                                            self.logger.error(f"주도주 유니버스 교체 중 오류 발생 (무시하고 계속): {e}")
+                        # [수정] 자동 갱신 설정 확인
+                        if config_mgr and not config_mgr.get("enable_universe_update", True):
+                            self.logger.info("Intraday Scanner: 유니버스 자동 갱신 설정이 꺼져 있어 스캔을 건너뜁니다.")
+                        else:
+                            self.logger.info("Intraday Scanner: 장중 주도주 재검색 시작...")
+                            if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+                                token = self.universe_manager.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                                if token:
+                                    from returns.io import IOFailure, IOSuccess
+                                    result = await self.universe_manager.build_top_n_universe(token, top_n=20)
+
+                                    if isinstance(result, IOFailure):
+                                        self.logger.error("Intraday Scanner: 유니버스 업데이트 실패")
+                                    else:
+                                        new_universe = result.unwrap()._inner_value
+                                        if new_universe:
+                                            # Safe Swap Logic Delegate
+                                            try:
+                                                await self._safe_swap_universe(new_universe)
+                                            except Exception as e:
+                                                self.logger.error(f"주도주 유니버스 교체 중 오류 발생 (무시하고 계속): {e}")
 
                     # 30분 (1800초) 대기
                     await asyncio.sleep(1800)
