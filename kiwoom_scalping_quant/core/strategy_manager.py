@@ -110,7 +110,7 @@ class StrategyManager:
         """글로벌 매수 발생 시점을 기록합니다."""
         self.last_global_buy_time = time.time()
 
-    def init_engines(self, universe_list: List[Dict[str, Any]]):
+    async def init_engines(self, universe_list: List[Dict[str, Any]]):
         """유니버스 확정 후 실시간 매매 엔진 초기화 (Lazy Initialization)"""
         # [NEW] 유니버스 전체 스냅샷 로깅
         try:
@@ -146,6 +146,14 @@ class StrategyManager:
         self.envs.clear()
         
         self.logger.info(f"StrategyManager: 확정된 유니버스 {len(self.symbols)}개에 대해 엔진 초기화 시작.")
+        
+        # [핵심 수정] 보유 종목을 포함한 전체 종목에 대해 실시간 데이터 구독 신청
+        if hasattr(self.data_collector, 'update_subscriptions'):
+            await self.data_collector.update_subscriptions(to_add=self.symbols, to_remove=[])
+        else:
+            for sym in self.symbols:
+                await self.data_collector.subscribe_symbol(sym)
+
         new_engines = []
         for sym in self.symbols:
             from core.live_trading_engine import LiveTradingEngine

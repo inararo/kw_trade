@@ -213,7 +213,9 @@ class UniverseManager:
 
                     for item in items:
                         # 제공된 명세(stk_cd, stk_nm, trde_amt)를 최우선으로 적용합니다.
-                        code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
+                        raw_code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
+                        # [수정] 접미사(_AL 등) 제거하여 순수 종목 코드만 사용
+                        code = raw_code.split('_')[0].strip()
                         name = item.get("stk_nm") or item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
 
                         # [혁신] 발견된 종목명 정보를 로컬 캐시에 즉시 업데이트 (DB 로드 시 한글 이름 복원용)
@@ -409,7 +411,9 @@ class UniverseManager:
                         if len(top_30) >= 30:
                             break
                             
-                        code = item.get("stk_cd") or item.get("stck_shrn_iscd") or ""
+                        raw_code = item.get("stk_cd") or item.get("stck_shrn_iscd") or ""
+                        # [수정] 접미사(_AL 등) 제거하여 순수 종목 코드만 사용
+                        code = raw_code.split('_')[0].strip()
                         name = item.get("stk_nm") or item.get("hts_kor_isnm") or f"Unknown_{code}"
 
                         # 추가 필터링 (ETF, SPAC 등)

@@ -84,8 +84,12 @@ class HistoricalFetcher:
         next_key = ""
         cont_yn = "N"
         
+        # [수정] 원본 심볼 보존 (재시도 포맷 결정용)
+        original_symbol = symbol
+        symbol_only = original_symbol.split("_")[0].strip()
+        
         # 1. Resume Check (마지막 수집 시점보다 과거 데이터를 더 받고 싶을 때 사용)
-        last_fetched = self._load_checkpoint(symbol)
+        last_fetched = self._load_checkpoint(symbol_only)
         
         # 증분 수집을 위해 target_start_date는 항상 start_date(오늘 등)를 기준으로 하되
         # 과거에 어디까지 받았었는지는 stop_timestamp로 판단합니다.
@@ -96,14 +100,13 @@ class HistoricalFetcher:
         current_page = 0
 
         # 2. 시도할 종목코드 형식 목록 생성 (SOR 데이터 수집 최적화)
-        symbol_only = symbol.split("_")[0] if "_" in symbol else symbol
-        if symbol.endswith("_AL"):
+        if original_symbol.endswith("_AL"):
             # [수정] Kiwoom REST API 규격에 맞춰 순수 6자리 코드를 최우선으로 시도 (KRX: 접두사 오류 방지)
-            formats_to_try = [symbol_only, symbol, f"SOR:{symbol_only}", f"KRX:{symbol_only}"]
-        elif symbol.endswith("_NX"):
-            formats_to_try = [symbol_only, symbol, f"NXT:{symbol_only}", f"KRX:{symbol_only}"]
+            formats_to_try = [symbol_only, original_symbol, f"SOR:{symbol_only}", f"KRX:{symbol_only}"]
+        elif original_symbol.endswith("_NX"):
+            formats_to_try = [symbol_only, original_symbol, f"NXT:{symbol_only}", f"KRX:{symbol_only}"]
         else:
-            formats_to_try = [symbol_only, symbol, f"KRX:{symbol_only}"]
+            formats_to_try = [symbol_only, f"KRX:{symbol_only}"]
 
         final_data = []
         
@@ -228,7 +231,7 @@ class HistoricalFetcher:
 
                                 batch_data.append({
                                     "timestamp": formatted_ts,
-                                    "symbol": symbol,
+                                    "symbol": symbol_only,
                                     "open": o,
                                     "high": h,
                                     "low": l,
@@ -262,9 +265,9 @@ class HistoricalFetcher:
                     self.logger.warning(f"[{symbol}] 형식 {formatted_symbol} 결과가 유효하지 않음. 다음 형식 시도...")
 
         if final_data:
-            self.logger.info(f"[{symbol}] 최종 수집 완료: 총 {len(final_data)}건")
-            self._save_checkpoint(symbol, "COMPLETED")
+            self.logger.info(f"[{symbol_only}] 최종 수집 완료: 총 {len(final_data)}건")
+            self._save_checkpoint(symbol_only, "COMPLETED")
             return final_data
         
-        self.logger.error(f"[{symbol}] 모든 가능한 형식으로 시도했으나 유효한 데이터를 찾지 못했습니다.")
+        self.logger.error(f"[{symbol_only}] 모든 가능한 형식으로 시도했으나 유효한 데이터를 찾지 못했습니다.")
         return []

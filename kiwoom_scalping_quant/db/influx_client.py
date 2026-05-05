@@ -58,7 +58,7 @@ class AsyncInfluxDBClient:
                 ts = datetime.now(timezone.utc)
 
             point = Point("tick_data") \
-                .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                .tag("symbol", str(data.get("symbol", "UNKNOWN")).split('_')[0].strip()) \
                 .field("open", float(data.get("open", 0.0))) \
                 .field("high", float(data.get("high", 0.0))) \
                 .field("low", float(data.get("low", 0.0))) \
@@ -262,7 +262,7 @@ class AsyncInfluxDBClient:
                     ts = datetime.now(timezone.utc)
 
                 point = Point(measurement) \
-                    .tag("symbol", str(data.get("symbol", "UNKNOWN"))) \
+                    .tag("symbol", str(data.get("symbol", "UNKNOWN")).split('_')[0].strip()) \
                     .field("open", float(data.get("open", 0.0))) \
                     .field("high", float(data.get("high", 0.0))) \
                     .field("low", float(data.get("low", 0.0))) \
@@ -324,7 +324,8 @@ class AsyncInfluxDBClient:
                 for record in table.records:
                     v = record.get_value()
                     if v and v != "UNKNOWN":
-                        symbols.append(v)
+                        # [수정] 접미사 제거 후 중복 방지
+                        symbols.append(v.split('_')[0].strip())
             return sorted(list(set(symbols)))
         except Exception as e:
             self.logger.error(f"InfluxDB 심볼 리스트 조회 실패: {e}")

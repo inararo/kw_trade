@@ -355,9 +355,10 @@ class LiveDashboardTab(QWidget):
         self.log_list.addItem(f"[{ts}] {msg}")
         self.log_list.scrollToBottom()
 
-    @pyqtSlot(float, float, float)
-    def on_risk_metrics_updated(self, pnl: float, total_cash: float, per_symbol_limit: float):
-        self._current_pnl = pnl
+    @pyqtSlot(float, float, float, float)
+    def on_risk_metrics_updated(self, realized: float, evaluation: float, total_cash: float, per_symbol_limit: float):
+        self._realized_pnl = realized
+        self._evaluation_pnl = evaluation
         self._available_limit = total_cash # 전체 주문 가능 현금
         self._per_symbol_limit = per_symbol_limit
         self._update_risk_bar()
@@ -369,9 +370,12 @@ class LiveDashboardTab(QWidget):
 
     def _update_risk_bar(self):
         """상단 리스크/자산 정보 레이블 갱신"""
-        # [수정] 총자산, 주문가능현금, 종목당 한도를 모두 명시
+        realized = getattr(self, '_realized_pnl', 0.0)
+        evaluation = getattr(self, '_evaluation_pnl', 0.0)
         per_sym = getattr(self, '_per_symbol_limit', 0.0)
-        text = (f"💰 당일 손익: {self._current_pnl:,.0f} | "
+        
+        text = (f"💵 실현 손익: {realized:,.0f} | "
+                f"📈 평가 손익: {evaluation:,.0f} | "
                 f"📊 총 자산: {self._current_balance:,.0f} | "
                 f"💳 주문 가능: {self._available_limit:,.0f} | "
                 f"🚫 종목 한도: {per_sym:,.0f}")

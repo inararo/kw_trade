@@ -80,6 +80,9 @@ class DataCollector:
 
     async def subscribe_symbol(self, symbol: str):
         """새로운 종목을 구독하고 버퍼를 동적 할당합니다."""
+        # [수정] 모든 내부 처리에 정제된 심볼 사용
+        symbol = symbol.split('_')[0].strip()
+        
         if not self.subscription_manager.add_symbol(symbol):
             return False
         
@@ -114,9 +117,10 @@ class DataCollector:
 
     async def unsubscribe_symbol(self, symbol: str):
         """구독을 해제합니다."""
+        symbol = symbol.split('_')[0].strip()
         self.subscription_manager.remove_symbol(symbol)
         self._update_symbol_map()
-        clean_symbol = symbol.split('_')[0]
+        clean_symbol = symbol
 
         # 백그라운드 웹소켓이 동작 중이면 실시간 구독 해제 메시지 발송
         if self.is_running and self.ws_connection:
@@ -207,12 +211,16 @@ class DataCollector:
         self.ws_connected_event.clear()
         self.first_data_received_event.clear()
         
-        # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스를 다시 읽어옵니다.
+        # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스와 기존 등록된 종목(보유 종목 등)을 병합합니다.
+        all_subs = set(self.subscription_manager.get_symbols())
         if hasattr(self.config, 'get_symbols'):
-            latest_symbols = [s.get('code') for s in self.config.get_symbols()]
-            if latest_symbols:
-                self._initial_symbols = latest_symbols
-                self.logger.info(f"동기화: 최신 유니버스 {len(latest_symbols)}개 종목으로 구독 리스트를 갱신했습니다.")
+            for s in self.config.get_symbols():
+                code = s.get('code')
+                if code: all_subs.add(code)
+        
+        if all_subs:
+            self._initial_symbols = list(all_subs)
+            self.logger.info(f"동기화: 총 {len(all_subs)}개 종목(유니버스+보유)으로 구독 리스트를 확정했습니다.")
 
         # [안정화/복구] 초기 종목 구독 및 버퍼 초기화 (필수)
         # subscribe_symbol은 버퍼를 생성하고 관리자에 등록합니다.
@@ -425,7 +433,7 @@ class DataCollector:
                         "broker_id": broker_id,
                         "exec_qty": int(float(combined.get("exec_qty") or combined.get("exec_qty", 0))),
                         "exec_price": float(combined.get("exec_prc") or combined.get("exec_price") or combined.get("exec_prc", 0)),
-                        "symbol": combined.get("stk_cd") or combined.get("symbol"),
+                        "symbol": (combined.get("stk_cd") or combined.get("symbol") or "").split('_')[0].strip(),
                         "timestamp": combined.get("timestamp") or combined.get("time") or combined.get("curr_time")
                     }
                     

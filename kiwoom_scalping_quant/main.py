@@ -275,7 +275,7 @@ class QuantSystem:
                 # 서버 수집 실패 시 폴백으로 로컬 로드 시도
                 self.asset_vm.load_symbols()
         else:
-            print("시스템: 장외시간 부팅 - 서버 통신을 생략하고 저장된 로컬 유니버스를 로드합니다.")
+            print("시스템: 장외시간 부팅 - 실시간 주도주 유니버스 갱신을 생략하고 로컬 데이터를 로드합니다. (잔고는 동기화됨)")
             self.asset_vm.load_symbols()
             await asyncio.sleep(0.5)
 
@@ -288,7 +288,7 @@ class QuantSystem:
 
             # [Step 2.5] 확정된 유니버스를 바탕으로 매매 엔진(LiveTradingEngine) 초기화 실행
             print("시스템: [Step 2.5] 확정된 유니버스에 대해 전용 매매 엔진 초기화 시작...")
-            self.strategy_manager.init_engines(universe_list)
+            await self.strategy_manager.init_engines(universe_list)
             
             # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
             try:
@@ -297,7 +297,7 @@ class QuantSystem:
                 pass
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 유니버스 로드 지연 - 기본 설정 리스트로 지연 초기화를 진행합니다.")
-            self.strategy_manager.init_engines(self.asset_vm.config_manager.get_symbols())
+            await self.strategy_manager.init_engines(self.asset_vm.config_manager.get_symbols())
 
         # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())

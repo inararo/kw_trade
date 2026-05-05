@@ -40,12 +40,10 @@ class OrderManager:
         self._broker_orderable_cash = self.current_balance                    # 증권사 확인 현금
         self.pending_buy_amount = 0.0                                          # 주문 전송 후 체결 대기 중인 금액 (내부 예약)
         self.last_sync_time = 0
+        self.last_known_prices: Dict[str, float] = {}                          # [신규] 잔고 조회 시 확인된 마지막 현재가
 
         # 키움증권 원주문번호(Broker ID)와 내부 ID 맵핑
         self.broker_id_map: Dict[str, str] = {}
-
-        self.holdings = {sym: 0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
-        self.avg_entry_prices = {sym: 0.0 for sym in [s.get('code') for s in config.get('universe', [{'code': '005930'}])]}
 
         # [영구 저장] 봇 관리 종목 데이터 경로
         self.data_dir = os.path.join(os.getcwd(), "data")
@@ -53,18 +51,44 @@ class OrderManager:
             os.makedirs(self.data_dir)
         self.holdings_file = os.path.join(self.data_dir, "bot_holdings.json")
         
-        # 봇(Agent) 전용 매수/보유 수량 트래킹 (파일에서 로드)
+        # 1. 봇(Agent) 전용 매수/보유 수량 트래킹 (파일에서 로드)
         self.bot_holdings: Dict[str, int] = self._load_bot_holdings()
+
+        # 2. 실시간 잔고 및 평균단가 맵 초기화 (유니버스 + 보유 종목 합산)
+        universe_codes = [str(s.get('code')).split('_')[0] for s in config.get('universe', [])]
+        initial_codes = set(universe_codes) | set(self.bot_holdings.keys())
+        
+        self.holdings = {code: self.bot_holdings.get(code, 0) for code in initial_codes if code}
+        self.avg_entry_prices = {code: 0.0 for code in initial_codes if code}
 
         # Safety Guard Risk Manager
         self.risk_manager = None # Will be injected
         self._sync_lock = asyncio.Lock() # [추가] 잔고 동기화 레이스 컨디션 방지 락
         self._last_real_sync_time = 0.0  # [추가] 실전 잔고 동기화 쿨타임 체크용
-        self.daily_realized_pnl = 0.0    # [추가] 당일 실현 손익 (리스크 매니저 연동용)
+        self.daily_realized_pnl = 0.0    # 당일 매도 확정 손익 (실현)
+        self.daily_evaluation_pnl = 0.0  # 현재 보유 종목 평가 손익 (미실현)
         
         # [추가] REST API 주소 설정
         kiwoom_cfg = self.config.get("kiwoom", {})
         self.rest_base_url = kiwoom_cfg.get("rest_url", "https://openapi.kiwoom.com:10001")
+        
+        # [추가] 실전 잔고 상태 및 쿨다운 관리 변수
+        self._broker_orderable_cash = 0.0
+        self.pending_buy_amount = 0.0
+        self._last_sell_fill_time: Dict[str, float] = {}  # 매도 직후 API 지연 방어용
+        self._last_real_sync_time = 0.0
+        self.last_sync_time = 0.0
+        self.active_orders: Dict[str, Dict[str, Any]] = {}
+        self.last_known_prices: Dict[str, float] = {}
+
+        # [추가] 주문 제한(Throttling) 관련
+        self.rate_limit = config.get("rate_limit", 5)
+        self.order_semaphore = asyncio.Semaphore(self.rate_limit)
+        self.order_timestamps = []
+
+        # [추가] 글로벌 리스크 제한 (RiskManager 주입 전 기본값)
+        self.global_max_loss = config.get("global_max_loss", -500000)
+        self.global_max_exposure = config.get("global_max_exposure", 50000000)
 
     def has_unexecuted_orders(self, symbol: str) -> bool:
         """특정 종목에 대해 아직 체결/취소되지 않은 주문이 있는지 확인합니다."""
@@ -73,21 +97,6 @@ class OrderManager:
                 if order.get('unexecuted_qty', 0) > 0:
                     return True
         return False
-
-        # Global Risk Limits (Deprecated in favor of RiskManager)
-        self.global_max_loss = config.get("global_max_loss", -500000)
-        self.global_max_exposure = config.get("global_max_exposure", 50000000)
-        self.daily_realized_pnl = 0.0
-        self._last_sell_fill_time: Dict[str, float] = {} # [신규] 매도 직후 API 지연 방어용
-
-        self.rest_base_url = config.get_rest_url() if hasattr(config, 'get_rest_url') else "https://mockapi.kiwoom.com"
-        self.rate_limit = 5
-        self.order_semaphore = asyncio.Semaphore(self.rate_limit)
-        self.order_timestamps = []
-        
-        # [신규] 잔고 동기화 전용 락 및 쿨다운 관리
-        self._sync_lock = asyncio.Lock()
-        self._last_real_sync_time = 0.0
 
     @property
     def orderable_cash(self) -> float:
@@ -194,7 +203,7 @@ class OrderManager:
                 'internal_id': internal_id,
                 'broker_id': None,         # 접수 시 발급될 번호
                 'orig_broker_id': orig_order_no,
-                'symbol': symbol,
+                'symbol': clean_symbol,
                 'type': order_type,        # BUY, SELL, REPLACE, CANCEL
                 'price': price,
                 'qty': qty,
@@ -445,20 +454,24 @@ class OrderManager:
         # [디버그] 수신 데이터 확인
         self.logger.error(f"📥 [Chejan Raw] {data}")
 
+        raw_symbol = data.get('symbol') or data.get('stk_cd') or ""
+        clean_symbol = str(raw_symbol).split('_')[0].strip()
         internal_id = data.get('internal_id')
         broker_id = str(data.get('broker_id', '')) # 문자열 정규화
         msg_type = data.get('msg_type') # '접수', '체결', '취소확인' 등
 
         order = self.active_orders.get(internal_id)
-        if not order:
+        if not order and broker_id:
             # broker_id로 역추적
-            if broker_id:
-                internal_id = self.broker_id_map.get(broker_id)
-                order = self.active_orders.get(internal_id)
+            internal_id = self.broker_id_map.get(broker_id)
+            order = self.active_orders.get(internal_id)
             
-            if not order:
-                self.logger.warning(f"⚠️ [Chejan] 매칭되는 주문을 찾을 수 없습니다. (Internal ID: {internal_id}, Broker ID: {broker_id})")
-                return
+        if not order:
+            self.logger.warning(f"⚠️ [Chejan] 매칭되는 주문을 찾을 수 없습니다. (Internal ID: {internal_id}, Broker ID: {broker_id})")
+            return
+
+        # [수정] 모든 내부 처리에 정제된 심볼 사용
+        symbol = order['symbol'].split('_')[0]
 
         if msg_type == '접수':
             order['status'] = OrderState.ACCEPTED
@@ -768,110 +781,154 @@ class OrderManager:
             "authorization": f"Bearer {token}",
             "api-id": "kt00018" 
         }
-        # qry_tp: 1(합산), dmst_stex_tp: KRX
+        # qry_tp: 2(개별), dmst_stex_tp: KRX(한국거래소)
         body = {
-            "qry_tp": "1",
+            "qry_tp": "2",
             "dmst_stex_tp": "KRX"
         }
 
+        def safe_float(v):
+            try:
+                if v is None: return 0.0
+                s = str(v).replace(',', '').strip()
+                if not s or s == 'None': return 0.0
+                return float(s)
+            except: return 0.0
+
         try:
+            # URL 설정 보정 (config.yaml: kiwoom.rest_base_url.real)
+            kiwoom_cfg = self.config.get("kiwoom", {})
+            base_url = self.rest_base_url
+            if isinstance(kiwoom_cfg.get("rest_base_url"), dict):
+                base_url = kiwoom_cfg["rest_base_url"].get("real", base_url)
+            
+            endpoint = f"{base_url}/api/dostk/acnt"
+            self.logger.debug(f"[DEBUG] 잔고 조회 요청: {endpoint} | Body: {body}")
+            
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
             async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.post(endpoint, json=body, headers=headers, timeout=5.0) as resp:
+                async with session.post(endpoint, json=body, headers=headers, timeout=10.0) as resp:
+                    # 응답 텍스트를 먼저 읽어 로깅 (JSON 파싱 에러 대비)
+                    res_text = await resp.text()
+                    self.logger.debug(f"[DEBUG] 잔고 조회 원본 응답 ({resp.status}): {res_text}")
+
                     if resp.status == 200:
-                        res_data = await resp.json(content_type=None)
-                        self.logger.debug(f"잔고 조회 API 응답: {res_data}")
+                        try:
+                            res_data = json.loads(res_text)
+                        except Exception as json_e:
+                            self.logger.error(f"❌ 응답 JSON 파싱 실패: {json_e}")
+                            return None
                         
                         if str(res_data.get('return_code')) == '0':
-                            # 1. 데이터 추출 대상 (output이 있을 수도, 최상위에 데이터가 있을 수도 있음)
-                            output = res_data.get('output', {})
-                            target = output if output else res_data
+                            target = res_data 
                             
-                            # 2. 총 자산 (Equity) 파싱 - 가능한 모든 후보군 체크
-                            balance_candidates = [
-                                'prsm_dpst_aset_amt', 'estm_dpst_ast_amt', 'tot_evlt_amt', 
-                                'tot_asst_amt', 'aset_amt', 'tot_evl_amt', 'tot_evlt_pnl_amt_2'
-                            ]
-                            balance = self.current_balance # 기본값으로 현재 잔고 유지
+                            # 2. 총 자산 (Equity) 파싱
+                            balance_candidates = ['prsm_dpst_aset_amt', 'tot_evlt_amt', 'tot_asst_amt']
+                            balance = self.current_balance
                             for key in balance_candidates:
-                                val = target.get(key)
-                                if val is not None:
-                                    try:
-                                        temp_val = float(val)
-                                        if temp_val > 0:
-                                            balance = temp_val
-                                            break
-                                    except: continue
+                                raw_val = target.get(key)
+                                val = safe_float(raw_val)
+                                if raw_val is not None and val > 0:
+                                    balance = val
+                                    self.logger.debug(f"[DEBUG] 자산 추출 성공: {balance:,.0f} (Key: {key})")
+                                    break
                             
-                            # 3. 당일 실현손익 (Daily Realized PnL) 파싱
-                            # thst_exca_amt(당일정산금액), tot_pnl_amt(총손익금액), pnl_amt(손익금액)
-                            pnl_candidates = ['thst_exca_amt', 'tot_pnl_amt', 'tdy_pnl_amt', 'pnl_amt', 'tot_evlt_pnl_amt']
-                            for key in pnl_candidates:
-                                pnl_val = target.get(key)
-                                if pnl_val is not None:
-                                    try:
-                                        self.daily_realized_pnl = float(pnl_val)
-                                        self.logger.debug(f"증권사 확인 당일 손익: {self.daily_realized_pnl:,.0f} 원 ({key})")
-                                        break
-                                    except: continue
+                            # 3. 손익 파싱 (평가손익 vs 실현손익 분리)
+                            # tot_evlt_pl은 전체 보유 종목의 총 평가손익 (미실현)
+                            self.daily_evaluation_pnl = safe_float(target.get('tot_evlt_pl'))
+                            
+                            # thst_exca_amt 또는 별도 필드가 있다면 실현손익으로 간주 (없으면 기존 유지)
+                            realized_val = target.get('thst_exca_amt') or target.get('tdy_pnl_amt')
+                            if realized_val is not None:
+                                self.daily_realized_pnl = safe_float(realized_val)
+                            
+                            self.logger.debug(f"[DEBUG] 손익 정보: 평가 {self.daily_evaluation_pnl:,.0f} | 실현 {self.daily_realized_pnl:,.0f}")
 
                             # 4. 실제 주문 가능 현금 (Orderable Cash)
-                            # puse_amt(주문가능금액), d2_dpst_amt(D+2예수금)
-                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_cash']
+                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt']
                             cash_val = 0.0
                             for key in cash_candidates:
-                                val = target.get(key)
-                                if val is not None:
-                                    try:
-                                        cash_val = float(val)
-                                        if cash_val > 0: break
-                                    except: continue
+                                raw_val = target.get(key)
+                                val = safe_float(raw_val)
+                                if raw_val is not None and val > 0: 
+                                    cash_val = val
+                                    self.logger.debug(f"[DEBUG] 현금 추출 성공: {cash_val:,.0f} (Key: {key})")
+                                    break
                             
                             if cash_val > 0:
                                 self._broker_orderable_cash = cash_val
                             else:
-                                # 자동 계산 로직 (Equity - 주식평가액)
-                                tot_evlt_amt = float(target.get('tot_evlt_amt', 0))
-                                tot_loan_amt = float(target.get('tot_crd_loan_amt', 0)) + float(target.get('tot_loan_amt', 0))
-                                stock_equity = max(0, tot_evlt_amt - tot_loan_amt)
-                                self._broker_orderable_cash = balance - stock_equity
+                                # 자동 계산: 추정예탁자산 - 총평가금액 (또는 총매입금액)
+                                tot_evlt_amt = safe_float(target.get('tot_evlt_amt'))
+                                self._broker_orderable_cash = max(0, balance - tot_evlt_amt)
 
                             self.logger.debug(f"증권사 확인 현금: {self._broker_orderable_cash:,.0f} 원")
 
-                            # 5. 보유 종목 동기화 (리스트 위치가 유동적일 수 있음)
-                            holdings_list = res_data.get('acnt_evlt_remn_indv_tot', [])
-                            if not holdings_list and isinstance(output, dict):
-                                holdings_list = output.get('acnt_evlt_remn_indv_tot', [])
+                            # 5. 보유 종목 동기화 (명세서: acnt_evlt_remn_indv_tot)
+                            holdings_list = target.get('acnt_evlt_remn_indv_tot') or target.get('output2') or target.get('items') or []
+                            
+                            # 추가 후보군 확인 (계층 구조가 있는 경우 대응)
+                            if not holdings_list:
+                                for out_key in ['output', 'output2', 'items']:
+                                    out_data = res_data.get(out_key)
+                                    if isinstance(out_data, dict):
+                                        holdings_list = out_data.get('acnt_evlt_remn_indv_tot') or out_data.get('items') or []
+                                        if holdings_list: break
+                                    elif isinstance(out_data, list):
+                                        holdings_list = out_data
+                                        break
                             
                             new_holdings = {}
                             new_avg_prices = {}
+                            new_current_prices = {}
                             
                             if holdings_list:
+                                self.logger.info(f"보유 종목 리스트 수신: {len(holdings_list)}개")
+                                if len(holdings_list) > 0:
+                                    self.logger.debug(f"첫 번째 종목 필드 확인: {list(holdings_list[0].keys())}")
+                                
                                 for item in holdings_list:
-                                    raw_code = item.get('stk_cd', '')
-                                    code = raw_code[1:] if raw_code.startswith('A') else raw_code
-                                    qty = int(float(item.get('rmnd_qty', 0)))
-                                    price = float(item.get('pur_pric', 0))
-                                    if code:
+                                    # 종목코드 후보
+                                    raw_code = item.get('stk_cd') or item.get('symbol') or item.get('stk_code') or item.get('code') or ''
+                                    code = str(raw_code).lstrip('A').split('_')[0].strip()
+                                    
+                                    # 보유수량 후보
+                                    qty = int(safe_float(item.get('rmnd_qty') or item.get('hldg_qty') or item.get('quantity') or item.get('qty')))
+                                    
+                                    # 매입단가 후보
+                                    avg_p = safe_float(item.get('pur_pric') or item.get('pchs_avg_pric') or item.get('buy_price') or item.get('avg_price'))
+                                    
+                                    # 현재가 후보
+                                    cur_p = safe_float(item.get('evlt_prc') or item.get('cur_prc') or item.get('stck_prpr') or item.get('price'))
+                                    
+                                    if code and qty > 0:
                                         new_holdings[code] = new_holdings.get(code, 0) + qty
-                                        new_avg_prices[code] = price
+                                        new_avg_prices[code] = avg_p
+                                        new_current_prices[code] = cur_p
+                                        self.logger.debug(f"[DEBUG] 종목 파싱 성공: {code} | 수량: {qty} | 평단: {avg_p:,.0f} | 현재가: {cur_p:,.0f}")
+                                    else:
+                                        self.logger.debug(f"[DEBUG] 종목 스킵: code={code}, qty={qty}")
                             
                             # 기존 보유 정보 업데이트
                             all_symbols = set(list(self.holdings.keys()) + list(new_holdings.keys()))
                             for sym in all_symbols:
                                 qty = new_holdings.get(sym, 0)
                                 price = new_avg_prices.get(sym, 0.0)
+                                cur_p = new_current_prices.get(sym, 0.0)
                                 
                                 last_sell = self._last_sell_fill_time.get(sym, 0)
                                 if qty > 0 and self.holdings.get(sym, 0) == 0 and (time.time() - last_sell < 60):
                                     qty = 0
                                     price = 0.0
+                                    cur_p = 0.0
 
                                 self.holdings[sym] = qty
                                 self.bot_holdings[sym] = qty
                                 self.avg_entry_prices[sym] = price if qty > 0 else 0.0
+                                if cur_p > 0:
+                                    self.last_known_prices[sym] = cur_p
                                     
-                            self.logger.info(f"📊 잔고 동기화 완료: 총자산 {balance:,.0f}원 | 당일손익 {self.daily_realized_pnl:,.0f}원 | 가용현금 {self._broker_orderable_cash:,.0f}원")
+                            self.logger.info(f"📊 잔고 동기화 완료: 총자산 {balance:,.0f}원 | 실현손익 {self.daily_realized_pnl:,.0f}원 | 평가손익 {self.daily_evaluation_pnl:,.0f}원 | 가용현금 {self._broker_orderable_cash:,.0f}원")
                             
                             return balance
                         else:
@@ -882,7 +939,9 @@ class OrderManager:
                     else:
                         self.logger.error(f"잔고 조회 HTTP 오류: {resp.status}")
         except Exception as e:
-            self.logger.error(f"잔고 조회 중 예외 발생: {e}")
+            import traceback
+            self.logger.error(f"잔고 조회 중 예외 발생: {str(e)}")
+            self.logger.error(traceback.format_exc())
             
         return None
 
@@ -941,8 +1000,10 @@ class OrderManager:
         try:
             with open(self.holdings_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                self.logger.info(f"이전 봇 관리 종목 {len(data)}개를 성공적으로 불러왔습니다.")
-                return data
+                # [수정] 로드 시 종목 코드 키 정제하여 불일치 방지
+                cleaned_data = {str(k).split('_')[0].strip(): int(v) for k, v in data.items() if k}
+                self.logger.info(f"이전 봇 관리 종목 {len(cleaned_data)}개를 성공적으로 불러왔습니다.")
+                return cleaned_data
         except Exception as e:
             self.logger.error(f"봇 관리 종목 로드 실패: {e}")
             return {}

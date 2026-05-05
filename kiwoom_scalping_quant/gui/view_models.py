@@ -28,7 +28,7 @@ class LiveDashboardViewModel(QObject):
     _sig_raw_data = pyqtSignal(object)
 
     # Risk Limits and Alerts
-    sig_risk_metrics_updated = pyqtSignal(float, float, float) # current PnL, total orderable cash, per-symbol limit
+    sig_risk_metrics_updated = pyqtSignal(float, float, float, float) # Realized PnL, Evaluation PnL, Total Cash, Per-Symbol Limit
     sig_balance_updated = pyqtSignal(float) # [신규] 총 예수금(잔고) 업데이트
     sig_status_alert = pyqtSignal(str)
     
@@ -114,14 +114,18 @@ class LiveDashboardViewModel(QObject):
             name = s.get("name", "-")
             if code:
                 self._symbol_names[code] = name
+                # [수정] DataCollector의 실시간 가격 정보를 최우선 참조하여 0 초기화 방지
+                current_p = self.data_collector.last_prices.get(code) or self.order_manager.last_known_prices.get(code) or s.get("price", 0)
+                current_chg = self.data_collector.last_change_rates.get(code, 0.0)
+
                 self.symbols_summary[code] = {
                     "name": name, 
-                    "price": s.get("price", 0),
-                    "change_rate": 0.0, # [신규] 등락률 필드 추가
-                    "volume": 0,  # [핵심 패치 2] 거래량 필드 추가!
+                    "price": current_p,
+                    "change_rate": current_chg,
+                    "volume": 0,
                     "ai_signal": "-", 
-                    "holdings": 0,
-                    "avg_price": 0.0
+                    "holdings": self.order_manager.bot_holdings.get(code, 0),
+                    "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
                 }
         
         # 3. 상세 뷰 대상 초기화 (첫 번째 종목으로 다시 잡히도록)
@@ -133,12 +137,38 @@ class LiveDashboardViewModel(QObject):
         self.sig_log_appended.emit(f"[시스템] 장중 유니버스가 {len(new_symbols)}개 종목으로 교체되었습니다. 화면을 갱신합니다.")
 
     def _init_summary_data(self):
-        """부팅 시 유니버스 리스트를 바탕으로 요약 테이블 초기 뼈대 구성"""
+        """부팅 시 유니버스 리스트 및 보유 종목을 바탕으로 요약 테이블 초기 뼈대 구성"""
+        # 1. 유니버스 종목 추가
         for s in self.config_manager.get_symbols():
             code = s.get("code", "").split('_')[0].strip()
             name = s.get("name", "-")
             if code and code not in self.symbols_summary:
-                self.symbols_summary[code] = {"name": name, "price": 0, "change_rate": 0.0, "volume": 0, "ai_signal": "-", "holdings": 0, "avg_price": 0.0}
+                # [수정] 초기화 시에도 실시간 데이터가 있다면 보존
+                price = self.data_collector.last_prices.get(code) or self.order_manager.last_known_prices.get(code) or 0
+                chg = self.data_collector.last_change_rates.get(code, 0.0)
+                self.symbols_summary[code] = {
+                    "name": name, 
+                    "price": price, 
+                    "change_rate": chg, 
+                    "volume": 0, 
+                    "ai_signal": "-", 
+                    "holdings": 0, 
+                    "avg_price": 0.0
+                }
+        
+        # 2. 유니버스에 없는 보유 종목 추가
+        for code, qty in self.order_manager.bot_holdings.items():
+            if code and code not in self.symbols_summary:
+                name = self._symbol_names.get(code) or f"{code} (보유)"
+                self.symbols_summary[code] = {
+                    "name": name, 
+                    "price": 0, 
+                    "change_rate": 0.0, 
+                    "volume": 0, 
+                    "ai_signal": "-", 
+                    "holdings": qty, 
+                    "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
+                }
         self._ui_dirty = True
 
     def append_log(self, msg: str):
@@ -230,15 +260,29 @@ class LiveDashboardViewModel(QObject):
         # 1. 전체 총자산 업데이트
         self.sig_balance_updated.emit(balance)
         
-        # 2. 주문 가능 현금 및 리스크 지표 즉시 갱신
+        # 2. 요약 테이블의 보유량, 평균단가, 현재가 강제 갱신
+        for symbol in self.symbols_summary.keys():
+            self.symbols_summary[symbol]["holdings"] = self.order_manager.bot_holdings.get(symbol, 0)
+            self.symbols_summary[symbol]["avg_price"] = self.order_manager.avg_entry_prices.get(symbol, 0.0)
+            
+            # [수정] 실시간 시장가 우선 반영, 없으면 잔고 조회 시 확인된 가격 사용
+            price = self.data_collector.last_prices.get(symbol) or self.order_manager.last_known_prices.get(symbol)
+            if price:
+                self.symbols_summary[symbol]["price"] = price
+        self._ui_dirty = True
+
+        # 3. 주문 가능 현금 및 리스크 지표 즉시 갱신
         if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
             rm = self.order_manager.risk_manager
             per_symbol_limit = rm.get_dynamic_max_invest()
-            pnl = rm.daily_realized_pnl
+            
+            # [수정] 실현 손익과 평가 손익을 구분하여 가져옴
+            realized_pnl = getattr(self.order_manager, 'daily_realized_pnl', 0.0)
+            evaluation_pnl = getattr(self.order_manager, 'daily_evaluation_pnl', 0.0)
             total_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
             
-            # UI로 전달 (손익, 전체 주문 가능 현금, 종목당 한도)
-            self.sig_risk_metrics_updated.emit(pnl, total_cash, per_symbol_limit)
+            # UI로 전달 (실현손익, 평가손익, 전체 주문 가능 현금, 종목당 한도)
+            self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, total_cash, per_symbol_limit)
 
     async def start_polling(self):
         """실전 매매/백테스트 모드에서의 일반 폴링 (1초 주기 자산 갱신)"""
@@ -255,10 +299,12 @@ class LiveDashboardViewModel(QObject):
                 if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
                     rm = self.order_manager.risk_manager
                     per_symbol_limit = rm.get_dynamic_max_invest()
-                    pnl = rm.daily_realized_pnl
+                    # [수정] 실현 손익과 평가 손익을 구분하여 가져옴
+                    realized_pnl = getattr(self.order_manager, 'daily_realized_pnl', 0.0)
+                    evaluation_pnl = getattr(self.order_manager, 'daily_evaluation_pnl', 0.0)
                     total_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
 
-                    self.sig_risk_metrics_updated.emit(pnl, total_cash, per_symbol_limit)
+                    self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, total_cash, per_symbol_limit)
                     self.sig_balance_updated.emit(self.order_manager.current_balance)
             except Exception as e:
                 self.logger.error(f"Polling 중 오류: {e}")
@@ -431,7 +477,8 @@ class AssetDataViewModel(QObject):
         # [최적화] 서버 호출 없이 로컬 캐시 정보만 활용
         new_symbols = []
         
-        for raw_code in symbols:
+        for original_code in symbols:
+            raw_code = str(original_code).split('_')[0].strip()
             # 기본값은 코드명
             stock_name = raw_code 
             
@@ -506,8 +553,9 @@ class AssetDataViewModel(QObject):
         new_symbols = []
         for stock in top_stocks:
             if isinstance(stock, dict) and "code" in stock and "name" in stock:
+                clean_code = str(stock["code"]).split('_')[0].strip()
                 new_symbols.append({
-                    "code": stock["code"], 
+                    "code": clean_code, 
                     "name": stock["name"],
                     "price": stock.get("price", 0.0),
                     "flu_rt": stock.get("flu_rt", 0.0),
