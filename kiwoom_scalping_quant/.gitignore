@@ -10,3 +10,4 @@ modules.xml
 profiles_settings.xml
 pyProjectModel.xml
 vcs.xml
+*.ckpt
