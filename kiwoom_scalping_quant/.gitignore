@@ -2,3 +2,11 @@ __pycache__/
 firebase_key.json
 .env
 .config.env
+venv/
+.idea/
+*.csv
+kw_trade.iml
+modules.xml
+profiles_settings.xml
+pyProjectModel.xml
+vcs.xml
