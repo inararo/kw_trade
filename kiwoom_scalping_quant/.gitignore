@@ -12,3 +12,5 @@ pyProjectModel.xml
 vcs.xml
 *.ckpt
 /config.env
+/tensorboard_logs
+/data
