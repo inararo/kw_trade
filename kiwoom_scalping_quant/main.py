@@ -73,6 +73,12 @@ class QuantSystem:
 
     def _on_universe_ready(self, symbols: list):
         self.universe_ready_event.set()
+        
+        # [신규] 장중 수동 유니버스 갱신 대응
+        # 시스템이 이미 실행 중(is_running)이라면 전략 매니저에게 즉각적인 엔진 및 구독 교체를 요청합니다.
+        if hasattr(self, 'strategy_manager') and self.strategy_manager.is_running:
+            print(f"시스템: 장중 유니버스 수동 갱신 감지 (총 {len(symbols)}개 종목) - 실시간 구독 및 엔진 교체 시작...")
+            asyncio.create_task(self.strategy_manager.update_universe(symbols))
 
     def _on_token_error(self, msg: str):
         if hasattr(self.main_window, 'statusBar'):

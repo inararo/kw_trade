@@ -57,6 +57,21 @@ class OrderManager:
 
         # Safety Guard Risk Manager
         self.risk_manager = None # Will be injected
+        self._sync_lock = asyncio.Lock() # [추가] 잔고 동기화 레이스 컨디션 방지 락
+        self._last_real_sync_time = 0.0  # [추가] 실전 잔고 동기화 쿨타임 체크용
+        self.daily_realized_pnl = 0.0    # [추가] 당일 실현 손익 (리스크 매니저 연동용)
+        
+        # [추가] REST API 주소 설정
+        kiwoom_cfg = self.config.get("kiwoom", {})
+        self.rest_base_url = kiwoom_cfg.get("rest_url", "https://openapi.kiwoom.com:10001")
+
+    def has_unexecuted_orders(self, symbol: str) -> bool:
+        """특정 종목에 대해 아직 체결/취소되지 않은 주문이 있는지 확인합니다."""
+        for order in self.active_orders.values():
+            if order.get('symbol') == symbol and order.get('status') in [OrderState.PENDING, OrderState.ACCEPTED, OrderState.PARTIAL]:
+                if order.get('unexecuted_qty', 0) > 0:
+                    return True
+        return False
 
         # Global Risk Limits (Deprecated in favor of RiskManager)
         self.global_max_loss = config.get("global_max_loss", -500000)

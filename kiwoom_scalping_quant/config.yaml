@@ -7,6 +7,7 @@ cutoff_time: '14:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
 enable_cutoff: true
+enable_universe_update: false
 global_max_exposure: 30000000.0
 global_max_loss: -500000
 influx_bucket: stock_data

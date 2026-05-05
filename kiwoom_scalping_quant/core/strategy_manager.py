@@ -234,6 +234,11 @@ class StrategyManager:
                 clean = orig.split('_')[0]
                 if clean not in protected_symbols:
                     unique_symbols.add(clean)
+            
+            # [추가] 미체결 주문이 있는 종목도 유니버스에 강제 포함
+            for sym in self.symbols:
+                if self.order_manager.has_unexecuted_orders(sym):
+                    unique_symbols.add(sym.split('_')[0])
 
             new_symbols_list = list(unique_symbols)
             current_symbols = list(self.symbols)
@@ -246,7 +251,9 @@ class StrategyManager:
                 if sym not in new_symbols_list:
                     if sym in protected_symbols:
                         self.logger.warning(f"🚫 [보호 종목] {sym} 즉시 제거")
-                    elif sym in self.order_manager.bot_holdings or self.order_manager.holdings.get(sym, 0) > 0:
+                    elif sym in self.order_manager.bot_holdings or \
+                         self.order_manager.holdings.get(sym, 0) > 0 or \
+                         self.order_manager.has_unexecuted_orders(sym):
                         continue
                     
                     to_remove.append(sym)
@@ -291,8 +298,12 @@ class StrategyManager:
                 # 2. 주도주에 없지만 보유 중인 종목 강제 추가
                 for sym, qty in self.order_manager.bot_holdings.items():
                     clean = sym.split('_')[0]
+                    # 잔고가 있거나 미체결이 있는 경우 리스트에 강제 추가
                     if clean not in display_codes and clean not in protected_symbols:
-                        display_universe.append({"code": clean, "name": f"{clean} (보유)", "is_holding": True})
+                        has_unex = self.order_manager.has_unexecuted_orders(clean)
+                        if qty > 0 or has_unex:
+                            label = f"{clean} (보유)" if qty > 0 else f"{clean} (미체결)"
+                            display_universe.append({"code": clean, "name": label, "is_holding": True})
                 
                 live_vm.update_universe_list(display_universe)
 
