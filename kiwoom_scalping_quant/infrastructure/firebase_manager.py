@@ -270,11 +270,6 @@ class FirebaseManager:
     async def get_current_settings(self) -> dict:
         """
         부팅 시 settings/core 도큐먼트의 현재 상태를 1회 읽어옵니다.
-        실시간 리스너 연결 전, 모바일 앱이 설정해 둔 제어 플래그
-        (is_monitoring_active, is_ai_trading_active 등)의 초기값을 확인하는 데 사용합니다.
-
-        Returns:
-            dict: Firestore의 settings/core 현재 데이터 (읽기 실패 시 빈 dict 반환)
         """
         if not self._initialized or not self._db:
             return {}
@@ -289,6 +284,26 @@ class FirebaseManager:
             return {}
         except Exception as e:
             logger.error(f"FirebaseManager: settings/core 초기 읽기 실패 (무시): {e}")
+            return {}
+
+    async def get_engine_status(self) -> dict:
+        """
+        부팅 시 system_status/engine 도큐먼트의 현재 상태를 1회 읽어옵니다.
+        (is_monitoring_active, is_ai_trading_active 등 제어 플래그 확인용)
+        """
+        if not self._initialized or not self._db:
+            return {}
+
+        try:
+            doc_ref = self._db.collection("system_status").document("engine")
+            doc = await asyncio.to_thread(doc_ref.get)
+            if doc.exists:
+                data = doc.to_dict()
+                logger.info(f"FirebaseManager: system_status/engine 부팅 시 현재 상태 읽기 완료 ✅")
+                return data
+            return {}
+        except Exception as e:
+            logger.error(f"FirebaseManager: system_status/engine 초기 읽기 실패 (무시): {e}")
             return {}
 
     async def update_setting_to_remote(self, key: str, value: Any):
@@ -387,8 +402,12 @@ class FirebaseManager:
             return
 
         def on_snapshot(doc_snapshot, changes, read_time):
-            # [신규] 무시할 시스템 필드 목록 (엔진 스스로 업데이트하는 값들)
-            IGNORE_KEYS = ['last_heartbeat', 'engine_status', 'last_updated_by_engine', 'current_state', 'updated_at']
+            # [신규] 무시할 시스템 필드 목록 (엔진 스스로 업데이트하는 값들 및 다른 경로로 이동된 제어 필드)
+            IGNORE_KEYS = [
+                'last_heartbeat', 'engine_status', 'last_updated_by_engine', 
+                'current_state', 'updated_at',
+                'is_monitoring_active', 'is_ai_trading_active' # [이동] system_status/engine에서 별도 관리
+            ]
 
             for doc in doc_snapshot:
                 if doc.exists:
@@ -424,6 +443,31 @@ class FirebaseManager:
             logger.info("FirebaseManager: settings/core 리스너 활성화 ✅")
         except Exception as e:
             logger.error(f"FirebaseManager: settings 리스너 설정 중 오류: {e}")
+
+    def listen_to_engine_status(self, callback_func):
+        """
+        system_status/engine 도큐먼트의 변경사항을 실시간으로 감시합니다.
+        (is_monitoring_active, is_ai_trading_active 등 제어 플래그 전용)
+        """
+        if not self._initialized or not self._db:
+            logger.warning("FirebaseManager: engine status 리스너 비활성 (초기화 실패)")
+            return
+
+        def on_snapshot(doc_snapshot, changes, read_time):
+            for doc in doc_snapshot:
+                if doc.exists:
+                    data = doc.to_dict()
+                    try:
+                        callback_func(data)
+                    except Exception as e:
+                        logger.error(f"FirebaseManager: engine status 콜백 오류: {e}")
+
+        try:
+            doc_ref = self._db.collection("system_status").document("engine")
+            self._status_watcher = doc_ref.on_snapshot(on_snapshot)
+            logger.info("FirebaseManager: system_status/engine 리스너 활성화 ✅")
+        except Exception as e:
+            logger.error(f"FirebaseManager: engine status 리스너 설정 중 오류: {e}")
 
     def listen_to_commands(self, callback_func):
         """

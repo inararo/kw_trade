@@ -193,6 +193,7 @@ class QuantSystem:
             # ── 복합 타입 (리스트/딕셔너리 — Firestore 별도 관리) ────
             "symbols", "universe", "protected_symbols", "global_max_loss",
             "slippage", "seq_len", "initial_balance", "live_trading_model_type",
+            "is_monitoring_active", "is_ai_trading_active", # [이동] system_status/engine으로 이동됨
             "last_updated_by_engine", # 시스템 관리용 타임스탬프 (yaml 저장 제외)
         }
         # config_mgr에서 스칼라(int/float/str/bool) 값만 추려 업로드
@@ -202,10 +203,6 @@ class QuantSystem:
             if key not in _SETTINGS_EXCLUDED_KEYS
             and isinstance(value, (int, float, str, bool))
         }
-        # [제어 플래그 기본값] 첫 설치 시 앱에 기본 ON 상태가 표시되도록 추가
-        # merge=True 적용: 앱에서 이미 변경해 둔 값은 보존됨
-        _default_settings.setdefault("is_monitoring_active", True)
-        _default_settings.setdefault("is_ai_trading_active", True)
 
         asyncio.create_task(
             self.firebase_manager.initialize_default_settings(_default_settings)
@@ -222,16 +219,15 @@ class QuantSystem:
         # 리스너 연결 전 앱이 설정해 둔 is_monitoring_active / is_ai_trading_active 값을
         # 1회 읽어와 엔진 내부 상태를 원격 설정에 맞게 초기화합니다.
         try:
-            boot_settings = await self.firebase_manager.get_current_settings()
-            if boot_settings:
+            engine_status = await self.firebase_manager.get_engine_status()
+            if engine_status:
                 # 종목 감시 초기 상태
-                if boot_settings.get("is_monitoring_active") is False:
-                    logging.warning("[Firebase] 부팅 시 원격 설정: 종목 감시가 OFF 상태입니다. 웹소켓 연결을 건너뜁니다.")
-                    # collector_task는 Step 3에서 생성되므로 플래그만 기록
+                if engine_status.get("is_monitoring_active") is False:
+                    logging.warning("[Firebase] 부팅 시 원격 설정: 종목 감시가 OFF 상태입니다. 웹소켓 연결을 건너뜜.")
                     self._remote_monitoring_off_at_boot = True
 
                 # AI 매매 초기 상태
-                if boot_settings.get("is_ai_trading_active") is False:
+                if engine_status.get("is_ai_trading_active") is False:
                     sm = getattr(config_mgr, "_injected_strategy_manager", None)
                     if sm:
                         sm.set_ai_paused(True)
@@ -373,38 +369,12 @@ class QuantSystem:
                     logging.info(f"[DEBUG] _apply() 수신 데이터: {_k} -> {_v}")
 
                 # ── [제어 플래그 처리] ──────────────────────────────────────────
-                # is_monitoring_active / is_ai_trading_active 는 yaml에 저장하지 않는
-                # 순수 원격 제어 필드이므로, 설정값 동기화보다 먼저 처리하고 제거합니다.
+                # is_monitoring_active / is_ai_trading_active 는 settings/core에서 제거되었습니다.
+                # (system_status/engine 리스너에서 별도로 처리합니다.)
                 _CONTROL_KEYS = {
-                    "is_monitoring_active", "is_ai_trading_active",
                     "last_updated_by_engine", "last_heartbeat", "engine_status",
                     "current_state", "updated_at"
                 }
-
-                # 종목 감시 원격 제어
-                if "is_monitoring_active" in data:
-                    monitoring_active = data["is_monitoring_active"]
-                    logging.info(f"[DEBUG] is_monitoring_active 감지됨: {monitoring_active}")
-                    if monitoring_active:
-                        asyncio.create_task(self.data_collector.start())
-                        logging.info("[Firebase] 📡 원격 명령: 실시간 종목 감시를 재개합니다. (재연결 시도 중...)")
-                    else:
-                        asyncio.create_task(self.data_collector.stop())
-                        logging.warning("[Firebase] 📡 원격 명령: 실시간 종목 감시가 중단되었습니다. (웹소켓 해제)")
-                    # [UI 동기화] 버튼 상태 갱신 — stopped=True가 감시 중단(active=False)
-                    self.live_vm.sig_monitoring_stopped.emit(not monitoring_active)
-
-                # AI 매매 원격 제어
-                if "is_ai_trading_active" in data:
-                    ai_active = data["is_ai_trading_active"]
-                    logging.info(f"[DEBUG] is_ai_trading_active 감지됨: {ai_active}")
-                    sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
-                    if sm:
-                        sm.set_ai_paused(not ai_active)
-                        status = "재개" if ai_active else "일시정지"
-                        logging.info(f"[Firebase] 🤖 원격 명령: AI 매매 의사결정이 {status}되었습니다.")
-                    # [UI 동기화] 버튼 상태 갱신 — paused=True가 AI 정지(active=False)
-                    self.live_vm.sig_trading_paused.emit(not ai_active)
 
                 # ── [설정값 동기화] ──────────────────────────────────────────────
                 # 제어 필드 및 시스템 관리 필드를 제거한 뒤 일반 설정값만 처리합니다.
@@ -430,7 +400,36 @@ class QuantSystem:
 
         self.firebase_manager.listen_to_settings(on_settings_changed)
 
-        # ── 2. 긴급 명령 리스너 ─────────────────────────────────────
+        # ── 2. 엔진 제어 리스너 (is_monitoring_active, is_ai_trading_active) ────
+        def on_engine_status_changed(data: dict):
+            def _apply():
+                # 종목 감시 원격 제어
+                if "is_monitoring_active" in data:
+                    monitoring_active = data["is_monitoring_active"]
+                    if monitoring_active:
+                        if not self.data_collector.is_running:
+                            asyncio.create_task(self.data_collector.start())
+                            logging.info("[Firebase] 📡 원격 명령: 실시간 종목 감시를 재개합니다.")
+                    else:
+                        if self.data_collector.is_running:
+                            asyncio.create_task(self.data_collector.stop())
+                            logging.warning("[Firebase] 📡 원격 명령: 실시간 종목 감시가 중단되었습니다.")
+                    self.live_vm.sig_monitoring_stopped.emit(not monitoring_active)
+
+                # AI 매매 원격 제어
+                if "is_ai_trading_active" in data:
+                    ai_active = data["is_ai_trading_active"]
+                    sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
+                    if sm:
+                        sm.set_ai_paused(not ai_active)
+                        status = "재개" if ai_active else "일시정지"
+                        logging.info(f"[Firebase] 🤖 원격 명령: AI 매매 의사결정이 {status}되었습니다.")
+                    self.live_vm.sig_trading_paused.emit(not ai_active)
+            loop.call_soon_threadsafe(_apply)
+
+        self.firebase_manager.listen_to_engine_status(on_engine_status_changed)
+
+        # ── 3. 긴급 명령 리스너 ─────────────────────────────────────
         def on_command_received(doc_id: str, data: dict):
             """백그라운드 스레드에서 호출됨 → run_coroutine_threadsafe로 코루틴 실행"""
             action = data.get("action", "")
