@@ -903,7 +903,7 @@ class OrderManager:
                     # 응답 텍스트를 먼저 읽어 로깅 (JSON 파싱 에러 대비)
                     res_text = await resp.text()
                     # [디버깅] 잔고 조회 원본 응답을 에러 레벨로 출력하여 강제 확인
-                    self.logger.warning(f"🔍 [잔고 조회 원본 응답] HTTP {resp.status}: {res_text}")
+                    self.logger.debug(f"🔍 [잔고 조회 원본 응답] HTTP {resp.status}: {res_text}")
 
                     if resp.status == 200:
                         try:
@@ -932,7 +932,7 @@ class OrderManager:
                             balance_candidates = ['prsm_dpst_aset_amt', 'tot_evlt_amt', 'tot_asst_amt', 'tot_evlt_amt_outpt', 'evlt_amt_tot']
                             balance = find_val(res_data, balance_candidates) or self.current_balance
                             
-                            self.logger.error(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
+                            self.logger.warning(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
 
                             # 3. 당일 실현 손익 파싱
                             pnl_candidates = ['thdt_dbt_shrt_asst_amt', 'tdy_afr_pnl_amt', 'tot_pnl_amt', 'thst_exca_amt']
@@ -954,7 +954,7 @@ class OrderManager:
                             
                             if cash_val is not None and cash_val > 0:
                                 self._broker_orderable_cash = cash_val
-                                self.logger.error(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
+                                self.logger.warning(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
                             else:
                                 # [핵심 수정] 자동 계산: 예수금 = 총자산 - (총평가금액 - 융자금)
                                 # 사용자의 경우: 8,436,310 - (20,586,750 - 16,054,840) = 3,904,400
@@ -963,8 +963,8 @@ class OrderManager:
                                 calculated_cash = max(0, balance - net_equity_in_stocks)
                                 
                                 self._broker_orderable_cash = calculated_cash
-                                self.logger.error(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
-                                self.logger.error(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
+                                self.logger.warning(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
+                                self.logger.warning(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
 
                             # 5. 보유 종목 (Holdings) 파싱
                             holdings_list = res_data.get('output2') or res_data.get('items') or res_data.get('acnt_evlt_remn_indv_tot') or []
