@@ -64,9 +64,9 @@ class FirebaseManager:
                 key_path = os.path.join(root_dir, "firebase_key.json")
 
             if not os.path.exists(key_path):
-                logger.warning(
-                    f"FirebaseManager: 키 파일을 찾을 수 없습니다 ({key_path}). "
-                    "Firestore 연동이 비활성화됩니다."
+                logger.error(
+                    f"❌ FirebaseManager: 키 파일을 찾을 수 없습니다 ({key_path}). "
+                    "Firestore 연동이 비활성화됩니다. (파일 존재 여부를 확인하세요)"
                 )
                 return
 
@@ -80,7 +80,7 @@ class FirebaseManager:
             # 3. Firestore 클라이언트 생성
             self._db = firestore.client()
             self._initialized = True
-            logger.info("FirebaseManager: Firestore 초기화 성공 ✅")
+            logger.error("✅ FirebaseManager: Firestore 초기화 성공! (연동 활성화)")
 
         except ImportError:
             logger.warning(
@@ -144,7 +144,7 @@ class FirebaseManager:
                         (symbol, type, price, quantity, profit_loss 등 포함)
         """
         if not self._initialized:
-            logger.error("FirebaseManager: 초기화되지 않아 로그를 전송할 수 없습니다.")
+            logger.error("❌ FirebaseManager: 초기화되지 않아 로그를 전송할 수 없습니다. (_initialized=False)")
             return
         if not self._db:
             logger.error("FirebaseManager: DB 연결(Firestore)이 없어 로그를 전송할 수 없습니다.")
@@ -157,7 +157,7 @@ class FirebaseManager:
         
         # 2. 전송 데이터 복사 (원본 딕셔너리 변조 방지)
         doc_data = trade_data.copy()
-        logger.error(f"📤 [Firestore Payload] {doc_data}")
+        logger.error(f"📤 [Firestore 업로드 시도] Payload: {doc_data}")
 
         try:
             # 3. asyncio.to_thread를 사용하여 블로킹 방지 (SDK가 동기 방식이므로 필수)

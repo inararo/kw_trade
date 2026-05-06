@@ -30,6 +30,7 @@ class OrderManager:
         self.notifier = telegram_notifier
         self.firebase_manager = firebase_manager  # [Firebase] Firestore 연동 매니저
         self.logger = logging.getLogger("OrderManager")
+        self.logger.error(f"🛠️ [OrderManager] 초기화 완료 (FirebaseManager 주입 여부: {self.firebase_manager is not None})")
         self.signals = OrderSignals()
 
         # 고유 주문 ID(내부)를 키로, 상태 딕셔너리를 값으로 가지는 중앙 추적기
@@ -68,18 +69,23 @@ class OrderManager:
         self.daily_realized_pnl = 0.0    # 당일 매도 확정 손익 (실현)
         self.daily_evaluation_pnl = 0.0  # 현재 보유 종목 평가 손익 (미실현)
         
-        # [추가] REST API 주소 설정
-        kiwoom_cfg = self.config.get("kiwoom", {})
-        self.rest_base_url = kiwoom_cfg.get("rest_url", "https://openapi.kiwoom.com:10001")
+        # [수정] 키움 REST API Base URL 설정 (config.yaml 기반)
+        # 1순위: kiwoom.rest_base_url.real/virtual
+        # 2순위: kiwoom.rest_url (레거시 지원)
+        # 3순위: 하드코딩된 기본값
+        kiwoom_cfg = config.get("kiwoom", {})
+        trading_mode = kiwoom_cfg.get("trading_mode", "real")
+        
+        base_url_config = kiwoom_cfg.get("rest_base_url")
+        if isinstance(base_url_config, dict):
+            self.rest_base_url = base_url_config.get(trading_mode, "https://api.kiwoom.com")
+        else:
+            self.rest_base_url = base_url_config or kiwoom_cfg.get("rest_url", "https://api.kiwoom.com")
+            
+        self.logger.info(f"🚀 [REST API] 설정된 서버 주소 ({trading_mode} 모드): {self.rest_base_url}")
         
         # [추가] 실전 잔고 상태 및 쿨다운 관리 변수
-        self._broker_orderable_cash = 0.0
-        self.pending_buy_amount = 0.0
         self._last_sell_fill_time: Dict[str, float] = {}  # 매도 직후 API 지연 방어용
-        self._last_real_sync_time = 0.0
-        self.last_sync_time = 0.0
-        self.active_orders: Dict[str, Dict[str, Any]] = {}
-        self.last_known_prices: Dict[str, float] = {}
 
         # [추가] 주문 제한(Throttling) 관련
         self.rate_limit = config.get("rate_limit", 5)
@@ -101,7 +107,10 @@ class OrderManager:
     @property
     def orderable_cash(self) -> float:
         """내부 예약 금액을 제외한 실제 가용 현금"""
-        return max(0, self._broker_orderable_cash - self.pending_buy_amount)
+        val = max(0, self._broker_orderable_cash - self.pending_buy_amount)
+        if val <= 0 and self._broker_orderable_cash > 0:
+            self.logger.warning(f"⚠️ 주문 가능 현금이 0입니다. (Broker: {self._broker_orderable_cash:,.0f}, Pending: {self.pending_buy_amount:,.0f})")
+        return val
 
     def get_balance(self) -> float:
         """현재 가용 잔고를 반환합니다."""
@@ -152,10 +161,12 @@ class OrderManager:
         orig_order_no가 있으면 정정/취소 주문으로 간주.
         """
         # [안전장치] 모든 주문 가격을 유효한 호가 단위(Tick Size)로 강제 보정
-        # 시장가(price=0)인 경우는 get_valid_tick_price에서 0을 반환함
         original_price = price
         price = get_valid_tick_price(float(price), order_type)
         
+        # [핵심] 키움 REST API는 순수 숫자 종목 코드만 허용함
+        clean_symbol = symbol.split('_')[0].strip()
+
         if original_price != price and original_price != 0:
             self.logger.warning(f"⚠️ 주문 가격 보정 발생: {original_price} -> {price} (호가 단위 준수)")
 
@@ -216,7 +227,15 @@ class OrderManager:
 
             # [내부 예약] 매수 주문 시 가용 현금에서 즉시 차감 (Race Condition 방지)
             if order_type == "BUY":
-                order_amt = price * qty
+                # 시장가(price=0)인 경우 현재가 또는 마지막 확인가로 예약금 추정
+                calc_price = price if price > 0 else self.last_known_prices.get(clean_symbol, 0)
+                if calc_price <= 0:
+                    # 현재가 정보도 없는 경우(부팅 직후 등) 안전을 위해 0으로 두거나 에러 처리
+                    # 여기서는 0으로 두되 로그 출력
+                    self.logger.warning(f"⚠️ {clean_symbol} 시장가 주문 예약금 추정 실패 (현재가 정보 없음)")
+                
+                order_amt = calc_price * qty
+                self.active_orders[internal_id]['reserved_amt'] = order_amt
                 self.pending_buy_amount += order_amt
                 self.logger.debug(f"주문 예약: +{order_amt:,.0f} (총 예약: {self.pending_buy_amount:,.0f})")
 
@@ -255,6 +274,7 @@ class OrderManager:
                 # trde_tp: '0'=지정가, '3'=시장가
                 trde_tp = '0' if price > 0 else '3'
                 body = {
+                    "cano":         str(account_no),
                     "dmst_stex_tp": 'KRX',  # 국내거래소 구분 필수, 예시로 KRX 고정
                     "stk_cd":       clean_symbol,
                     "ord_qty":      str(qty),
@@ -266,6 +286,7 @@ class OrderManager:
                 api_id = 'kt10001'
                 trde_tp = '0' if price > 0 else '3'
                 body = {
+                    "cano":         str(account_no),
                     "dmst_stex_tp": 'KRX',
                     "stk_cd":       clean_symbol,
                     "ord_qty":      str(qty),
@@ -276,6 +297,7 @@ class OrderManager:
             elif order_type == "REPLACE":
                 api_id = 'kt10002'
                 body = {
+                    "cano":          str(account_no),
 					"dmst_stex_tp": 'KRX',
                     "orig_ord_no":   str(orig_order_no),
                     "stk_cd":        clean_symbol,
@@ -287,6 +309,7 @@ class OrderManager:
             elif order_type == "CANCEL":
                 api_id = 'kt10003'
                 body = {
+                    "cano":        str(account_no),
 					"dmst_stex_tp": 'KRX',
                     "orig_ord_no": str(orig_order_no),
                     "stk_cd":      clean_symbol,
@@ -311,7 +334,7 @@ class OrderManager:
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        endpoint, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=5.0)
+                        endpoint, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=10.0)
                     ) as resp:
                         res_data = await resp.json(content_type=None)
 
@@ -360,7 +383,7 @@ class OrderManager:
                             raise Exception(f"KIWOOM_ORDER_REJECTED: {return_msg}")
 
             except asyncio.TimeoutError:
-                self.logger.error(f"⏰ 키움 API 응답 타임아웃 (5초 초과)! ID: {internal_id}")
+                self.logger.error(f"⏰ 키움 API 응답 타임아웃 (10초 초과)! ID: {internal_id}")
                 self.active_orders[internal_id]['status'] = OrderState.FAILED
                 self.active_orders[internal_id]['ack_event'].set()
                 # [내부 예약 해제]
@@ -447,7 +470,7 @@ class OrderManager:
             }
             self.on_receive_chejan_data(mock_chejan)
 
-    def on_receive_chejan_data(self, data: Dict[str, Any]):
+    async def on_receive_chejan_data(self, data: Dict[str, Any]):
         """
         키움 웹소켓(또는 REST 폴링)에서 수신된 실시간 체결/잔고 데이터 파싱.
         """
@@ -479,6 +502,15 @@ class OrderManager:
             self.broker_id_map[broker_id] = internal_id
             order['ack_event'].set() # 타임아웃 해제
             self.logger.info(f"브로커 접수 완료. (Broker ID: {broker_id})")
+
+            # [핵심 수정] 접수 완료 시 내부 예약금 즉시 해제 (브로커가 이미 차감함)
+            if order['type'] == 'BUY':
+                reserved = order.get('reserved_amt', 0)
+                # 이미 해제되었을 수도 있으므로(recalculate 등) 체크 후 차감
+                if reserved > 0:
+                    self.pending_buy_amount = max(0, self.pending_buy_amount - reserved)
+                    self.logger.info(f"💰 [예약 해제] 접수 확인으로 인한 예약금 해제: -{reserved:,.0f} (남은 예약: {self.pending_buy_amount:,.0f})")
+                    order['reserved_amt'] = 0 # 중복 해제 방지
 
             # [Firebase] 주문 접수 로그 전송 (연동 확인용)
             if self.firebase_manager:
@@ -514,6 +546,11 @@ class OrderManager:
                 # 봇이 진입한 수량 추가
                 self.bot_holdings[symbol] = self.bot_holdings.get(symbol, 0) + exec_qty
                 
+                # [실시간 반영] 가용 현금 차감
+                exec_amt = exec_qty * exec_price
+                self._broker_orderable_cash -= exec_amt
+                self.current_balance -= exec_amt
+                
                 # 데이터 영구 저장
                 self._save_bot_holdings()
 
@@ -527,6 +564,11 @@ class OrderManager:
 
                 # 데이터 영구 저장
                 self._save_bot_holdings()
+
+                # [실시간 반영] 가용 현금 가산 및 총자산 갱신
+                exec_amt = exec_qty * exec_price
+                self._broker_orderable_cash += exec_amt
+                self.current_balance += exec_amt
 
                 # 체결가 기반으로 daily_realized_pnl 업데이트
                 realized_profit = (exec_price - self.avg_entry_prices[symbol]) * exec_qty
@@ -552,15 +594,22 @@ class OrderManager:
                     self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
                     self.handle_partial_fill(order)
                 
-                # [내부 예약 해제]
-                if order['type'] == 'BUY':
-                    reserved = order.get('reserved_amt', 0)
-                    self.pending_buy_amount = max(0, self.pending_buy_amount - reserved)
-                    self.logger.debug(f"예약 해제(체결): -{reserved:,.0f} (남은 예약: {self.pending_buy_amount:,.0f})")
-            else:
+            # [내부 예약 해제] - 체결 시점 (접수 단계에서 이미 해제되지 않은 경우만)
+            if order['type'] == 'BUY' and exec_qty > 0:
+                total_qty = order.get('qty', 1)
+                total_reserved = order.get('reserved_amt', 0)
+                
+                if total_reserved > 0:
+                    release_amt = (exec_qty / total_qty) * total_reserved
+                    self.pending_buy_amount = max(0, self.pending_buy_amount - release_amt)
+                    order['reserved_amt'] = max(0, total_reserved - release_amt)
+                    self.logger.debug(f"예약 해제(체결): -{release_amt:,.0f} (남은 예약: {self.pending_buy_amount:,.0f})")
+
+            # 부분 체결 시 상태 업데이트 (SELL 외 타입 대응)
+            if order['status'] not in [OrderState.FILLED, OrderState.CANCELLED, OrderState.FAILED] and order['unexecuted_qty'] > 0:
                 order['status'] = OrderState.PARTIAL
-                self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
-                self.handle_partial_fill(order)
+                if order['type'] != 'SELL': # SELL은 위에서 이미 처리함
+                    self.handle_partial_fill(order)
 
             # 텔레그램 알림 발송 (체결 시)
             if self.notifier:
@@ -586,6 +635,7 @@ class OrderManager:
 
             # [Firebase] 체결 로그 Firestore 전송 (테스트 스키마와 통합)
             if self.firebase_manager:
+                self.logger.error(f"🚀 [Firebase] 전송 로직 진입 ({symbol})")
                 # 1. 추가 정보 수집
                 symbol_name = symbol
                 universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
@@ -609,7 +659,11 @@ class OrderManager:
                 }
 
                 # 3. 비동기 업로드
-                asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
+                if self.firebase_manager:
+                    self.logger.error(f"📤 [Firebase 전송 시도] {symbol} {order['type']} {exec_qty}주 @ {exec_price}")
+                    asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
+                else:
+                    self.logger.error(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
 
         elif msg_type == '취소확인':
             order['status'] = OrderState.CANCELLED
@@ -618,8 +672,10 @@ class OrderManager:
             # [내부 예약 해제]
             if order['type'] == 'BUY':
                 reserved = order.get('reserved_amt', 0)
-                self.pending_buy_amount = max(0, self.pending_buy_amount - reserved)
-                self.logger.debug(f"예약 해제(취소): -{reserved:,.0f} (남은 예약: {self.pending_buy_amount:,.0f})")
+                if reserved > 0:
+                    self.pending_buy_amount = max(0, self.pending_buy_amount - reserved)
+                    self.logger.debug(f"예약 해제(취소): -{reserved:,.0f} (남은 예약: {self.pending_buy_amount:,.0f})")
+                    order['reserved_amt'] = 0
                 
             self.logger.info(f"주문 취소 완료. (Broker ID: {broker_id})")
 
@@ -783,6 +839,7 @@ class OrderManager:
         }
         # qry_tp: 2(개별), dmst_stex_tp: KRX(한국거래소)
         body = {
+            "cano": str(account_no),
             "qry_tp": "2",
             "dmst_stex_tp": "KRX"
         }
@@ -796,13 +853,7 @@ class OrderManager:
             except: return 0.0
 
         try:
-            # URL 설정 보정 (config.yaml: kiwoom.rest_base_url.real)
-            kiwoom_cfg = self.config.get("kiwoom", {})
-            base_url = self.rest_base_url
-            if isinstance(kiwoom_cfg.get("rest_base_url"), dict):
-                base_url = kiwoom_cfg["rest_base_url"].get("real", base_url)
-            
-            endpoint = f"{base_url}/api/dostk/acnt"
+            endpoint = f"{self.rest_base_url}/api/dostk/acnt"
             self.logger.debug(f"[DEBUG] 잔고 조회 요청: {endpoint} | Body: {body}")
             
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
@@ -810,7 +861,8 @@ class OrderManager:
                 async with session.post(endpoint, json=body, headers=headers, timeout=10.0) as resp:
                     # 응답 텍스트를 먼저 읽어 로깅 (JSON 파싱 에러 대비)
                     res_text = await resp.text()
-                    self.logger.debug(f"[DEBUG] 잔고 조회 원본 응답 ({resp.status}): {res_text}")
+                    # [디버깅] 잔고 조회 원본 응답을 에러 레벨로 출력하여 강제 확인
+                    self.logger.error(f"🔍 [잔고 조회 원본 응답] HTTP {resp.status}: {res_text}")
 
                     if resp.status == 200:
                         try:
@@ -820,62 +872,71 @@ class OrderManager:
                             return None
                         
                         if str(res_data.get('return_code')) == '0':
-                            target = res_data 
-                            
+                            # [안정화] 응답 데이터의 계층 구조를 유연하게 탐색하기 위해 검색 함수 정의
+                            def find_val(data, keys):
+                                if isinstance(data, dict):
+                                    for k in keys:
+                                        if k in data and data[k] is not None:
+                                            return safe_float(data[k])
+                                    for v in data.values():
+                                        res = find_val(v, keys)
+                                        if res is not None: return res
+                                elif isinstance(data, list):
+                                    for item in data:
+                                        res = find_val(item, keys)
+                                        if res is not None: return res
+                                return None
+
                             # 2. 총 자산 (Equity) 파싱
-                            balance_candidates = ['prsm_dpst_aset_amt', 'tot_evlt_amt', 'tot_asst_amt']
-                            balance = self.current_balance
-                            for key in balance_candidates:
-                                raw_val = target.get(key)
-                                val = safe_float(raw_val)
-                                if raw_val is not None and val > 0:
-                                    balance = val
-                                    self.logger.debug(f"[DEBUG] 자산 추출 성공: {balance:,.0f} (Key: {key})")
-                                    break
+                            balance_candidates = ['prsm_dpst_aset_amt', 'tot_evlt_amt', 'tot_asst_amt', 'tot_evlt_amt_outpt', 'evlt_amt_tot']
+                            balance = find_val(res_data, balance_candidates) or self.current_balance
                             
-                            # 3. 손익 파싱 (평가손익 vs 실현손익 분리)
-                            # tot_evlt_pl은 전체 보유 종목의 총 평가손익 (미실현)
-                            self.daily_evaluation_pnl = safe_float(target.get('tot_evlt_pl'))
+                            self.logger.error(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
+
+                            # 3. 당일 실현 손익 파싱
+                            pnl_candidates = ['thdt_dbt_shrt_asst_amt', 'tdy_afr_pnl_amt', 'tot_pnl_amt', 'thst_exca_amt']
+                            daily_pnl = find_val(res_data, pnl_candidates) or 0.0
+                            if daily_pnl != 0:
+                                self.daily_realized_pnl = daily_pnl
                             
-                            # thst_exca_amt 또는 별도 필드가 있다면 실현손익으로 간주 (없으면 기존 유지)
-                            realized_val = target.get('thst_exca_amt') or target.get('tdy_pnl_amt')
-                            if realized_val is not None:
-                                self.daily_realized_pnl = safe_float(realized_val)
-                            
-                            self.logger.debug(f"[DEBUG] 손익 정보: 평가 {self.daily_evaluation_pnl:,.0f} | 실현 {self.daily_realized_pnl:,.0f}")
+                            # 평가 손익 파싱
+                            evlt_pnl = find_val(res_data, ['tot_evlt_pl', 'evlt_pnl_amt']) or 0.0
+                            self.daily_evaluation_pnl = evlt_pnl
+
+                             # [신규] 융자/대출금 파싱 (신용 계좌 대응)
+                            loan_amt = find_val(res_data, ['tot_crd_loan_amt', 'tot_loan_amt', 'crd_loan_amt']) or 0.0
 
                             # 4. 실제 주문 가능 현금 (Orderable Cash)
-                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt']
-                            cash_val = 0.0
-                            for key in cash_candidates:
-                                raw_val = target.get(key)
-                                val = safe_float(raw_val)
-                                if raw_val is not None and val > 0: 
-                                    cash_val = val
-                                    self.logger.debug(f"[DEBUG] 현금 추출 성공: {cash_val:,.0f} (Key: {key})")
-                                    break
+                            # 후보 필드들: puse_amt(주문가능), dnca_tot_amt(예수금), d2_dpst_amt(D+2예수금)
+                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt', 'n_ord_psbl_amt', 'dnca_tot_amt']
+                            cash_val = find_val(res_data, cash_candidates)
                             
-                            if cash_val > 0:
+                            if cash_val is not None and cash_val > 0:
                                 self._broker_orderable_cash = cash_val
+                                self.logger.error(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
                             else:
-                                # 자동 계산: 추정예탁자산 - 총평가금액 (또는 총매입금액)
-                                tot_evlt_amt = safe_float(target.get('tot_evlt_amt'))
-                                self._broker_orderable_cash = max(0, balance - tot_evlt_amt)
+                                # [핵심 수정] 자동 계산: 예수금 = 총자산 - (총평가금액 - 융자금)
+                                # 사용자의 경우: 8,436,310 - (20,586,750 - 16,054,840) = 3,904,400
+                                tot_evlt_amt = find_val(res_data, ['tot_evlt_amt', 'evlt_amt_tot']) or 0.0
+                                net_equity_in_stocks = max(0, tot_evlt_amt - loan_amt)
+                                calculated_cash = max(0, balance - net_equity_in_stocks)
+                                
+                                self._broker_orderable_cash = calculated_cash
+                                self.logger.error(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
+                                self.logger.error(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
 
-                            self.logger.debug(f"증권사 확인 현금: {self._broker_orderable_cash:,.0f} 원")
-
-                            # 5. 보유 종목 동기화 (명세서: acnt_evlt_remn_indv_tot)
-                            holdings_list = target.get('acnt_evlt_remn_indv_tot') or target.get('output2') or target.get('items') or []
+                            # 5. 보유 종목 (Holdings) 파싱
+                            holdings_list = res_data.get('output2') or res_data.get('items') or res_data.get('acnt_evlt_remn_indv_tot') or []
                             
-                            # 추가 후보군 확인 (계층 구조가 있는 경우 대응)
+                            # 계층 구조가 더 깊은 경우 전체 탐색
                             if not holdings_list:
                                 for out_key in ['output', 'output2', 'items']:
-                                    out_data = res_data.get(out_key)
-                                    if isinstance(out_data, dict):
-                                        holdings_list = out_data.get('acnt_evlt_remn_indv_tot') or out_data.get('items') or []
+                                    sub = res_data.get(out_key)
+                                    if isinstance(sub, dict):
+                                        holdings_list = sub.get('output2') or sub.get('items') or []
                                         if holdings_list: break
-                                    elif isinstance(out_data, list):
-                                        holdings_list = out_data
+                                    elif isinstance(sub, list):
+                                        holdings_list = sub
                                         break
                             
                             new_holdings = {}
@@ -930,6 +991,9 @@ class OrderManager:
                                     
                             self.logger.info(f"📊 잔고 동기화 완료: 총자산 {balance:,.0f}원 | 실현손익 {self.daily_realized_pnl:,.0f}원 | 평가손익 {self.daily_evaluation_pnl:,.0f}원 | 가용현금 {self._broker_orderable_cash:,.0f}원")
                             
+                            # [추가] 잔고 동기화 시 예약금 자동 교정
+                            self.recalculate_pending_amount()
+                            
                             return balance
                         else:
                             self.logger.error(f"잔고 조회 API 오류: {res_data.get('return_msg')}")
@@ -944,6 +1008,24 @@ class OrderManager:
             self.logger.error(traceback.format_exc())
             
         return None
+
+    def recalculate_pending_amount(self):
+        """
+        현재 활성 주문 상태를 기반으로 pending_buy_amount를 재계산하여 정합성을 맞춥니다.
+        브로커에 아직 도달하지 않은(PENDING) 주문들의 금액만 합산합니다.
+        """
+        new_pending = 0.0
+        pending_count = 0
+        for internal_id, order in self.active_orders.items():
+            if order['type'] == 'BUY' and order['status'] == OrderState.PENDING:
+                new_pending += order.get('reserved_amt', 0)
+                pending_count += 1
+        
+        old_pending = self.pending_buy_amount
+        self.pending_buy_amount = new_pending
+        
+        if abs(old_pending - new_pending) > 1:
+            self.logger.info(f"🔄 [예약금 교정] {old_pending:,.0f} -> {new_pending:,.0f} (미확정 주문: {pending_count}건)")
 
     async def sync_balance(self, force: bool = False):
         """

@@ -280,6 +280,7 @@ class LiveDashboardViewModel(QObject):
             realized_pnl = getattr(self.order_manager, 'daily_realized_pnl', 0.0)
             evaluation_pnl = getattr(self.order_manager, 'daily_evaluation_pnl', 0.0)
             total_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
+            self.logger.info(f"💰 [UI_UPDATE] 잔고 동기화 반영: 가용현금={total_cash:,.0f} | 총자산={balance:,.0f}")
             
             # UI로 전달 (실현손익, 평가손익, 전체 주문 가능 현금, 종목당 한도)
             self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, total_cash, per_symbol_limit)
