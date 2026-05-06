@@ -2,10 +2,19 @@ import sys
 import os
 import asyncio
 import yaml
+import logging
+import json
+import traceback
+import time
+import warnings
+from datetime import datetime
 from dotenv import load_dotenv
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QObject, QEvent
 from qasync import QEventLoop
+
+# [안정화] Gymnasium action_masks 경고 억제 (로그 도배 방지)
+warnings.filterwarnings("ignore", message=".*env.action_masks to get variables from other wrappers is deprecated.*")
 
 from core.container import Container
 from core.scheduler import MarketState

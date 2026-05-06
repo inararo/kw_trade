@@ -1,11 +1,16 @@
 import os
 import datetime
+import warnings
 import numpy as np
 from typing import Dict, Any, Optional
 from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 import gymnasium as gym
+
+# [안정화] Gymnasium 0.26+ 버전의 action_masks 관련 반복 경고 억제
+# sb3-contrib 내부에서 발생하는 하위 호환성 경고가 로그를 도배하는 것을 방지합니다.
+warnings.filterwarnings("ignore", message=".*env.action_masks to get variables from other wrappers is deprecated.*")
 
 from models.lstm_extractor import LSTMExtractor
 

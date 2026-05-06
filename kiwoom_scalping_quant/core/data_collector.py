@@ -45,6 +45,7 @@ class DataCollector:
 
         # Connection and state events
         self.ws_connected_event = asyncio.Event()
+        self.login_success_event = asyncio.Event()
         self.first_data_received_event = asyncio.Event()
 
         # Config에서 초기 심볼 등록 (start 시점에 구독하기 위해 저장만 함)
@@ -98,20 +99,27 @@ class DataCollector:
             self.tick_buffers[symbol] = deque(maxlen=self.max_buffer_size)
             self.min1_buffers[symbol] = deque(maxlen=self.max_buffer_size // 10)
 
-        if self.is_running and self.ws_connection:
-            # 키움 REST API 실전 규격 (type과 item 모두 배열 형식 필수)
-            msg = json.dumps({
-                "trnm": "REG",
-                "grp_no": "1",
-                "refresh": "0", # 0: 실시간 추가 구독, 1: 기존 구독 해제 후 신규 구독
-                "data": [
-                    {"type": ["0B"], "item": [clean_symbol]}, # 0B: 주식체결
-                    {"type": ["0D"], "item": [clean_symbol]}  # 0D: 호가잔량
-                ]
-            })
-            await self.ws_connection.send(msg)
-            # 서버 부하 및 Windows 소켓 버퍼 오버플로우 방지 지연 (0.2 -> 0.3초)
-            await asyncio.sleep(0.3)
+        # [안정화] 연결 및 로그인 상태 확인 후 메시지 전송
+        if self.is_running and self.ws_connection and self.ws_connection.open:
+            try:
+                # 로그인 완료 대기 (최대 10초)
+                await asyncio.wait_for(self.login_success_event.wait(), timeout=10.0)
+                
+                # 키움 REST API 실전 규격 (type과 item 모두 배열 형식 필수)
+                msg = json.dumps({
+                    "trnm": "REG",
+                    "grp_no": "1",
+                    "refresh": "0", # 0: 실시간 추가 구독, 1: 기존 구독 해제 후 신규 구독
+                    "data": [
+                        {"type": ["0B"], "item": [clean_symbol]}, # 0B: 주식체결
+                        {"type": ["0D"], "item": [clean_symbol]}  # 0D: 호가잔량
+                    ]
+                })
+                await self.ws_connection.send(msg)
+                # 서버 부하 및 Windows 소켓 버퍼 오버플로우 방지 지연 (0.2 -> 0.3초)
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                self.logger.warning(f"DataCollector: 개별 구독 전송 실패 (나중에 재연결 시 자동 처리됨): {e}")
 
         return True
 
@@ -123,22 +131,29 @@ class DataCollector:
         clean_symbol = symbol
 
         # 백그라운드 웹소켓이 동작 중이면 실시간 구독 해제 메시지 발송
-        if self.is_running and self.ws_connection:
-            msg = json.dumps({
-                "trnm": "UNREG",
-                "data": [
-                    {"type": ["0B"], "item": [clean_symbol]},
-                    {"type": ["0D"], "item": [clean_symbol]}
-                ]
-            })
-            await self.ws_connection.send(msg)
-            await asyncio.sleep(0.1)
+        if self.is_running and self.ws_connection and self.ws_connection.open:
+            try:
+                # 로그인 완료 대기
+                await asyncio.wait_for(self.login_success_event.wait(), timeout=5.0)
+                
+                msg = json.dumps({
+                    "trnm": "UNREG",
+                    "data": [
+                        {"type": ["0B"], "item": [clean_symbol]},
+                        {"type": ["0D"], "item": [clean_symbol]}
+                    ]
+                })
+                await self.ws_connection.send(msg)
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                self.logger.warning(f"DataCollector: 개별 구독 해제 전송 실패: {e}")
 
     async def update_subscriptions(self, to_add: List[str], to_remove: List[str]):
         """
         [최적화] 장중 유니버스 교체 시 다수의 종목을 일괄적으로 구독 해제 및 등록합니다.
         """
-        if not self.is_running or not self.ws_connection:
+        # [안정화] 연결이 없거나 닫힌 경우 관리자 상태만 업데이트
+        if not self.is_running or not self.ws_connection or not self.ws_connection.open:
             # 연결 전이면 관리자에게만 반영 (나중에 start 시점에 일괄 처리됨)
             for sym in to_remove: self.subscription_manager.remove_symbol(sym)
             for sym in to_add: 
@@ -161,9 +176,14 @@ class DataCollector:
                     {"type": ["0D"], "item": clean_removes}
                 ]
             })
-            await self.ws_connection.send(msg)
-            self.logger.info(f"DataCollector: {len(clean_removes)}개 종목 일괄 구독 해제 전송")
-            await asyncio.sleep(0.5)
+            try:
+                # 로그인 성공 대기 (인증 전 메시지 발송으로 인한 끊김 방지)
+                await asyncio.wait_for(self.login_success_event.wait(), timeout=10.0)
+                await self.ws_connection.send(msg)
+                self.logger.info(f"DataCollector: {len(clean_removes)}개 종목 일괄 구독 해제 전송")
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                self.logger.error(f"DataCollector: UNREG 전송 중 오류 발생: {e}")
 
         # 2. 일괄 등록 (REG)
         if to_add:
@@ -183,9 +203,14 @@ class DataCollector:
                         {"type": ["0D"], "item": clean_adds}
                     ]
                 })
-                await self.ws_connection.send(msg)
-                self.logger.info(f"DataCollector: {len(clean_adds)}개 종목 일괄 구독 등록 전송")
-                await asyncio.sleep(0.5)
+                try:
+                    # 로그인 성공 대기
+                    await asyncio.wait_for(self.login_success_event.wait(), timeout=10.0)
+                    await self.ws_connection.send(msg)
+                    self.logger.info(f"DataCollector: {len(clean_adds)}개 종목 일괄 구독 등록 전송")
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    self.logger.error(f"DataCollector: REG 전송 중 오류 발생: {e}")
 
         # 3. 맵 갱신 및 워치독 타이머 리셋 (재연결 방지)
         self._update_symbol_map()
@@ -209,6 +234,7 @@ class DataCollector:
         self.logger.info(f"DataCollector: 수집을 시작합니다. (등록된 체결 콜백: {len(self.on_execution_callbacks)}개)")
         # 상태 이벤트 초기화
         self.ws_connected_event.clear()
+        self.login_success_event.clear()
         self.first_data_received_event.clear()
         
         # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스와 기존 등록된 종목(보유 종목 등)을 병합합니다.
@@ -261,137 +287,145 @@ class DataCollector:
             headers["authorization"] = f"Bearer {token}"
             self.logger.info("웹소켓 인증 헤더(Bearer Token)를 포함하여 연결합니다.")
 
-        async with websockets.connect(self.ws_url, extra_headers=headers) as websocket:
-            self.ws_connection = websocket
-            self.ws_connected_event.set()
-            
-            # [안정화] 연결 성공 시 Circuit Breaker 해제 및 타이머 초기화 (무한 재연결 방지)
-            self.circuit_breaker_active = False
-            self.last_receive_time = time.time()
-            
-            self.logger.info("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
+        # [안정화] 연결 루프 진입 시 이벤트 초기화
+        self.ws_connected_event.clear()
+        self.login_success_event.clear()
+        self.ws_connection = None
 
-            # [Step 1] 웹소켓 로그인 인증 요청
-            await websocket.send(json.dumps({
-                "trnm": "LOGIN",
-                "token": token
-            }))
-            self.logger.info("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
-            
-            # [Handshake] LOGIN 응답 수신 대기 (중요: 응답 확인 후 구독 진행)
-            login_success = False
-            try:
-                first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
-                login_res = json.loads(first_msg)
-                if str(login_res.get("return_code")) == "0" or login_res.get("return_code") == 0:
-                    self.logger.info(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
-                    login_success = True
-                else:
-                    self.logger.error(
-                        f"LOGIN Auth Failed: {login_res.get('return_msg')} "
-                        f"(Code: {login_res.get('return_code')}) "
-                        f"-> Requesting token refresh and waiting for reconnect"
-                    )
-                    # [Token Auth Failure] Refresh token via config.token_manager
-                    token_mgr = getattr(self.config, '_token_manager', None) or getattr(self.config, 'token_manager', None)
-                    if token_mgr and hasattr(token_mgr, 'refresh_token'):
-                        self.logger.error("LOGIN Failed: Attempting to refresh token...")
-                        await token_mgr.refresh_token()
-                        await asyncio.sleep(3.0)  # Wait for server processing
-                    else:
-                        await asyncio.sleep(10.0)  # Wait 10s if no manager
-                    return  # Terminate ws context -> Auto reconnection loop
-            except Exception as e:
-                self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
-                return
+        try:
+            async with websockets.connect(self.ws_url, extra_headers=headers) as websocket:
+                self.ws_connection = websocket
+                self.ws_connected_event.set()
+                
+                # [안정화] 연결 성공 시 Circuit Breaker 해제 및 타이머 초기화 (무한 재연결 방지)
+                self.circuit_breaker_active = False
+                self.last_receive_time = time.time()
+                
+                self.logger.info("WebSocket 연결 성공. 인증(LOGIN)을 시도합니다.")
 
-            # LOGIN 성공 시에만 구독 진행
-            if not login_success:
-                return
-
-            symbols = self.subscription_manager.get_symbols()
-            if symbols:
-                self.logger.info(f"초기 종목 {len(symbols)}개에 대해 일괄 구독(Batch)을 시작합니다.")
+                # [Step 1] 웹소켓 로그인 인증 요청
+                await websocket.send(json.dumps({
+                    "trnm": "LOGIN",
+                    "token": token
+                }))
+                self.logger.info("LOGIN 요청 전송 완료. 서버 응답 대기 중...")
+                
+                # [Handshake] LOGIN 응답 수신 대기 (중요: 응답 확인 후 구독 진행)
+                login_success = False
                 try:
-                    clean_symbols = []
-                    # 1. 내부 버퍼 먼저 일괄 생성
-                    for sym in symbols:
-                        clean = sym.split('_')[0].strip()
-                        clean_symbols.append(clean)
-
-                        if sym not in self.feature_engineers:
-                            from core.feature_engineer import FeatureEngineer
-                            from env.normalizer import OnlineRollingNormalizer
-                            self.feature_engineers[sym] = FeatureEngineer(max_ticks=100)
-                            self.normalizers[sym] = OnlineRollingNormalizer(window_size=1000, bypass_indices=[2])
-                            self.state_buffers[sym] = deque(maxlen=self.max_buffer_size)
-                            self.tick_buffers[sym] = deque(maxlen=self.max_buffer_size)
-                            self.min1_buffers[sym] = deque(maxlen=self.max_buffer_size // 10)
-
-                    # 2. 단 한 번의 웹소켓 요청으로 20개 종목 통째로 구독!
-                    if self.is_running and self.ws_connection:
-                        msg = json.dumps({
-                            "trnm": "REG",
-                            "grp_no": "1",
-                            "refresh": "0",
-                            "data": [
-                                {"type": ["0B"], "item": clean_symbols},  # 배열 형태로 20개 한방에 전송
-                                {"type": ["0D"], "item": clean_symbols}
-                            ]
-                        })
-                        await self.ws_connection.send(msg)
-                        await asyncio.sleep(0.5)
-
-                    self.logger.info(f"일괄 구독 요청 완료: {clean_symbols[:5]} 등 {len(clean_symbols)}개 종목")
+                    first_msg = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                    login_res = json.loads(first_msg)
+                    if str(login_res.get("return_code")) == "0" or login_res.get("return_code") == 0:
+                        self.logger.info(f"LOGIN 인증 성공: {login_res.get('return_msg', '정상')}")
+                        login_success = True
+                        self.login_success_event.set() # 구독 발송 대기자들에게 신호 발송
+                    else:
+                        self.logger.error(
+                            f"LOGIN Auth Failed: {login_res.get('return_msg')} "
+                            f"(Code: {login_res.get('return_code')}) "
+                            f"-> Requesting token refresh and waiting for reconnect"
+                        )
+                        # [Token Auth Failure] Refresh token via config.token_manager
+                        token_mgr = getattr(self.config, '_token_manager', None) or getattr(self.config, 'token_manager', None)
+                        if token_mgr and hasattr(token_mgr, 'refresh_token'):
+                            self.logger.error("LOGIN Failed: Attempting to refresh token...")
+                            await token_mgr.refresh_token()
+                            await asyncio.sleep(3.0)  # Wait for server processing
+                        else:
+                            await asyncio.sleep(10.0)  # Wait 10s if no manager
+                        return  # Terminate ws context -> Auto reconnection loop
                 except Exception as e:
-                    self.logger.error(f"일괄 구독 프로세스 중 오류 발생: {e}")
+                    self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
+                    return
 
-            try:
-                async for message in websocket:
-                    recv_time = time.time()
-                    self.last_receive_time = recv_time
-                    
-                    # [재적용] 키움증권 PING 메시지 처리 (Heartbeat 대응 및 R10002 방지)
-                    if isinstance(message, str) and "PING" in message.upper():
-                        self.logger.debug("📡 [키움 API] PING 수신 -> PONG 응답 전송")
-                        # 서버 연결 유지를 위해 반드시 PONG을 보내야 합니다 (R10002 방지 핵심)
-                        # 이 로직은 JSON 파싱 이전에 수행되므로 파싱 에러가 발생하지 않습니다.
-                        await websocket.send(json.dumps({"trnm": "PONG"}))
-                        continue
+                # LOGIN 성공 시에만 구독 진행
+                if not login_success:
+                    return
 
-                    # 데이터 파싱
+                symbols = self.subscription_manager.get_symbols()
+                if symbols:
+                    self.logger.info(f"초기 종목 {len(symbols)}개에 대해 일괄 구독(Batch)을 시작합니다.")
                     try:
-                        data = json.loads(message)
-                    except json.JSONDecodeError:
-                        self.logger.error(f"JSON 파싱 에러 (비정상 메시지): {message}")
-                        continue
+                        clean_symbols = []
+                        # 1. 내부 버퍼 먼저 일괄 생성
+                        for sym in symbols:
+                            clean = sym.split('_')[0].strip()
+                            clean_symbols.append(clean)
 
-                    # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
-                    root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
-                    # self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
-                    self.circuit_breaker_active = False
+                            if sym not in self.feature_engineers:
+                                from core.feature_engineer import FeatureEngineer
+                                from env.normalizer import OnlineRollingNormalizer
+                                self.feature_engineers[sym] = FeatureEngineer(max_ticks=100)
+                                self.normalizers[sym] = OnlineRollingNormalizer(window_size=1000, bypass_indices=[2])
+                                self.state_buffers[sym] = deque(maxlen=self.max_buffer_size)
+                                self.tick_buffers[sym] = deque(maxlen=self.max_buffer_size)
+                                self.min1_buffers[sym] = deque(maxlen=self.max_buffer_size // 10)
 
-                    if not self.first_data_received_event.is_set():
-                        self.first_data_received_event.set()
+                        # 2. 단 한 번의 웹소켓 요청으로 20개 종목 통째로 구독!
+                        if self.is_running and self.ws_connection:
+                            msg = json.dumps({
+                                "trnm": "REG",
+                                "grp_no": "1",
+                                "refresh": "0",
+                                "data": [
+                                    {"type": ["0B"], "item": clean_symbols},  # 배열 형태로 20개 한방에 전송
+                                    {"type": ["0D"], "item": clean_symbols}
+                                ]
+                            })
+                            await self.ws_connection.send(msg)
+                            await asyncio.sleep(0.5)
 
-                    # 지연 시간(Latency) 프로파일링
-                    exchange_time = data.get('timestamp', recv_time)
-                    latency_ms = (recv_time - exchange_time) * 1000
-                    self.latency_logs.append(latency_ms)
+                        self.logger.info(f"일괄 구독 요청 완료: {clean_symbols[:5]} 등 {len(clean_symbols)}개 종목")
+                    except Exception as e:
+                        self.logger.error(f"일괄 구독 프로세스 중 오류 발생: {e}")
 
-                    if latency_ms > 50:
-                        self.logger.warning(f"High Latency 경고: {latency_ms:.2f}ms")
+                try:
+                    async for message in websocket:
+                        recv_time = time.time()
+                        self.last_receive_time = recv_time
+                        
+                        # [재적용] 키움증권 PING 메시지 처리 (Heartbeat 대응 및 R10002 방지)
+                        if isinstance(message, str) and "PING" in message.upper():
+                            self.logger.debug("📡 [키움 API] PING 수신 -> PONG 응답 전송")
+                            # 서버 연결 유지를 위해 반드시 PONG을 보내야 합니다 (R10002 방지 핵심)
+                            # 이 로직은 JSON 파싱 이전에 수행되므로 파싱 에러가 발생하지 않습니다.
+                            await websocket.send(json.dumps({"trnm": "PONG"}))
+                            continue
 
-                    await self._process_tick(data)
-            except asyncio.CancelledError:
-                self.logger.info("DataCollector: WebSocket 메시지 수신 루프가 취소되었습니다.")
-                raise
-            finally:
-                # [안정화] 연결이 끊기면 관련 상태를 명확히 초기화
-                self.ws_connected_event.clear()
-                self.first_data_received_event.clear()
-                self.ws_connection = None
-                self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
+                        # 데이터 파싱
+                        try:
+                            data = json.loads(message)
+                        except json.JSONDecodeError:
+                            self.logger.error(f"JSON 파싱 에러 (비정상 메시지): {message}")
+                            continue
+
+                        # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
+                        root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
+                        # self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
+                        self.circuit_breaker_active = False
+
+                        if not self.first_data_received_event.is_set():
+                            self.first_data_received_event.set()
+
+                        # 지연 시간(Latency) 프로파일링
+                        exchange_time = data.get('timestamp', recv_time)
+                        latency_ms = (recv_time - exchange_time) * 1000
+                        self.latency_logs.append(latency_ms)
+
+                        if latency_ms > 50:
+                            self.logger.warning(f"High Latency 경고: {latency_ms:.2f}ms")
+
+                        await self._process_tick(data)
+                except asyncio.CancelledError:
+                    self.logger.info("DataCollector: WebSocket 메시지 수신 루프가 취소되었습니다.")
+                    raise
+        finally:
+            # [안정화] 연결이 끊기면 관련 상태를 명확히 초기화
+            self.ws_connected_event.clear()
+            self.login_success_event.clear()
+            self.first_data_received_event.clear()
+            self.ws_connection = None
+            self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
 
     async def _process_tick(self, message_data):
         """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
