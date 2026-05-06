@@ -210,7 +210,7 @@ class HistoricalFetcher:
                                 norm_stop = stop_timestamp.replace("T", " ") if stop_timestamp else ""
                                 
                                 if stop_timestamp and norm_target <= norm_stop:
-                                    self.logger.error(f"[{symbol}] 증분 수집 중단 시점 도달: {norm_target} <= {norm_stop}")
+                                    self.logger.warning(f"[{symbol}] 증분 수집 중단 시점 도달: {norm_target} <= {norm_stop}")
                                     stop_reached = True
                                     break
 

@@ -23,7 +23,8 @@ kiwoom:
 live_trading_model_type: smart
 log_level: ERROR
 max_buffer_size: 100000
-max_invest_per_symbol: 200000.0
+max_daily_rise_pct: 20.0
+max_invest_per_symbol: 300000.0
 max_open_positions: 10
 max_position_pct: 100.0
 protected_symbols:

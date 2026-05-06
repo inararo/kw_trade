@@ -597,7 +597,7 @@ class DataCollector:
                         if asyncio.iscoroutinefunction(callback):
                             task = asyncio.create_task(
                                 callback(target_symbol, normalized_state, price=price, volume=volume,
-                                         timestamp=now_time))
+                                         change_rate=change_rate, timestamp=now_time))
                             self._pending_tasks.add(task)
 
                             # [핵심] 조용히 죽는 비동기 에러를 끄집어내는 사냥꾼 함수
@@ -616,7 +616,7 @@ class DataCollector:
                         else:
                             try:
                                 callback(target_symbol, normalized_state, price=price, volume=volume,
-                                         timestamp=now_time)
+                                         change_rate=change_rate, timestamp=now_time)
                             except Exception as e:
                                 import traceback
                                 self.logger.error(f"🚨 [동기 콜백 붕괴] {e}\n{traceback.format_exc()}")
