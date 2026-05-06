@@ -239,7 +239,7 @@ class OrderManager:
                 self.pending_buy_amount += order_amt
                 self.logger.debug(f"주문 예약: +{order_amt:,.0f} (총 예약: {self.pending_buy_amount:,.0f})")
 
-            self.logger.error(f"주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
+            self.logger.warning(f"📤 주문 전송: {order_type} {qty}주 @ {price}원 (Internal ID: {internal_id})")
 
             # ─────────────────────────────────────────────────────
             # 키움증권 REST API 실거래 주문 (api-id 헤더 방식)
@@ -475,7 +475,7 @@ class OrderManager:
         키움 웹소켓(또는 REST 폴링)에서 수신된 실시간 체결/잔고 데이터 파싱.
         """
         # [디버그] 수신 데이터 확인
-        self.logger.error(f"📥 [Chejan Raw] {data}")
+        self.logger.warning(f"📡 [Chejan Raw] {data}")
 
         raw_symbol = data.get('symbol') or data.get('stk_cd') or ""
         clean_symbol = str(raw_symbol).split('_')[0].strip()
@@ -515,12 +515,15 @@ class OrderManager:
             # [Firebase] 주문 접수 로그 전송 (연동 확인용)
             if self.firebase_manager:
                 asyncio.create_task(self.firebase_manager.add_trade_log({
-                    "symbol": order['symbol'],
-                    "type": order['type'] + "_RECEIPT",
-                    "price": float(order.get('price', 0)),
-                    "quantity": int(order.get('qty', 0)),
-                    "profit_loss": 0,
-                    "broker_id": broker_id
+                    "log_type":      order['type'] + "_RECEIPT",
+                    "symbol":        symbol,
+                    "symbol_name":   self.config.get_symbol_name(symbol) if hasattr(self.config, 'get_symbol_name') else symbol,
+                    "price":         float(order.get('price', 0)),
+                    "qty":           int(order.get('qty', 0)),
+                    "profit_loss":   0.0,
+                    "profit_rate":   0.0,
+                    "timestamp_str": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "broker_id":     broker_id
                 }))
 
         elif msg_type == '체결':
@@ -585,7 +588,45 @@ class OrderManager:
 
                 if order['unexecuted_qty'] <= 0:
                     order['status'] = OrderState.FILLED
-                    self.logger.info(f"주문 전량 체결 완료! (Broker ID: {broker_id})")
+                    self.logger.warning(f"🎯 [{symbol}] {order['type']} 체결 완료 ({exec_qty}주, 잔량: {order['unexecuted_qty']}주)")
+                    
+                    # [Firebase] 실시간 매매 로그 전송
+                    symbol_name = symbol
+                    universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
+                    for s in universe:
+                        if s.get('code') == symbol:
+                            symbol_name = s.get('name', symbol)
+                            break
+                    
+                    avg_price = self.avg_entry_prices.get(symbol, 0)
+                    pnl = (exec_price - avg_price) * exec_qty if order['type'] == 'SELL' and avg_price > 0 else 0
+                    pnl_rate = ((exec_price - avg_price) / avg_price) * 100 if order['type'] == 'SELL' and avg_price > 0 else 0
+                    
+                    # [핵심] 실현 손익 즉시 업데이트 (로컬 누적) - 중복 방지 플래그 체크
+                    if pnl != 0 and not order.get('pnl_processed'):
+                        self.daily_realized_pnl += pnl
+                        order['pnl_processed'] = True
+                        if self.risk_manager:
+                            self.risk_manager.update_pnl(pnl)
+                        self.logger.warning(f"💰 실현 손익 업데이트(Chejan): {pnl:,.0f}원 (당일 누적: {self.daily_realized_pnl:,.0f}원)")
+                    
+                    trade_data = {
+                        "log_type":      order['type'],
+                        "symbol":        symbol,
+                        "symbol_name":   symbol_name,
+                        "price":         float(exec_price),
+                        "qty":           int(exec_qty),
+                        "profit_loss":   float(pnl),
+                        "profit_rate":   float(pnl_rate),
+                        "timestamp_str": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    
+                    if self.firebase_manager:
+                        self.logger.warning(f"📤 [Firebase 전송 시도] {symbol} {order['type']} {exec_qty}주 @ {exec_price}")
+                        asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
+                    else:
+                        self.logger.error(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
+                    
                     # [신규] 매도 완료 시 시간 기록 (API 지연 방어용)
                     if order['type'] == 'SELL':
                         self._last_sell_fill_time[symbol] = time.time()

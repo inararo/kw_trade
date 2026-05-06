@@ -475,8 +475,45 @@ class LiveTradingEngine:
                 trade_logger.log_trade(self.symbol, side, executed_qty, price, pnl=pnl, pnl_pct=pnl_pct, note=f"Status: {status}")
                 
                 res_msg = f"🎯 [{self.symbol}] {side} 체결 완료 ({executed_qty}주, 수익률: {pnl_pct*100:+.2f}%)"
-                self.logger.error(res_msg)
+                self.logger.warning(res_msg) # visibility 강화
                 self._ui_log(res_msg)
+
+                # [실현 손익 업데이트] 글로벌 잔고 매니저 및 리스크 매니저에 반영
+                if pnl != 0:
+                    order_info = self.order_manager.active_orders.get(internal_id)
+                    if order_info and not order_info.get('pnl_processed'):
+                        self.order_manager.daily_realized_pnl += pnl
+                        order_info['pnl_processed'] = True
+                        if self.order_manager.risk_manager:
+                            self.order_manager.risk_manager.update_pnl(pnl)
+                        self.logger.warning(f"💰 [PnL 업데이트] {self.symbol} 매도로 인한 실현손익 반영: {pnl:,.0f}원 (당일 누적: {self.order_manager.daily_realized_pnl:,.0f}원)")
+
+                # [Firebase] 최종 매매 결과 기록 (OrderManager의 체잔 데이터 누락 대비 백업)
+                firebase_manager = getattr(self.order_manager, 'firebase_manager', None)
+                if firebase_manager:
+                    # 종목명 가져오기
+                    symbol_name = self.symbol
+                    if hasattr(self.order_manager, 'config') and hasattr(self.order_manager.config, 'get_symbols'):
+                        for s in self.order_manager.config.get_symbols():
+                            if s.get('code') == self.symbol:
+                                symbol_name = s.get('name', self.symbol)
+                                break
+
+                    trade_data = {
+                        "log_type":      side,
+                        "symbol":        self.symbol,
+                        "symbol_name":   symbol_name,
+                        "price":         float(price),
+                        "qty":           int(executed_qty),
+                        "profit_loss":   float(pnl),
+                        "profit_rate":   float(pnl_pct * 100),
+                        "timestamp_str": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                        "note":          f"Engine Finalized (Status: {status})"
+                    }
+                    self.logger.warning(f"📤 [Firebase 전송 시도] {self.symbol} {side} 결과")
+                    asyncio.create_task(firebase_manager.add_trade_log(trade_data))
+                else:
+                    self.logger.error("⚠️ [Firebase] FirebaseManager를 찾을 수 없어 로그를 전송하지 못했습니다.")
 
         except Exception as e:
             self.logger.error(f"🔥 주문 파이프라인 치명적 오류: {e}", exc_info=True)
