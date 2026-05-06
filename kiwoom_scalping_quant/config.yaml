@@ -1,6 +1,6 @@
 account_number: ''
 active_model_path: ./saved_models/bob/model_advanced_smart_best.zip
-ai_buy_threshold: 0.65
+ai_buy_threshold: 0.7
 ai_sell_threshold: 0.55
 cb_timeout_sec: 3
 cutoff_time: '14:00'

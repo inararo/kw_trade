@@ -155,6 +155,13 @@ class SettingsTab(QWidget):
         self.input_protected_symbols.setPlaceholderText("예: 005930, 000660")
         risk_form.addRow("보호 종목 (Protected Symbols):", self.input_protected_symbols)
 
+        self.spin_max_daily_rise = QDoubleSpinBox()
+        self.spin_max_daily_rise.setSuffix(" %")
+        self.spin_max_daily_rise.setRange(0.0, 30.0)
+        self.spin_max_daily_rise.setDecimals(1)
+        self.spin_max_daily_rise.setSingleStep(1.0)
+        risk_form.addRow("매수 금지 상승률 (Max Rise):", self.spin_max_daily_rise)
+
         risk_group.setLayout(risk_form)
         right_column.addWidget(risk_group)
 
@@ -262,7 +269,8 @@ class SettingsTab(QWidget):
             "enable_universe_update": self.chk_enable_universe_update.isChecked(),
             "protected_symbols": protected_symbols,
             "ai_buy_threshold": self.spin_buy_threshold.value(),
-            "ai_sell_threshold": self.spin_sell_threshold.value()
+            "ai_sell_threshold": self.spin_sell_threshold.value(),
+            "max_daily_rise_pct": self.spin_max_daily_rise.value()
         }
 
     # --- UI Action Handlers ---
@@ -320,6 +328,7 @@ class SettingsTab(QWidget):
 
         self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.65)))
         self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.55)))
+        self.spin_max_daily_rise.setValue(float(config.get("max_daily_rise_pct", 20.0)))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

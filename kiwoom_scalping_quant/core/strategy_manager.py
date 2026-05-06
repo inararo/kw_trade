@@ -315,7 +315,7 @@ class StrategyManager:
                 
                 live_vm.update_universe_list(display_universe)
 
-    async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None):
+    async def _on_tick_event(self, symbol: str, normalized_state=None, price=0.0, volume=0.0, timestamp=None, **kwargs):
         if not self.is_running or self.is_ai_paused: return
         
         # [개선] _order_lock은 update_tick 전체를 감싸면 모든 종목 틱이 직렬화되어 AI 추론이 가로막힙니다.
@@ -330,7 +330,9 @@ class StrategyManager:
                     self.logger.warning(f"🛡️ [Lock 방어] {clean_symbol}은 이미 주문 진행 중이므로 중복 진입을 차단합니다.")
                     return
 
-                await engine.update_tick(symbol, normalized_state, price=price, volume=int(volume), timestamp=timestamp)
+                # 추가 인자(change_rate 등)를 포함하여 엔진에 전달
+                await engine.update_tick(symbol, normalized_state, price=price, volume=int(volume), 
+                                         timestamp=timestamp, **kwargs)
         except Exception as e:
             self.logger.error(f"StrategyManager: 틱 이벤트 처리 중 에러 ({symbol}): {e}")
 

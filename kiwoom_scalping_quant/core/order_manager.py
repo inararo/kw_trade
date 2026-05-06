@@ -189,7 +189,7 @@ class OrderManager:
 
             if signal_only:
                 msg = f"[SIGNAL ONLY] 🔴 {order_type}: {symbol} ({qty}주 @ {price}) - 실제 주문 생략됨"
-                self.logger.error(msg)
+                self.logger.warning(msg)
 
                 # EMIT SIGNAL
                 self.signals.signal_only_log.emit(msg)
@@ -903,7 +903,7 @@ class OrderManager:
                     # 응답 텍스트를 먼저 읽어 로깅 (JSON 파싱 에러 대비)
                     res_text = await resp.text()
                     # [디버깅] 잔고 조회 원본 응답을 에러 레벨로 출력하여 강제 확인
-                    self.logger.error(f"🔍 [잔고 조회 원본 응답] HTTP {resp.status}: {res_text}")
+                    self.logger.warning(f"🔍 [잔고 조회 원본 응답] HTTP {resp.status}: {res_text}")
 
                     if resp.status == 200:
                         try:

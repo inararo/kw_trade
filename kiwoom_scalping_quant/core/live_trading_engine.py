@@ -38,6 +38,7 @@ class LiveTradingEngine:
         # 쿨다운 관리
         self.last_action_time = 0.0
         self.cooldown_seconds = 3.0
+        self.last_change_rate = 0.0  # [신규] 당일 등락률 추적용
         
         # [수정] 하드 스탑로스/익절 임계값 (설정 파일과 연동)
         # AI의 자율성을 보장하기 위해 기본 하드 손절은 넉넉하게 -3.5%로 설정
@@ -137,6 +138,10 @@ class LiveTradingEngine:
             price = kwargs.get('price')
             volume = kwargs.get('volume')
             timestamp = kwargs.get('timestamp')
+            change_rate = kwargs.get('change_rate', 0.0)
+            
+            # [신규] 당일 등락률 실시간 업데이트
+            self.last_change_rate = change_rate
 
             # 위치 인자(args)로 들어왔을 경우를 대비한 방어 로직 (DataCollector 호출 포맷 대응)
             if price is None and len(args) >= 3:
@@ -319,14 +324,14 @@ class LiveTradingEngine:
             confidence = probs[1]
             
             # [강제 로깅] 타입과 값 명시적 출력
-            self.logger.error(f"🧠 [AI 판단] {self.symbol} | 신뢰도: {confidence} | 임계값: {buy_threshold} | 타입: {type(confidence)} vs {type(buy_threshold)} | Masked: {not action_masks[1]}")
+            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | 신뢰도: {confidence} | 임계값: {buy_threshold} | 타입: {type(confidence)} vs {type(buy_threshold)} | Masked: {not action_masks[1]}")
             
             if float(confidence) < float(buy_threshold): 
                 action = 0
         elif action == 2: # SELL
             sell_threshold = self.config_manager.get("ai_sell_threshold", 0.6)
             confidence = probs[2]
-            self.logger.error(f"[AI 판단] 종목 {self.symbol} 매도 신뢰도: {confidence:.4f} (기준: {sell_threshold:.4f})")
+            self.logger.warning(f"[AI 판단] 종목 {self.symbol} 매도 신뢰도: {confidence:.4f} (기준: {sell_threshold:.4f})")
             
             if float(confidence) < float(sell_threshold): 
                 action = 0
@@ -352,6 +357,12 @@ class LiveTradingEngine:
             # [안전장치] 글로벌 매수 쿨타임(Circuit Breaker) 체크
             if self.strategy_manager and not self.strategy_manager.can_execute_buy():
                 self.logger.warning(f"[{self.symbol}] 🛡️ 글로벌 매수 쿨타임 가동 중 - 주문을 차단합니다.")
+                return
+
+            # [신규] 당일 급등 종목 매수 제한 (추격 매수 방지)
+            max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
+            if self.last_change_rate >= max_rise:
+                self.logger.warning(f"[{self.symbol}] 🚫 매수 차단: 당일 상승률({self.last_change_rate:.2f}%)이 설정값({max_rise}%)을 초과했습니다.")
                 return
 
             # [신규] 매수 주문 전 최신 잔고 동기화
