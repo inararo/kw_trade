@@ -150,31 +150,33 @@ class AsyncInfluxDBClient:
             return []
 
     async def delete_symbol_data(self, symbol_code: str):
-        """특정 종목의 모든 데이터를 DB에서 영구 삭제합니다."""
+        """
+        특정 종목의 모든 데이터를 DB에서 영구 삭제합니다.
+        [개선] Predicate에서 Measurement를 명시하여 삭제 신뢰성을 높이고, 
+        원본 코드와 정규화된 코드 모두에 대해 historical_data/tick_data를 삭제합니다.
+        """
         try:
-            import datetime
-            delete_api = self.client.delete_api()
-            s_iso = "1970-01-01T00:00:00Z"
-            e_iso = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            
             clean_code = symbol_code.split('_')[0].strip()
             
-            # [버그 수정] InfluxDB 2.x delete API는 Predicate에서 'OR' 연산자를 지원하지 않음.
-            # 따라서 두 조건을 각각 별도의 요청으로 나누어 실행해야 함.
+            # 삭제 대상 측정 항목 목록
+            measurements = ["historical_data", "tick_data"]
+            # 삭제 대상 코드 목록 (중복 제거)
+            target_codes = list(set([symbol_code, clean_code]))
             
-            # 1. 원본 코드(예: 005930_AL) 삭제
-            predicate1 = f'symbol="{symbol_code}"'
-            await delete_api.delete(s_iso, e_iso, predicate1, bucket=self.bucket, org=self.org)
+            self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 관련 데이터 영구 삭제 시작... (대상 코드: {target_codes})")
             
-            # 2. 정규화된 코드(예: 005930) 삭제
-            if clean_code != symbol_code:
-                predicate2 = f'symbol="{clean_code}"'
-                await delete_api.delete(s_iso, e_iso, predicate2, bucket=self.bucket, org=self.org)
+            success = True
+            for m in measurements:
+                for code in target_codes:
+                    res = await self.delete_data(m, code)
+                    if not res:
+                        success = False
             
-            self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 및 [{clean_code}] 데이터 삭제 완료.")
-            return True
+            if success:
+                self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 모든 데이터(Historical/Tick) 삭제 완료.")
+            return success
         except Exception as e:
-            self.logger.error(f"InfluxDB 데이터 삭제 실패 ({symbol_code}): {e}")
+            self.logger.error(f"InfluxDB 종목 통합 데이터 삭제 실패 ({symbol_code}): {e}")
             return False
 
     async def fetch_data_by_range(self, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -332,22 +334,27 @@ class AsyncInfluxDBClient:
             return []
 
     async def delete_data(self, measurement: str, symbol: str = None):
-        """특정 측정 항목 또는 종목의 데이터를 삭제합니다."""
+        """
+        특정 측정 항목 또는 종목의 데이터를 삭제합니다.
+        [개선] RFC3339 규격(Z 접미사)을 명시적으로 사용하도록 수정.
+        """
         try:
             delete_api = self.client.delete_api()
             start = "1970-01-01T00:00:00Z"
             import datetime
-            stop = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            # 명시적으로 UTC 시간을 생성하고 'Z' 접미사 포맷팅 (InfluxDB 권장)
+            stop = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
             
             predicate = f'_measurement="{measurement}"'
             if symbol:
                 predicate += f' AND symbol="{symbol}"'
             
+            self.logger.debug(f"InfluxDB Delete 요청: Predicate=[{predicate}], Range=[{start} ~ {stop}]")
             await delete_api.delete(start, stop, predicate, bucket=self.bucket, org=self.org)
             self.logger.info(f"InfluxDB 데이터 삭제 완료: measurement={measurement}, symbol={symbol}")
             return True
         except Exception as e:
-            self.logger.error(f"InfluxDB 데이터 삭제 실패: {e}")
+            self.logger.error(f"InfluxDB 데이터 삭제 실패 (M:{measurement}, S:{symbol}): {e}")
             return False
 
     async def close(self):

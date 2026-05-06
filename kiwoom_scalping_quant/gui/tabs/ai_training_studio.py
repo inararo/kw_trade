@@ -109,9 +109,10 @@ class AITrainingStudioTab(QWidget):
 
         # --- Advanced PPO Settings ---
         self.spin_ent = QDoubleSpinBox()
+        self.spin_ent.setDecimals(3)
         self.spin_ent.setRange(0.0, 0.1)
-        self.spin_ent.setValue(0.01)
-        self.spin_ent.setSingleStep(0.01)
+        self.spin_ent.setValue(0.010)
+        self.spin_ent.setSingleStep(0.001)
         self.spin_ent.setToolTip("Entropy Coef: 낮을수록 기존 타점 유지, 높을수록 새로운 탐험 시도")
         create_h_spin(self.spin_ent, "탐험 계수 (Entropy):", form_layout)
 
@@ -152,6 +153,19 @@ class AITrainingStudioTab(QWidget):
             QCheckBox::indicator:unchecked { background-color: #383838; border: 1px solid #4d4d4d; border-radius: 2px; }
         """)
         form_layout.addRow("스마트 샘플링:", self.chk_smart_sampling)
+
+        # [추가] 에피소드 길이 개선 옵션
+        self.chk_day_begin = QCheckBox("항상 장 시작(09:00)부터 학습")
+        self.chk_day_begin.setChecked(True)
+        self.chk_day_begin.setToolTip("ON: 샘플링된 지점이 속한 날짜의 09:00부터 학습을 시작하여 에피소드 길이를 확보합니다.")
+        self.chk_day_begin.setStyleSheet(self.chk_smart_sampling.styleSheet())
+        form_layout.addRow("시작점 보정:", self.chk_day_begin)
+
+        self.chk_overnight = QCheckBox("날짜 변경 시에도 학습 유지 (Overnight)")
+        self.chk_overnight.setChecked(False)
+        self.chk_overnight.setToolTip("ON: 날짜가 바뀌어도 에피소드를 종료하지 않고 계속 진행합니다. (장기 학습용)")
+        self.chk_overnight.setStyleSheet(self.chk_smart_sampling.styleSheet())
+        form_layout.addRow("연속 학습:", self.chk_overnight)
 
         self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
@@ -233,6 +247,8 @@ class AITrainingStudioTab(QWidget):
         self.spin_clip.valueChanged.connect(self._update_info_summary)
         self.spin_gamma.valueChanged.connect(self._update_info_summary)
         self.spin_gae.valueChanged.connect(self._update_info_summary)
+        self.chk_day_begin.stateChanged.connect(self._update_info_summary)
+        self.chk_overnight.stateChanged.connect(self._update_info_summary)
 
     def _on_start_clicked(self):
         timesteps = self.spin_steps.value()
@@ -261,7 +277,9 @@ class AITrainingStudioTab(QWidget):
         self.view_model.start_training(timesteps, lr, max_records, 
                                      feature_mode=feature_mode, 
                                      use_smart_sampling=use_smart_sampling,
-                                     ppo_params=ppo_params)
+                                     ppo_params=ppo_params,
+                                     always_start_day_begin=self.chk_day_begin.isChecked(),
+                                     allow_overnight_episodes=self.chk_overnight.isChecked())
 
     def _on_stop_clicked(self):
         self.btn_stop.setEnabled(False) # 중복 중단 요청 방지
@@ -337,8 +355,8 @@ class AITrainingStudioTab(QWidget):
 <b>⚙️ 하이퍼파라미터 (Hyperparams):</b>
 <ul>
     <li><b>Learning Rate:</b> {self.spin_lr.value():.6f}</li>
-    <li><b>Entropy:</b> {self.spin_ent.value()}</li>
-    <li><b>Clip Range:</b> {self.spin_clip.value()}</li>
+    <li><b>Entropy:</b> {self.spin_ent.value():.3f}</li>
+    <li><b>Clip Range:</b> {self.spin_clip.value():.2f}</li>
     <li><b>Gamma:</b> {self.spin_gamma.value()}</li>
     <li><b>GAE Lambda:</b> {self.spin_gae.value()}</li>
 </ul>

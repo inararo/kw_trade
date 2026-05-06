@@ -851,7 +851,8 @@ class AITrainingViewModel(QObject):
         self.prep_task = None # [신규] 데이터 조회 및 준비 태스크 추적용
 
     def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, 
-                       feature_mode: str = "basic", use_smart_sampling: bool = False, ppo_params: dict = None):
+                       feature_mode: str = "basic", use_smart_sampling: bool = False, ppo_params: dict = None,
+                       always_start_day_begin: bool = False, allow_overnight_episodes: bool = False):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
@@ -862,11 +863,13 @@ class AITrainingViewModel(QObject):
             self.prep_task.cancel()
 
         self.prep_task = asyncio.create_task(self._prepare_and_start_training(
-            total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling, ppo_params
+            total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling, ppo_params,
+            always_start_day_begin, allow_overnight_episodes
         ))
 
     async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, 
-                                          feature_mode: str, use_smart_sampling: bool = False, ppo_params: dict = None):
+                                          feature_mode: str, use_smart_sampling: bool = False, ppo_params: dict = None,
+                                          always_start_day_begin: bool = False, allow_overnight_episodes: bool = False):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
         # [안정성 강화] 동시 조회 개수를 3개로 제한
         sem = asyncio.Semaphore(3)
@@ -927,6 +930,8 @@ class AITrainingViewModel(QObject):
             "initial_balance": 10000000,
             "feature_mode": feature_mode,
             "use_smart_sampling": use_smart_sampling,  # [핵심] 스마트 샘플링 플래그 주입
+            "always_start_day_begin": always_start_day_begin,
+            "allow_overnight_episodes": allow_overnight_episodes,
         }
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 

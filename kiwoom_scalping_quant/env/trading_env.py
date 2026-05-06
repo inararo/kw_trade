@@ -23,8 +23,11 @@ class ScalpingTradingEnv(gym.Env):
 
         self.feature_mode = config.get('feature_mode', 'basic')
         self.window_size = config.get('window_size', 10)
-        # [스마트 샘플링] Volume Spike 구간 우선 에피소드 시작 옵션 (기본값: False)
+        # [스마트 샘플링] Volume Spike 구간 우선 에피소드 시작 옵션
         self.use_smart_sampling = config.get('use_smart_sampling', False)
+        # [추가] 에피소드 길이 개선을 위한 신규 옵션들
+        self.always_start_day_begin = config.get('always_start_day_begin', False)
+        self.allow_overnight_episodes = config.get('allow_overnight_episodes', False)
         
         # [모드 분기] 
         self.single_feature_dim = 11 if self.feature_mode == 'advanced' else 5
@@ -120,10 +123,20 @@ class ScalpingTradingEnv(gym.Env):
                 if 'start_step' in options:
                     self.current_step = options['start_step']
                 elif self.use_smart_sampling:
-                    self.current_step = self._get_smart_start_step(max_start)
+                    # [개선] 스마트 샘플링 시 필요에 따라 장 시작 시점으로 보정
+                    raw_start = self._get_smart_start_step(max_start)
+                    if self.always_start_day_begin:
+                        self.current_step = self._get_day_start_index(raw_start)
+                    else:
+                        self.current_step = raw_start
                 else:
                     # [기존 유지] 순수 랜덤 샘플링
-                    self.current_step = random.randint(0, max_start)
+                    raw_start = random.randint(0, max_start)
+                    if self.always_start_day_begin:
+                        self.current_step = self._get_day_start_index(raw_start)
+                    else:
+                        self.current_step = raw_start
+
                 self.end_step = min(data_len - 1, self.current_step + self.max_steps)
             
             self.initial_price = self._get_current_price()
@@ -183,6 +196,22 @@ class ScalpingTradingEnv(gym.Env):
 
         # 20% 확률 or 후보 없을 때: 순수 랜덤
         return random.randint(0, max_start)
+
+    def _get_day_start_index(self, idx: int) -> int:
+        """주어진 인덱스가 포함된 날짜의 첫 번째 데이터 인덱스를 찾습니다."""
+        if self.historical_data is None: return idx
+        try:
+            target_date = str(self.historical_data[idx].get("timestamp", ""))[:10]
+            # 이전 방향으로 탐색하여 날짜가 바뀌는 지점을 찾음
+            curr = idx
+            while curr > 0:
+                prev_date = str(self.historical_data[curr-1].get("timestamp", ""))[:10]
+                if prev_date != target_date:
+                    break
+                curr -= 1
+            return curr
+        except Exception:
+            return idx
 
     def _extract_single_feature(self, idx):
         """[3] 스케일 불변 피처 추출 로직 (Basic/Advanced 통합)"""
@@ -326,13 +355,18 @@ class ScalpingTradingEnv(gym.Env):
         self.steps_since_buy += 1
         self.steps_since_sell += 1
         
-        # [규칙 C] 타임 스탑 / 질병 치료: 20분 이상 손실 포지션 방치 시 미세 페널티 (-0.001)
+        # [규칙 C] 타임 스탑 및 장기 보유 페널티 (UI 명세서 동기화)
+        # 1. 20분 이상 손실 포지션 방치 시 페널티 (-0.001)
         if self.holdings > 0 and self.steps_since_buy > 20:
-            current_profit = (current_price - self.avg_entry_price) / self.avg_entry_price * 100.0
+            current_profit = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
             if current_profit < 0:
                 step_reward -= 0.001
                 if self.steps_since_buy % 10 == 0:
-                    self.logger.debug(f"⏳ 타임 스탑 페널티 적용 중... (Hold: {self.steps_since_buy}스텝)")
+                    self.logger.debug(f"⏳ 손실 방치 페널티 적용 중... (Hold: {self.steps_since_buy}스텝)")
+        
+        # 2. 보유 시간당 미세 페널티 (장기 보유 방지, UI 명세서: -0.005)
+        if self.holdings > 0:
+            step_reward -= 0.005
         
         # 상태 업데이트
         self.lookback_buffer.append(self._extract_single_feature(self.current_step))
@@ -347,9 +381,15 @@ class ScalpingTradingEnv(gym.Env):
             next_date = str(self.historical_data[self.current_step].get("timestamp", ""))[:10]
             if curr_date and next_date and curr_date != next_date: day_changed = True
             
-        # [FIX] 백테스트 모드: 실제 데이터의 끝에 도달했을 때만 종료 (날짜 변경 무시)
+        # [FIX] 백테스트 모드 또는 overnight 허용 시: 실제 데이터의 끝에 도달했을 때만 종료
         is_backtest = self.config.get("mode") == "backtest"
-        if self.current_step >= self.end_step or (day_changed and not is_backtest):
+        should_truncate = False
+        if self.current_step >= self.end_step:
+            should_truncate = True
+        elif day_changed and not is_backtest and not self.allow_overnight_episodes:
+            should_truncate = True
+
+        if should_truncate:
             truncated = True
             # 장 마감 시(학습 중) 또는 데이터 종료 시(백테스트) 강제 청산 보상 처리
             if self.holdings > 0:
