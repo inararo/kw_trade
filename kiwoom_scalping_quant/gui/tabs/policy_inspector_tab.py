@@ -6,7 +6,7 @@ import torch
 from collections import deque
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
                              QPushButton, QLabel, QLineEdit, QSpinBox,
-                             QTextEdit, QFileDialog, QMessageBox)
+                             QTextEdit, QFileDialog, QMessageBox, QComboBox)
 from PyQt6.QtCore import QThread, pyqtSignal
 from sb3_contrib import MaskablePPO
 
@@ -528,9 +528,10 @@ class PolicyInspectorTab(QWidget):
 
         pl = QHBoxLayout()
         pl.addWidget(QLabel("종목 코드:"))
-        self.edit_symbol = QLineEdit("001440")
-        self.edit_symbol.setPlaceholderText("예: 005930")
-        pl.addWidget(self.edit_symbol)
+        self.combo_symbol = QComboBox()
+        self.combo_symbol.setMinimumWidth(120)
+        self._refresh_symbols()
+        pl.addWidget(self.combo_symbol)
         pl.addSpacing(20)
         pl.addWidget(QLabel("진단 스텝 수:"))
         self.spin_steps = QSpinBox()
@@ -565,9 +566,9 @@ class PolicyInspectorTab(QWidget):
     def _on_run_diagnosis(self):
         if not self.model_path:
             QMessageBox.warning(self, "경고", "모델 파일을 먼저 선택하세요."); return
-        sym = self.edit_symbol.text().strip()
+        sym = self.combo_symbol.currentText().split('(')[0].strip()
         if not sym:
-            QMessageBox.warning(self, "경고", "종목 코드를 입력하세요."); return
+            QMessageBox.warning(self, "경고", "종목 코드를 선택하세요."); return
 
         self.btn_run.setEnabled(False)
         self.txt_output.clear()
@@ -590,3 +591,27 @@ class PolicyInspectorTab(QWidget):
         self.txt_output.append(f"\n❌ [ERROR] {err}")
         self.btn_run.setEnabled(True)
         QMessageBox.critical(self, "에러", f"진단 중 오류:\n{err}")
+
+    def _refresh_symbols(self):
+        """데이터 관리에 등록된 종목 리스트를 콤보박스에 채웁니다."""
+        self.combo_symbol.clear()
+        try:
+            symbols = self.config_manager.get_symbols()
+            if not symbols:
+                self.combo_symbol.addItem("등록된 종목 없음")
+                return
+            
+            for s in symbols:
+                code = s.get('code', '')
+                name = s.get('name', '')
+                if code:
+                    display = f"{code} ({name})" if name else code
+                    self.combo_symbol.addItem(display)
+        except Exception as e:
+            self.combo_symbol.addItem("리스트 로드 실패")
+            print(f"Symbol refresh error: {e}")
+
+    def showEvent(self, event):
+        """탭이 화면에 나타날 때마다 종목 리스트를 최신화합니다."""
+        super().showEvent(event)
+        self._refresh_symbols()

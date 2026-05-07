@@ -155,9 +155,12 @@ class MainWindow(QMainWindow):
         if hasattr(live_vm, "sig_menu_action_result"):
             live_vm.sig_menu_action_result.connect(self._on_menu_action_result, Qt.ConnectionType.QueuedConnection)
 
-        # 주도주 유니버스 갱신 시 백테스트 탭의 종목 리스트 자동 업데이트 연결
-        if asset_vm and hasattr(self, 'tab_bt'):
-            asset_vm.symbols_loaded.connect(self.tab_bt._populate_symbols)
+        # 주도주 유니버스 갱신 시 백테스트 탭 및 정책 진단 탭의 종목 리스트 자동 업데이트 연결
+        if asset_vm:
+            if hasattr(self, 'tab_bt'):
+                asset_vm.symbols_loaded.connect(self.tab_bt._populate_symbols)
+            if hasattr(self, 'tab_policy'):
+                asset_vm.symbols_loaded.connect(self.tab_policy._refresh_symbols)
 
         self.tabs.addTab(self.tab_live, "라이브 대시보드")
         self.tabs.addTab(self.tab_asset, "데이터 관리")
