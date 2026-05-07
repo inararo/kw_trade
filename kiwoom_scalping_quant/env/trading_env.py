@@ -269,7 +269,7 @@ class ScalpingTradingEnv(gym.Env):
         rsi14 = 100.0 - (100.0 / (1.0 + rs))
 
         df = pd.DataFrame({'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14})
-        df.fillna(method='ffill', inplace=True)
+        df.ffill(inplace=True)
         df.fillna(0.0, inplace=True)
         return df
 
