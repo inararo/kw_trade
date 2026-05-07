@@ -125,14 +125,23 @@ class BacktestEngine:
                     "RSI_14": round(float(row['RSI_14']), 2),
                 }
 
+            # OHLC 정보 보강 (시각화용)
+            low_val = 0.0
+            high_val = 0.0
+            if df is not None and step < len(df):
+                low_val = float(df.iloc[step].get('low', current_price))
+                high_val = float(df.iloc[step].get('high', current_price))
+
             self.history.append({
                 "step":    step,
                 "price":   current_price,
+                "low":     low_val,
+                "high":    high_val,
                 "action":  ACTION_MAP.get(action_executed, "Hold"),
                 "reward":  reward,
                 "balance": info.get('net_worth', initial_balance),
-                # 분할 매매 분석을 위한 추가 필드
                 "holdings":          info.get('holdings', 0),
+                "avg_entry_price":   info.get('avg_entry_price', getattr(env, 'avg_entry_price', 0.0)),
                 "unrealized_pnl_pct": info.get('unrealized_pnl_pct', 0.0),
                 **indic_row,
             })

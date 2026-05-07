@@ -110,11 +110,23 @@ class BacktestStudioTab(QWidget):
         # Price Line
         self.price_curve = self.plot_widget.plot(pen=pg.mkPen('w', width=1.5), name="Price")
 
+        # [신규] 평단가 Line (보유 중일 때만 표시)
+        self.avg_entry_curve = self.plot_widget.plot(pen=pg.mkPen('#FFD700', width=1, style=Qt.PenStyle.DashLine), name="AvgEntry")
+
         # Scatter plots for Buy/Sell markers
-        self.buy_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(255, 0, 0, 200), symbol='t1') # Up pointing triangle
-        self.sell_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(0, 0, 255, 200), symbol='t')  # Down pointing triangle
-        self.plot_widget.addItem(self.buy_scatter)
-        self.plot_widget.addItem(self.sell_scatter)
+        # Buy 40% (Small Green), Buy 60% (Large Green)
+        self.buy_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(0, 255, 0, 200), symbol='t1')
+        self.buy_60_scatter = pg.ScatterPlotItem(size=15, pen=pg.mkPen(None), brush=pg.mkBrush(0, 255, 0, 255), symbol='t1')
+        
+        # Sell 40% (Small Blue), Sell 60% (Large Blue)
+        self.sell_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(0, 100, 255, 200), symbol='t')
+        self.sell_60_scatter = pg.ScatterPlotItem(size=15, pen=pg.mkPen(None), brush=pg.mkBrush(0, 100, 255, 255), symbol='t')
+
+        self.plot_widget.addItem(self.avg_entry_curve)
+        self.plot_widget.addItem(self.buy_40_scatter)
+        self.plot_widget.addItem(self.buy_60_scatter)
+        self.plot_widget.addItem(self.sell_40_scatter)
+        self.plot_widget.addItem(self.sell_60_scatter)
 
         chart_layout.addWidget(self.plot_widget)
         chart_group.setLayout(chart_layout)
@@ -180,8 +192,11 @@ class BacktestStudioTab(QWidget):
 
         self.btn_start.setEnabled(False)
         self.price_curve.setData([], [])
-        self.buy_scatter.setData([])
-        self.sell_scatter.setData([])
+        self.avg_entry_curve.setData([], [])
+        self.buy_40_scatter.setData([])
+        self.buy_60_scatter.setData([])
+        self.sell_40_scatter.setData([])
+        self.sell_60_scatter.setData([])
         self.lbl_progress.setText("진행률: 시작...")
 
         self.view_model.start_backtest(start_dt, end_dt, symbol)
@@ -321,16 +336,29 @@ class BacktestStudioTab(QWidget):
             self.plot_widget.setXRange(steps.min(), steps.max(), padding=0.02)
             self.plot_widget.enableAutoRange(axis='y', enable=False) # 수동 설정 후 자동추적 중지 (고정)
 
-        buys = df[df['action'] == 'Buy']
-        sells = df[df['action'] == 'Sell']
+        # 3. 평단가 데이터 (보유 중일 때만 유효값, 아니면 NaN)
+        import numpy as np
+        avg_entries = df['avg_entry_price'].values.copy()
+        holdings = df['holdings'].values
+        avg_entries[holdings == 0] = np.nan
+        self.avg_entry_curve.setData(steps, avg_entries)
 
-        buy_x = buys['step'].values
-        buy_y = buys['price'].values
-        self.buy_scatter.setData(x=buy_x, y=buy_y)
-
-        sell_x = sells['step'].values
-        sell_y = sells['price'].values
-        self.sell_scatter.setData(x=sell_x, y=sell_y)
+        # 4. 매매 마커 (Action별 분기)
+        # Buy 40%
+        b40 = df[df['action'] == 'Buy40%']
+        self.buy_40_scatter.setData(x=b40['step'].values, y=b40['low'].values * 0.998)
+        
+        # Buy 60%
+        b60 = df[df['action'] == 'Buy60%']
+        self.buy_60_scatter.setData(x=b60['step'].values, y=b60['low'].values * 0.998)
+        
+        # Sell 40%
+        s40 = df[df['action'] == 'Sell40%']
+        self.sell_40_scatter.setData(x=s40['step'].values, y=s40['high'].values * 1.002)
+        
+        # Sell 60%
+        s60 = df[df['action'] == 'Sell60%']
+        self.sell_60_scatter.setData(x=s60['step'].values, y=s60['high'].values * 1.002)
 
     @pyqtSlot(str)
     def on_bt_error(self, err_msg: str):
