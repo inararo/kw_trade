@@ -673,10 +673,17 @@ class AssetDataViewModel(QObject):
 
         asyncio.create_task(_send())
 
-    def add_symbol(self, code: str, name: str):
+    def add_symbol(self, code: str, name: str = None):
+        if not name:
+            # 로컬 캐시(stock_names.json)에서 종목명 조회
+            name = self.universe_manager.get_stock_name_from_cache(code)
+            if not name:
+                name = f"Unknown_{code}"
+                self.logger.warning(f"종목명 캐시에서 [{code}]를 찾을 수 없습니다. 임시 이름으로 등록합니다.")
+
         result = self.config_manager.add_symbol(code, name)
         if isinstance(result, Success):
-            self.symbol_update_success.emit(f"종목 추가 완료: {name}")
+            self.symbol_update_success.emit(f"종목 추가 완료: {name}({code})")
             self.load_symbols() # UI 갱신 트리거
         else:
             self.symbol_update_failed.emit(str(result.failure()))

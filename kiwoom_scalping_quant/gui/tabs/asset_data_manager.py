@@ -176,11 +176,9 @@ class AssetDataManagerTab(QWidget):
 
     # --- UI Actions (View -> ViewModel) ---
     def _on_btn_add_clicked(self):
-        code, ok1 = QInputDialog.getText(self, "종목 추가", "종목 코드를 입력하세요 (예: 005930):")
-        if ok1 and code:
-            name, ok2 = QInputDialog.getText(self, "종목 추가", "종목명을 입력하세요:")
-            if ok2 and name:
-                self.view_model.add_symbol(code, name)
+        code, ok = QInputDialog.getText(self, "종목 추가", "종목 코드를 입력하세요 (예: 005930):")
+        if ok and code:
+            self.view_model.add_symbol(code.strip())
 
     def _on_btn_remove_clicked(self):
         checked_codes = []
