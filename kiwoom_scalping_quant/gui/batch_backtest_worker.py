@@ -153,21 +153,31 @@ class BatchBacktestWorker(QThread):
                         # 백테스트 실행 (엔진은 내부 연산용이므로 loop 사용)
                         trades_df = loop.run_until_complete(worker_engine.run_backtest(agent, env, df))
                         
+                        buy_actions  = ['Buy40%', 'Buy60%']
+                        sell_actions = ['Sell60%', 'Sell40%']
                         kpi = KPICalculator.calculate(trades_df, 10000000)
                         action_counts = trades_df['action'].value_counts(normalize=True) * 100
-                        
+
                         results.append({
                             "테스트 일시": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "모델명": model_name, "종목코드": symbol, "종목명": name,
                             "시작일": self.start_date, "종료일": self.end_date,
-                            "총 매매횟수": len(trades_df[trades_df['action'].isin(['Buy', 'Sell'])]),
+                            "점 거래횟수": len(trades_df[trades_df['action'].isin(buy_actions + sell_actions)]),
                             "승률 (%)": round(kpi.get("Win Rate", 0), 2),
                             "총수익률 (%)": round(kpi.get("Total Return", 0), 2),
                             "MDD (%)": round(kpi.get("MDD", 0), 2),
                             "Profit Factor": round(kpi.get("Profit Factor", 0), 3),
-                            "Buy Ratio (%)": round(action_counts.get("Buy", 0), 2),
-                            "Sell Ratio (%)": round(action_counts.get("Sell", 0), 2),
-                            "Hold Ratio (%)": round(action_counts.get("Hold", 0), 2)
+                            # 5-액션 비율
+                            "Buy40% Ratio": round(action_counts.get("Buy40%",  0), 2),
+                            "Buy60% Ratio": round(action_counts.get("Buy60%",  0), 2),
+                            "Sell60% Ratio": round(action_counts.get("Sell60%", 0), 2),
+                            "Sell40% Ratio": round(action_counts.get("Sell40%", 0), 2),
+                            "Hold Ratio (%)": round(action_counts.get("Hold",   0), 2),
+                            # 세부 커운트
+                            "Buy40 Count":  kpi.get("Buy40_Count",  0),
+                            "Buy60 Count":  kpi.get("Buy60_Count",  0),
+                            "Sell60 Count": kpi.get("Sell60_Count", 0),
+                            "Sell40 Count": kpi.get("Sell40_Count", 0),
                         })
                     except Exception as e:
                         self.logger.error(f"백테스트 실행 실패 ({model_name} - {symbol}): {e}")
@@ -214,10 +224,12 @@ class BatchBacktestWorker(QThread):
                 result = agent.predict(obs, action_masks=action_masks, return_probs=True)
                 if isinstance(result, tuple) and len(result) == 2:
                     action, probs = result
-                    confidence = float(probs[action])
-                    
-                    # [규칙] 매수(1) 예측 시 확률이 60% 미만이면 강제 Hold(0)
-                    if action == 1 and confidence < 0.6:
+                    confidence = float(probs[action]) if hasattr(probs, '__len__') else float(probs)
+
+                    # [5-액션] 매수/매도 계열 분리 필터
+                    if action in (1, 2) and confidence < 0.6:
+                        action = 0
+                    elif action in (3, 4) and confidence < 0.6:
                         action = 0
                     return action, confidence
                 else:
@@ -239,9 +251,11 @@ class BatchBacktestWorker(QThread):
                 
                 action = int(probs.argmax())
                 confidence = float(probs[action])
-                
-                # [규칙] 매수(1) 예측 시 확률이 60% 미만이면 강제 Hold(0)
-                if action == 1 and confidence < 0.6:
+
+                # [5-액션] 매수/매도 계열 분리 필터
+                if action in (1, 2) and confidence < 0.6:
+                    action = 0
+                elif action in (3, 4) and confidence < 0.6:
                     action = 0
                 return action, confidence
             else:

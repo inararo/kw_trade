@@ -34,6 +34,10 @@ class ScalpingTradingEnv(gym.Env):
         self.feature_dim = self.single_feature_dim * self.window_size
         # [분할매수/매도] position_ratio, unrealized_pnl 2개 추가
         self.portfolio_state_dim = 2
+        # [눌림목 지표] SMA_20, SMA_60, RSI_14 → 스케일링 후 3차원
+        self.indicator_dim = 3
+        # 현재 스텝의 지표값 캐시 (step()에서 보너스 판단용)
+        self._current_indicators: dict = {}
 
         # [4] 다종목 학습을 위한 유니버스 정보 및 동적 임배딩 설정
         self.historical_data_dict = config.get("historical_data_dict", {})
@@ -53,19 +57,20 @@ class ScalpingTradingEnv(gym.Env):
         # target_dim이 주어지면 모델에 맞춰 역산하고, 없으면 기본 100 사용
         target_dim = config.get("target_dim")
         if target_dim:
-            # portfolio_state_dim(2)을 함께 차감하여 총 obs가 target_dim에 수렴하도록 역산
-            self.stock_id_dim = max(1, target_dim - self.feature_dim - self.portfolio_state_dim)
+            # portfolio_state_dim(2) + indicator_dim(3)을 함께 차감하여 총 obs가 target_dim에 수렴하도록 역산
+            self.stock_id_dim = max(1, target_dim - self.feature_dim - self.portfolio_state_dim - self.indicator_dim)
             self.max_num_symbols = self.stock_id_dim
             self.logger.info(
                 f"Target Dimension Detected: Adapting stock_id_dim to {self.stock_id_dim} "
-                f"(target={target_dim}, feature={self.feature_dim}, portfolio_state={self.portfolio_state_dim})"
+                f"(target={target_dim}, feature={self.feature_dim}, "
+                f"portfolio={self.portfolio_state_dim}, indicator={self.indicator_dim})"
             )
         else:
             self.max_num_symbols = 100 
             self.stock_id_dim = self.max_num_symbols
         
-        # [3] Observation 공간 차원: 특징 + 가변/고정 종목ID 차원 + 포트폴리오 상태(2)
-        obs_total_dim = self.feature_dim + self.stock_id_dim + self.portfolio_state_dim
+        # [3] Observation 공간 차원: 특징 + 종목ID + 포트폴리오 상태(2) + 보조지표(3)
+        obs_total_dim = self.feature_dim + self.stock_id_dim + self.portfolio_state_dim + self.indicator_dim
         self.observation_space = spaces.Box(
             low=-10.0, high=10.0, shape=(obs_total_dim,), dtype=np.float32
         )
@@ -105,11 +110,19 @@ class ScalpingTradingEnv(gym.Env):
         self.steps_since_buy = 0
         self.steps_since_sell = 100
         self.avg_entry_price = 0.0
-        
+        self._current_indicators = {}
+
         # 데이터 시작/종료점 설정
         if self.historical_data is not None:
+            # [보조지표] SMA_20 / SMA_60 / RSI_14 자동 계산 (종목/캐시 단위)
+            sym_key = self.config.get('symbol', '__default__')
+            if not hasattr(self, '_indicator_cache'): self._indicator_cache = {}
+            if sym_key not in self._indicator_cache:
+                self._indicator_cache[sym_key] = self._compute_indicators(self.historical_data)
+            self._indicator_df = self._indicator_cache[sym_key]
+
             data_len = len(self.historical_data)
-            
+
             # [순서 중요] Advanced 상태 캐시를 먼저 초기화해야
             # _get_smart_start_step()이 precomputed_features를 참조할 수 있음
             if self.feature_mode == 'advanced':
@@ -220,6 +233,60 @@ class ScalpingTradingEnv(gym.Env):
         except Exception:
             return idx
 
+    def _compute_indicators(self, data: list) -> pd.DataFrame:
+        """
+        [보조지표 자동 계산]
+        입력 데이터(list of dict)에서 SMA_20 / SMA_60 / RSI_14를 계산합니다.
+        NaN이 발생하는 앞부분 행은 ffill 후 0으로 채웁니다.
+        반환: 원본 데이터와 인덱스가 1:1 대응되는 DataFrame
+        """
+        prices = pd.Series([float(d.get('price', 0)) for d in data], dtype=np.float64)
+
+        sma20 = prices.rolling(window=20, min_periods=1).mean()
+        sma60 = prices.rolling(window=60, min_periods=1).mean()
+
+        # RSI-14 수동 계산 (pandas_ta 없이도 동작)
+        delta = prices.diff()
+        gain = delta.clip(lower=0).rolling(window=14, min_periods=1).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=14, min_periods=1).mean()
+        rs = gain / (loss + 1e-9)
+        rsi14 = 100.0 - (100.0 / (1.0 + rs))
+
+        df = pd.DataFrame({'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14})
+        df.fillna(method='ffill', inplace=True)
+        df.fillna(0.0, inplace=True)
+        return df
+
+    def _get_indicator_obs(self, idx: int) -> np.ndarray:
+        """
+        현재 스텝의 보조지표를 0~1 범위로 스케일링하여 반환.
+          - SMA_20 / SMA_60: 현재가 대비 비율 → -1~1로 클리핑 (0=동일, +1=가격이 SMA의 2배)
+          - RSI_14: 0~100 → 0~1 정규화
+        부수적으로 _current_indicators 캐시도 업데이트합니다.
+        """
+        if not hasattr(self, '_indicator_df') or self._indicator_df is None:
+            self._current_indicators = {'SMA_20': 0.0, 'SMA_60': 0.0, 'RSI_14': 50.0}
+            return np.zeros(self.indicator_dim, dtype=np.float32)
+
+        idx = min(idx, len(self._indicator_df) - 1)
+        row = self._indicator_df.iloc[idx]
+        current_price = self._get_current_price()
+
+        sma20 = float(row['SMA_20'])
+        sma60 = float(row['SMA_60'])
+        rsi14 = float(row['RSI_14'])
+
+        # 캐시 갱신 (step()의 보너스 판단에서 사용)
+        self._current_indicators = {'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14}
+
+        # 스케일링
+        p = current_price + 1e-9
+        sma20_scaled = float(np.clip((current_price - sma20) / p, -1.0, 1.0))
+        sma60_scaled = float(np.clip((current_price - sma60) / p, -1.0, 1.0))
+        rsi14_scaled  = rsi14 / 100.0  # 0 ~ 1
+
+        return np.array([sma20_scaled, sma60_scaled, rsi14_scaled], dtype=np.float32)
+
     def _extract_single_feature(self, idx):
         """[3] 스케일 불변 피처 추출 로직 (Basic/Advanced 통합)"""
         if self.historical_data is None: return np.zeros(self.single_feature_dim, dtype=np.float32)
@@ -263,18 +330,21 @@ class ScalpingTradingEnv(gym.Env):
         return np.array([position_ratio, unrealized_pnl], dtype=np.float32)
 
     def _get_observation(self):
-        """[2] 특징 배열 + 100차원 고정 Hard-Padding One-hot + 포트폴리오 상태(2) 결합"""
+        """[2] 특징 배열 + 종목 One-hot + 포트폴리오 상태(2) + 보조지표(3) 결합"""
         features = np.concatenate(list(self.lookback_buffer)).astype(np.float32)
-        
-        # 무조건 100칸짜리 고정 배열 생성
+
+        # 종목 One-hot (최대 max_num_symbols 고정 차원)
         stock_onehot = np.zeros(self.max_num_symbols, dtype=np.float32)
-        
-        # 현재 종목의 인덱스가 100 이내인 경우에만 인코딩 (0 ~ 99)
         if hasattr(self, 'current_symbol_idx') and self.current_symbol_idx < self.max_num_symbols:
             stock_onehot[self.current_symbol_idx] = 1.0
 
         portfolio_state = self._get_portfolio_state()
-        return np.concatenate([features, stock_onehot, portfolio_state])
+
+        # 보조지표: SMA_20_scaled, SMA_60_scaled, RSI_14_scaled
+        # _get_indicator_obs는 _current_indicators 캐시도 함께 갱신
+        indicator_obs = self._get_indicator_obs(self.current_step)
+
+        return np.concatenate([features, stock_onehot, portfolio_state, indicator_obs])
 
     def _get_info(self):
         current_price = self._get_current_price()
@@ -451,6 +521,24 @@ class ScalpingTradingEnv(gym.Env):
                 action_executed = 0
 
         # action == 0: Hold → 아무것도 하지 않음
+
+        # ──────────────────────────────────────────────
+        # [눌림목 타점 보너스]
+        # 조건: SMA_20 > SMA_60 (상승 추세) AND RSI_14 < 40 (단기 과매도)
+        # 위 조건에서 매수를 선택했다면 즉시 보너스 지급
+        # ──────────────────────────────────────────────
+        if action_executed in (1, 2):  # 실제로 매수가 체결된 경우만
+            sma20 = self._current_indicators.get('SMA_20', 0.0)
+            sma60 = self._current_indicators.get('SMA_60', 0.0)
+            rsi14 = self._current_indicators.get('RSI_14', 50.0)
+            is_pullback = (sma20 > sma60) and (rsi14 < 40.0)
+            if is_pullback:
+                if action_executed == 1:   # Buy 40% — 눌림목 진입 보너스
+                    step_reward += 0.05
+                    self.logger.debug(f"🎯 [눌림목] Buy40% 타점 보너스 +0.05 (RSI={rsi14:.1f}, SMA20={sma20:.0f}>SMA60={sma60:.0f})")
+                elif action_executed == 2:  # Buy 60% — 확신 비중 보너스
+                    step_reward += 0.08
+                    self.logger.debug(f"🎯 [눌림목] Buy60% 확신 보너스 +0.08 (RSI={rsi14:.1f}, SMA20={sma20:.0f}>SMA60={sma60:.0f})")
 
         # ──────────────────────────────────────────────
         # 2. 시간 흐름 업데이트
