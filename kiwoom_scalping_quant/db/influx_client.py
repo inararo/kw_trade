@@ -165,16 +165,19 @@ class AsyncInfluxDBClient:
             
             self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 관련 데이터 영구 삭제 시작... (대상 코드: {target_codes})")
             
-            success = True
+            deleted_measurements = []
             for m in measurements:
                 for code in target_codes:
                     res = await self.delete_data(m, code)
-                    if not res:
-                        success = False
+                    if res:
+                        deleted_measurements.append(f"{m}({code})")
             
-            if success:
-                self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 모든 데이터(Historical/Tick) 삭제 완료.")
-            return success
+            if deleted_measurements:
+                self.logger.info(f"InfluxDB: 종목 [{symbol_code}] 삭제 완료 항목: {', '.join(deleted_measurements)}")
+                return True
+            else:
+                self.logger.warning(f"InfluxDB: 종목 [{symbol_code}] 삭제할 데이터를 찾지 못했거나 이미 삭제되었습니다.")
+                return True # 존재하지 않아도 성공으로 간주 (에러 아님)
         except Exception as e:
             self.logger.error(f"InfluxDB 종목 통합 데이터 삭제 실패 ({symbol_code}): {e}")
             return False

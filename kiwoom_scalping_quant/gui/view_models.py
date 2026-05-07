@@ -805,12 +805,12 @@ class AssetDataViewModel(QObject):
             self.sig_status_updated.emit(f"[{symbol}] 기존 데이터 정리 및 적재 중...")
 
             try:
-                # 데이터가 성공적으로 수집된 경우에만 해당 종목의 기존 데이터 삭제 (정밀 수집 반영)
-                await self.influx_client.delete_data("historical_data", symbol)
-                await self.influx_client.delete_data("tick_data", symbol)
+                # [수정] 증분 수집을 위해 기존 데이터 삭제 로직 제거 (InfluxDB는 자동으로 중복을 덮어씀)
+                # await self.influx_client.delete_data("historical_data", symbol)
+                # await self.influx_client.delete_data("tick_data", symbol)
                 
                 await self.influx_client.bulk_insert(data_list)
-                self.logger.info(f"[{symbol}] InfluxDB 갱신 성공: {fetch_count}건 적재 완료.")
+                self.logger.info(f"[{symbol}] InfluxDB 적재 성공: {fetch_count}건 추가 완료.")
                 total_data_collected += fetch_count
             except Exception as e:
                 self.logger.error(f"[{symbol}] DB 처리 중 에러 발생: {e}")
@@ -825,10 +825,13 @@ class AssetDataViewModel(QObject):
             msg = "[POST-MARKET COLLECTION] " + msg
 
         self.sig_status_updated.emit(status_msg)
-        self.logger.error(f"전체 수집 프로세스 종료: {msg}")
+        self.logger.info(f"전체 수집 프로세스 종료: {msg}")
 
         if not is_auto:
-            self.fetch_completed.emit(msg)
+            if total_data_collected == 0:
+                self.fetch_completed.emit("이미 모든 데이터가 최신 상태입니다 (추가 수집 없음).")
+            else:
+                self.fetch_completed.emit(msg)
 
 class AITrainingViewModel(QObject):
     """
