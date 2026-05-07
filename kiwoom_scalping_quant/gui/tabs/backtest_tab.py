@@ -114,13 +114,13 @@ class BacktestStudioTab(QWidget):
         self.avg_entry_curve = self.plot_widget.plot(pen=pg.mkPen('#FFD700', width=1, style=Qt.PenStyle.DashLine), name="AvgEntry")
 
         # Scatter plots for Buy/Sell markers
-        # Buy 40% (Small Green), Buy 60% (Large Green)
-        self.buy_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(0, 255, 0, 200), symbol='t1')
-        self.buy_60_scatter = pg.ScatterPlotItem(size=15, pen=pg.mkPen(None), brush=pg.mkBrush(0, 255, 0, 255), symbol='t1')
+        # Buy 40% (Small Red), Buy 60% (Large Red)
+        self.buy_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(255, 100, 100, 200), symbol='t1')
+        self.buy_60_scatter = pg.ScatterPlotItem(size=16, pen=pg.mkPen(None), brush=pg.mkBrush(255, 0, 0, 255), symbol='t1')
         
         # Sell 40% (Small Blue), Sell 60% (Large Blue)
-        self.sell_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(0, 100, 255, 200), symbol='t')
-        self.sell_60_scatter = pg.ScatterPlotItem(size=15, pen=pg.mkPen(None), brush=pg.mkBrush(0, 100, 255, 255), symbol='t')
+        self.sell_40_scatter = pg.ScatterPlotItem(size=10, pen=pg.mkPen(None), brush=pg.mkBrush(100, 150, 255, 200), symbol='t')
+        self.sell_60_scatter = pg.ScatterPlotItem(size=16, pen=pg.mkPen(None), brush=pg.mkBrush(0, 100, 255, 255), symbol='t')
 
         self.plot_widget.addItem(self.avg_entry_curve)
         self.plot_widget.addItem(self.buy_40_scatter)

@@ -193,7 +193,7 @@ async def run_diagnosis(symbol: str = "001440"):
     # feature_dim 역산으로 stock_id_dim 계산
     FEAT_DIM   = 5 * 10   # basic: single_feat(5) * window(10) = 50
     PORT_DIM   = 2
-    IND_DIM    = 3
+    IND_DIM    = 7
     stock_id_dim = max(1, target_dim - FEAT_DIM - PORT_DIM - IND_DIM)
 
     print(f"   Universe: {len(all_symbols)}종목 | stock_id_dim={stock_id_dim}")
@@ -335,16 +335,21 @@ async def run_diagnosis(symbol: str = "001440"):
             override_mrk = " ⚡→Hold"   if filtered_action == 0 else ""
             inds         = env._current_indicators
             pullback_mrk = ""
+            curr_price = env._get_current_price()
             if raw_action in (1, 2) and inds:
-                if inds.get('SMA_20', 0) > inds.get('SMA_60', 0) and inds.get('RSI_14', 100) < 40:
-                    pullback_mrk = " 🎯눌림목!"
+                vwap = inds.get('VWAP', 0)
+                atr14 = inds.get('ATR_14', 0)
+                bb_lower = inds.get('BB_LOWER', 0)
+                rsi14 = inds.get('RSI_14', 50)
+                atr_threshold = curr_price * 0.001
+                if curr_price > vwap and atr14 > atr_threshold and (curr_price <= bb_lower or rsi14 < 30):
+                    pullback_mrk = " 🎯A급타점!"
             
             p_str = "  ".join(
                 f"{ACTION_LABELS.get(j, ('?','?'))[1].strip()}:{probs[j]:.3f}"
                 for j in range(min(NUM_ACTIONS, len(probs)))
             )
             cs = env.current_step
-            curr_price = env._get_current_price()
             
             print(
                 f"  {icon} step={cs:4d} | {lbl.strip()} | 신뢰도:{conf:.4f} | 현재가:{curr_price:,.0f}원"

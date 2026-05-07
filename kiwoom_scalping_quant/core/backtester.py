@@ -26,24 +26,63 @@ SELL_THRESHOLD = 0.6
 def _compute_indicators(data: list) -> pd.DataFrame:
     """
     [보조지표 자동 계산] trading_env._compute_indicators()와 완전히 동일한 로직.
-    SMA_20 / SMA_60 / RSI_14 계산 후 ffill → 0 채움.
+    SMA_20 / SMA_60 / RSI_14 및 VWAP, BB_UPPER, BB_LOWER, ATR_14 계산 후 ffill → 0 채움.
     반환: 원본 데이터와 인덱스가 1:1 대응되는 DataFrame
     """
-    prices = pd.Series([float(d.get('price', 0)) for d in data], dtype=np.float64)
+    df = pd.DataFrame(data)
+    
+    # 키에 따라 데이터 추출
+    close_series = pd.to_numeric(df.get('price', df.get('close', df.get('cur_prc', 0))), errors='coerce').fillna(0)
+    high_series = pd.to_numeric(df.get('high', close_series), errors='coerce').fillna(0)
+    low_series = pd.to_numeric(df.get('low', close_series), errors='coerce').fillna(0)
+    vol_series = pd.to_numeric(df.get('volume', df.get('trde_qty', 0)), errors='coerce').fillna(0)
 
-    sma20 = prices.rolling(window=20, min_periods=1).mean()
-    sma60 = prices.rolling(window=60, min_periods=1).mean()
+    # 1. 기존 지표
+    sma20 = close_series.rolling(window=20, min_periods=1).mean()
+    sma60 = close_series.rolling(window=60, min_periods=1).mean()
 
-    delta = prices.diff()
-    gain  = delta.clip(lower=0).rolling(window=14, min_periods=1).mean()
-    loss  = (-delta.clip(upper=0)).rolling(window=14, min_periods=1).mean()
-    rs    = gain / (loss + 1e-9)
+    # RSI-14 수동 계산
+    delta = close_series.diff()
+    gain = delta.clip(lower=0).rolling(window=14, min_periods=1).mean()
+    loss = (-delta.clip(upper=0)).rolling(window=14, min_periods=1).mean()
+    rs = gain / (loss + 1e-9)
     rsi14 = 100.0 - (100.0 / (1.0 + rs))
 
-    df = pd.DataFrame({'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14})
-    df.ffill(inplace=True)
-    df.fillna(0.0, inplace=True)
-    return df
+    # 2. 추가 지표
+    # VWAP
+    if 'timestamp' in df.columns:
+        date_str = df['timestamp'].astype(str).str[:8]
+        vp = close_series * vol_series
+        cum_vp = vp.groupby(date_str).cumsum()
+        cum_v = vol_series.groupby(date_str).cumsum()
+        vwap = cum_vp / (cum_v + 1e-9)
+    else:
+        vwap = close_series.copy()
+
+    # Bollinger Bands
+    std20 = close_series.rolling(window=20, min_periods=1).std()
+    bb_upper = sma20 + (std20 * 2)
+    bb_lower = sma20 - (std20 * 2)
+
+    # ATR 14
+    tr1 = high_series - low_series
+    tr2 = (high_series - close_series.shift(1)).abs()
+    tr3 = (low_series - close_series.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.rolling(window=14, min_periods=1).mean()
+
+    res_df = pd.DataFrame({
+        'SMA_20': sma20, 
+        'SMA_60': sma60, 
+        'RSI_14': rsi14,
+        'VWAP': vwap,
+        'BB_UPPER': bb_upper,
+        'BB_LOWER': bb_lower,
+        'ATR_14': atr14
+    })
+    res_df.ffill(inplace=True)
+    res_df.fillna(0.0, inplace=True)
+    return res_df
 
 
 class BacktestEngine:

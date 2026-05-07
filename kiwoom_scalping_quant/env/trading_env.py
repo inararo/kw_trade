@@ -34,8 +34,8 @@ class ScalpingTradingEnv(gym.Env):
         self.feature_dim = self.single_feature_dim * self.window_size
         # [분할매수/매도] position_ratio, unrealized_pnl 2개 추가
         self.portfolio_state_dim = 2
-        # [눌림목 지표] SMA_20, SMA_60, RSI_14 → 스케일링 후 3차원
-        self.indicator_dim = 3
+        # [눌림목 지표] SMA_20, SMA_60, RSI_14 + VWAP, BB_UPPER, BB_LOWER, ATR_14 → 스케일링 후 7차원
+        self.indicator_dim = 7
         # 현재 스텝의 지표값 캐시 (step()에서 보너스 판단용)
         self._current_indicators: dict = {}
 
@@ -252,36 +252,74 @@ class ScalpingTradingEnv(gym.Env):
     def _compute_indicators(self, data: list) -> pd.DataFrame:
         """
         [보조지표 자동 계산]
-        입력 데이터(list of dict)에서 SMA_20 / SMA_60 / RSI_14를 계산합니다.
+        입력 데이터(list of dict)에서 SMA_20 / SMA_60 / RSI_14 및 
+        VWAP, BB_UPPER, BB_LOWER, ATR_14를 계산합니다.
         NaN이 발생하는 앞부분 행은 ffill 후 0으로 채웁니다.
-        반환: 원본 데이터와 인덱스가 1:1 대응되는 DataFrame
         """
-        prices = pd.Series([float(d.get('price', 0)) for d in data], dtype=np.float64)
+        df = pd.DataFrame(data)
+        
+        # 키에 따라 데이터 추출
+        close_series = pd.to_numeric(df.get('price', df.get('close', df.get('cur_prc', 0))), errors='coerce').fillna(0)
+        high_series = pd.to_numeric(df.get('high', close_series), errors='coerce').fillna(0)
+        low_series = pd.to_numeric(df.get('low', close_series), errors='coerce').fillna(0)
+        vol_series = pd.to_numeric(df.get('volume', df.get('trde_qty', 0)), errors='coerce').fillna(0)
 
-        sma20 = prices.rolling(window=20, min_periods=1).mean()
-        sma60 = prices.rolling(window=60, min_periods=1).mean()
+        # 1. 기존 지표
+        sma20 = close_series.rolling(window=20, min_periods=1).mean()
+        sma60 = close_series.rolling(window=60, min_periods=1).mean()
 
-        # RSI-14 수동 계산 (pandas_ta 없이도 동작)
-        delta = prices.diff()
+        # RSI-14 수동 계산
+        delta = close_series.diff()
         gain = delta.clip(lower=0).rolling(window=14, min_periods=1).mean()
         loss = (-delta.clip(upper=0)).rolling(window=14, min_periods=1).mean()
         rs = gain / (loss + 1e-9)
         rsi14 = 100.0 - (100.0 / (1.0 + rs))
 
-        df = pd.DataFrame({'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14})
-        df.ffill(inplace=True)
-        df.fillna(0.0, inplace=True)
-        return df
+        # 2. 추가 지표
+        # VWAP
+        if 'timestamp' in df.columns:
+            date_str = df['timestamp'].astype(str).str[:8]
+            vp = close_series * vol_series
+            cum_vp = vp.groupby(date_str).cumsum()
+            cum_v = vol_series.groupby(date_str).cumsum()
+            vwap = cum_vp / (cum_v + 1e-9)
+        else:
+            vwap = close_series.copy()
+
+        # Bollinger Bands
+        std20 = close_series.rolling(window=20, min_periods=1).std()
+        bb_upper = sma20 + (std20 * 2)
+        bb_lower = sma20 - (std20 * 2)
+
+        # ATR 14
+        tr1 = high_series - low_series
+        tr2 = (high_series - close_series.shift(1)).abs()
+        tr3 = (low_series - close_series.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr14 = tr.rolling(window=14, min_periods=1).mean()
+
+        res_df = pd.DataFrame({
+            'SMA_20': sma20, 
+            'SMA_60': sma60, 
+            'RSI_14': rsi14,
+            'VWAP': vwap,
+            'BB_UPPER': bb_upper,
+            'BB_LOWER': bb_lower,
+            'ATR_14': atr14
+        })
+        res_df.ffill(inplace=True)
+        res_df.fillna(0.0, inplace=True)
+        return res_df
 
     def _get_indicator_obs(self, idx: int) -> np.ndarray:
         """
         현재 스텝의 보조지표를 0~1 범위로 스케일링하여 반환.
-          - SMA_20 / SMA_60: 현재가 대비 비율 → -1~1로 클리핑 (0=동일, +1=가격이 SMA의 2배)
-          - RSI_14: 0~100 → 0~1 정규화
-        부수적으로 _current_indicators 캐시도 업데이트합니다.
         """
         if not hasattr(self, '_indicator_df') or self._indicator_df is None:
-            self._current_indicators = {'SMA_20': 0.0, 'SMA_60': 0.0, 'RSI_14': 50.0}
+            self._current_indicators = {
+                'SMA_20': 0.0, 'SMA_60': 0.0, 'RSI_14': 50.0,
+                'VWAP': 0.0, 'BB_UPPER': 0.0, 'BB_LOWER': 0.0, 'ATR_14': 0.0
+            }
             return np.zeros(self.indicator_dim, dtype=np.float32)
 
         idx = min(idx, len(self._indicator_df) - 1)
@@ -291,17 +329,33 @@ class ScalpingTradingEnv(gym.Env):
         sma20 = float(row['SMA_20'])
         sma60 = float(row['SMA_60'])
         rsi14 = float(row['RSI_14'])
+        vwap = float(row.get('VWAP', 0.0))
+        bb_upper = float(row.get('BB_UPPER', 0.0))
+        bb_lower = float(row.get('BB_LOWER', 0.0))
+        atr14 = float(row.get('ATR_14', 0.0))
 
         # 캐시 갱신 (step()의 보너스 판단에서 사용)
-        self._current_indicators = {'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14}
+        self._current_indicators = {
+            'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14,
+            'VWAP': vwap, 'BB_UPPER': bb_upper, 'BB_LOWER': bb_lower, 'ATR_14': atr14
+        }
 
         # 스케일링
         p = current_price + 1e-9
         sma20_scaled = float(np.clip((current_price - sma20) / p, -1.0, 1.0))
         sma60_scaled = float(np.clip((current_price - sma60) / p, -1.0, 1.0))
-        rsi14_scaled  = rsi14 / 100.0  # 0 ~ 1
+        rsi14_scaled = float(np.clip(rsi14 / 100.0, 0.0, 1.0))
+        
+        vwap_scaled = float(np.clip((current_price - vwap) / p, -1.0, 1.0))
+        bb_upper_scaled = float(np.clip((bb_upper - current_price) / p, -1.0, 1.0))
+        bb_lower_scaled = float(np.clip((current_price - bb_lower) / p, -1.0, 1.0))
+        atr_scaled = float(np.clip(atr14 / p, 0.0, 1.0))
 
-        return np.array([sma20_scaled, sma60_scaled, rsi14_scaled], dtype=np.float32)
+        return np.array([
+            sma20_scaled, sma60_scaled, rsi14_scaled,
+            vwap_scaled, bb_upper_scaled, bb_lower_scaled, atr_scaled
+        ], dtype=np.float32)
+
 
     def _extract_single_feature(self, idx):
         """[3] 스케일 불변 피처 추출 로직 (Basic/Advanced 통합)"""
@@ -442,6 +496,33 @@ class ScalpingTradingEnv(gym.Env):
                         action = 4  # 전량 매도로 통일
                         action_executed = 4
                         self.logger.debug(f"[DayTrading] 15:20 데드라인 - 강제 청산 ({kst_ts})")
+
+        # ──────────────────────────────────────────────
+        # [A급 타점 특별 보상] (VWAP + ATR + BB_LOWER/RSI 조합)
+        # ──────────────────────────────────────────────
+        if action in (1, 2) and hasattr(self, '_current_indicators'):
+            inds = self._current_indicators
+            vwap = inds.get('VWAP', 0)
+            atr14 = inds.get('ATR_14', 0)
+            bb_lower = inds.get('BB_LOWER', 0)
+            rsi14 = inds.get('RSI_14', 50)
+            
+            # 변동성 조건 (ATR이 현재가의 0.1% 이상)
+            atr_threshold = current_price * 0.001 
+            
+            is_a_class = (
+                current_price > vwap and
+                atr14 > atr_threshold and
+                (current_price <= bb_lower or rsi14 < 30)
+            )
+            
+            if is_a_class:
+                bonus = 1.0 if action == 2 else 0.5
+                step_reward += bonus
+                self.logger.debug(
+                    f"🎯 [A급 타점 발생!] Buy {action*50}% → 보너스 +{bonus} "
+                    f"(Price:{current_price:,.0f}, VWAP:{vwap:,.0f}, ATR:{atr14:.0f}, BB_L:{bb_lower:,.0f}, RSI:{rsi14:.1f})"
+                )
 
         # ──────────────────────────────────────────────
         # 포트폴리오 상태 계산 (액션 실행 전 기준)

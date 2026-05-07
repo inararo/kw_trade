@@ -83,7 +83,7 @@ SELL_THRESHOLD = 0.3
 WINDOW_SIZE     = 10
 SINGLE_FEAT_DIM = 5
 PORTFOLIO_DIM   = 2
-INDICATOR_DIM   = 3
+INDICATOR_DIM   = 7
 INITIAL_BALANCE = 10_000_000
 SLIPPAGE        = 0.0005
 
@@ -93,16 +93,51 @@ SLIPPAGE        = 0.0005
 # ════════════════════════════════════════════════════════════════
 
 def _compute_indicators(data):
-    prices = pd.Series([float(d.get('price', 0)) for d in data], dtype=np.float64)
-    sma20  = prices.rolling(20, min_periods=1).mean()
-    sma60  = prices.rolling(60, min_periods=1).mean()
-    delta  = prices.diff()
-    gain   = delta.clip(lower=0).rolling(14, min_periods=1).mean()
-    loss   = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
-    rsi14  = 100.0 - (100.0 / (1.0 + gain / (loss + 1e-9)))
-    df = pd.DataFrame({'SMA_20': sma20, 'SMA_60': sma60, 'RSI_14': rsi14})
-    df.ffill(inplace=True); df.fillna(0.0, inplace=True)
-    return df
+    df = pd.DataFrame(data)
+    
+    close_series = pd.to_numeric(df.get('price', df.get('close', df.get('cur_prc', 0))), errors='coerce').fillna(0)
+    high_series = pd.to_numeric(df.get('high', close_series), errors='coerce').fillna(0)
+    low_series = pd.to_numeric(df.get('low', close_series), errors='coerce').fillna(0)
+    vol_series = pd.to_numeric(df.get('volume', df.get('trde_qty', 0)), errors='coerce').fillna(0)
+
+    sma20 = close_series.rolling(20, min_periods=1).mean()
+    sma60 = close_series.rolling(60, min_periods=1).mean()
+
+    delta = close_series.diff()
+    gain = delta.clip(lower=0).rolling(14, min_periods=1).mean()
+    loss = (-delta.clip(upper=0)).rolling(14, min_periods=1).mean()
+    rsi14 = 100.0 - (100.0 / (1.0 + gain / (loss + 1e-9)))
+
+    if 'timestamp' in df.columns:
+        date_str = df['timestamp'].astype(str).str[:8]
+        vp = close_series * vol_series
+        cum_vp = vp.groupby(date_str).cumsum()
+        cum_v = vol_series.groupby(date_str).cumsum()
+        vwap = cum_vp / (cum_v + 1e-9)
+    else:
+        vwap = close_series.copy()
+
+    std20 = close_series.rolling(20, min_periods=1).std()
+    bb_upper = sma20 + (std20 * 2)
+    bb_lower = sma20 - (std20 * 2)
+
+    tr1 = high_series - low_series
+    tr2 = (high_series - close_series.shift(1)).abs()
+    tr3 = (low_series - close_series.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=1).mean()
+
+    res_df = pd.DataFrame({
+        'SMA_20': sma20, 
+        'SMA_60': sma60, 
+        'RSI_14': rsi14,
+        'VWAP': vwap,
+        'BB_UPPER': bb_upper,
+        'BB_LOWER': bb_lower,
+        'ATR_14': atr14
+    })
+    res_df.ffill(inplace=True); res_df.fillna(0.0, inplace=True)
+    return res_df
 
 
 def _extract_single_feature(data, idx, initial_price):
@@ -130,10 +165,23 @@ def _get_portfolio_state(balance, holdings, avg_entry_price, curr_p):
 def _get_indicator_obs(idf, idx, curr_p):
     row = idf.iloc[min(idx, len(idf)-1)]
     p   = curr_p + 1e-9
+    
+    sma20 = float(row['SMA_20'])
+    sma60 = float(row['SMA_60'])
+    rsi14 = float(row['RSI_14'])
+    vwap = float(row.get('VWAP', 0.0))
+    bb_upper = float(row.get('BB_UPPER', 0.0))
+    bb_lower = float(row.get('BB_LOWER', 0.0))
+    atr14 = float(row.get('ATR_14', 0.0))
+    
     return np.array([
-        float(np.clip((curr_p - float(row['SMA_20'])) / p, -1.0, 1.0)),
-        float(np.clip((curr_p - float(row['SMA_60'])) / p, -1.0, 1.0)),
-        float(row['RSI_14']) / 100.0,
+        float(np.clip((curr_p - sma20) / p, -1.0, 1.0)),
+        float(np.clip((curr_p - sma60) / p, -1.0, 1.0)),
+        float(np.clip(rsi14 / 100.0, 0.0, 1.0)),
+        float(np.clip((curr_p - vwap) / p, -1.0, 1.0)),
+        float(np.clip((bb_upper - curr_p) / p, -1.0, 1.0)),
+        float(np.clip((curr_p - bb_lower) / p, -1.0, 1.0)),
+        float(np.clip(atr14 / p, 0.0, 1.0))
     ], dtype=np.float32)
 
 

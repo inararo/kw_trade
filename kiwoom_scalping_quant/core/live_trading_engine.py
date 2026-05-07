@@ -271,19 +271,23 @@ class LiveTradingEngine:
         if len(features) < seq_len: return
         obs_1d = features[-seq_len:].flatten()
         
-        # 1.5. 피처 정규화 (Z-score Scaling) - [핵심 패치]
-        # 학습 시와 동일한 통계량 분포를 유지하기 위해 실시간 정규화 적용
-        if self.normalizer and len(obs_1d) > 0:
-            obs_1d = self.normalizer.normalize(obs_1d)
-            # self.logger.debug(f"[{self.symbol}] 피처 정규화 완료 (평균: {np.mean(obs_1d):.4f}, 표준편차: {np.std(obs_1d):.4f})")
+        # 실전 매매 잔고 강제 동기화 (예측 전에 실제 포트폴리오 상태 파악)
+        if hasattr(self.order_manager, 'fetch_real_balance'):
+            await self.order_manager.fetch_real_balance()
+            
+        # 1.5. 피처 및 Observation 통합 구축 (219차원)
+        final_obs = self._build_live_observation(obs_1d, buffer_list)
 
-        # 2. Observation Padding (Target Dim 동기화)
+        # 2. Observation Padding 안전 방어 (혹시라도 차원이 모자란 경우)
         obs_shape = getattr(self.agent.env, 'observation_space', None)
         if obs_shape:
             target_dim = obs_shape.shape[0]
-            if len(obs_1d) < target_dim:
-                padded = np.pad(obs_1d, (0, target_dim - len(obs_1d)), 'constant')
-                obs_1d = padded
+            if len(final_obs) < target_dim:
+                final_obs = np.pad(final_obs, (0, target_dim - len(final_obs)), 'constant')
+            elif len(final_obs) > target_dim:
+                final_obs = final_obs[:target_dim]
+        
+        obs_1d = final_obs
 
         # 3. Action Masking 및 예측
         # 0:Hold  1:Buy40%  2:Buy60%  3:Sell60%  4:Sell40%
@@ -369,21 +373,23 @@ class LiveTradingEngine:
 
             # 매수 비율: action=1 → 40%, action=2 → 60%
             buy_ratio = 0.40 if action == 1 else 0.60
-
-            await self.order_manager.sync_balance(force=True)
+            
             orderable_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
-            invest_amount = min(max_invest * buy_ratio, orderable_cash)
+            invest_amount = min(max_invest * buy_ratio, orderable_cash * 0.99) # 수수료 등 감안 99%
 
             if invest_amount < max_invest * buy_ratio and invest_amount > 0:
                 self.logger.info(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest * buy_ratio:,.0f} -> {invest_amount:,.0f}")
 
+            # 슬리피지 방지: 지정가(최우선 매도호가)를 추정하여 안전하게 주문 산출
+            # 여기서는 편의상 current_price(시장가)를 기준으로 매수 주문. 
+            # 스마트 오더 엔진(_execute_order_background) 내에서 get_valid_tick_price를 통해 최적 호가로 보정됩니다.
             qty = int(invest_amount // current_price)
             if qty > 0:
                 if self.strategy_manager:
                     self.strategy_manager._pending_buy_symbols.add(self.symbol)
                     self.strategy_manager.record_buy()
                 self._is_order_pending = True
-                valid_price = get_valid_tick_price(current_price, "BUY")
+                valid_price = get_valid_tick_price(current_price * 1.001, "BUY")  # 확실한 체결을 위해 1틱 위 지정가 던짐
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
@@ -396,7 +402,7 @@ class LiveTradingEngine:
                 sell_ratio = 0.60 if action == 3 else 0.40
                 sell_qty = max(1, int(real_holdings * sell_ratio))
                 self._is_order_pending = True
-                valid_price = get_valid_tick_price(current_price, "SELL")
+                valid_price = get_valid_tick_price(current_price * 0.999, "SELL") # 확실한 체결을 위해 1틱 아래 지정가 던짐
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
                 self.last_action_time = current_time
             else:
@@ -526,6 +532,115 @@ class LiveTradingEngine:
             if self.strategy_manager:
                 self.strategy_manager._pending_buy_symbols.discard(self.symbol)
             self.logger.info(f"🔒 {self.symbol} 주문 락 해제 완료.")
+
+    def _build_live_observation(self, features_1d, buffer_list) -> np.ndarray:
+        """
+        훈련 환경(trading_env.py)의 _get_observation()과 100% 동일하게 
+        Feature(110) + StockID(Max) + Portfolio(2) + Indicator(7) 를 결합합니다.
+        """
+        import pandas as pd
+        
+        # 1. Feature (110)
+        obs_1d = features_1d
+        if self.normalizer and len(obs_1d) > 0:
+            obs_1d = self.normalizer.normalize(obs_1d)
+            
+        # 2. Stock ID (One-hot)
+        try:
+            # agent.env.get_attr()는 서브프로세스 래퍼용, 실패 시 기본값
+            if hasattr(self.agent.env, 'get_attr'):
+                all_symbols = self.agent.env.get_attr('all_symbols')[0]
+                unwrapped = self.agent.env.get_attr('unwrapped')[0]
+                max_num_symbols = getattr(unwrapped, 'max_num_symbols', len(all_symbols))
+            else:
+                all_symbols = getattr(self.agent.env, 'all_symbols', [self.symbol])
+                max_num_symbols = getattr(self.agent.env, 'max_num_symbols', 140)
+        except Exception:
+            all_symbols = [self.symbol]
+            max_num_symbols = 140 # Typical max limit
+            
+        stock_onehot = np.zeros(max_num_symbols, dtype=np.float32)
+        if self.symbol in all_symbols:
+            idx = all_symbols.index(self.symbol)
+            if idx < max_num_symbols:
+                stock_onehot[idx] = 1.0
+
+        # 3. Portfolio State (2)
+        current_price = float(buffer_list[-1]['price'])
+        balance = getattr(self.order_manager, 'orderable_cash', 0.0)
+        holdings = self.order_manager.holdings.get(self.symbol, 0)
+        avg_entry = self.order_manager.avg_entry_prices.get(self.symbol, 0.0)
+        
+        net_worth = balance + holdings * current_price
+        stock_value = holdings * current_price
+        position_ratio = float(np.clip(stock_value / (net_worth + 1e-9), 0.0, 1.0))
+        
+        if holdings > 0 and avg_entry > 0:
+            unrealized_pnl = (current_price - avg_entry) / (avg_entry + 1e-9)
+        else:
+            unrealized_pnl = 0.0
+        unrealized_pnl = float(np.clip(unrealized_pnl, -1.0, 1.0))
+        
+        portfolio_state = np.array([position_ratio, unrealized_pnl], dtype=np.float32)
+        
+        # 4. Indicators (7) - 순수 Pandas 연산 동기화
+        df = pd.DataFrame(buffer_list)
+        close_series = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+        high_series = pd.to_numeric(df.get('high', close_series), errors='coerce').fillna(0)
+        low_series = pd.to_numeric(df.get('low', close_series), errors='coerce').fillna(0)
+        vol_series = pd.to_numeric(df.get('volume', 0), errors='coerce').fillna(0)
+        
+        sma20 = float(close_series.rolling(window=20, min_periods=1).mean().iloc[-1])
+        sma60 = float(close_series.rolling(window=60, min_periods=1).mean().iloc[-1])
+        
+        delta = close_series.diff()
+        gain = delta.clip(lower=0).rolling(window=14, min_periods=1).mean()
+        loss = (-delta.clip(upper=0)).rolling(window=14, min_periods=1).mean()
+        rs = gain / (loss + 1e-9)
+        rsi14 = float((100.0 - (100.0 / (1.0 + rs))).iloc[-1])
+        
+        if 'timestamp' in df.columns:
+            date_str = df['timestamp'].astype(str).str[:8]
+            vp = close_series * vol_series
+            cum_vp = vp.groupby(date_str).cumsum()
+            cum_v = vol_series.groupby(date_str).cumsum()
+            vwap = float((cum_vp / (cum_v + 1e-9)).iloc[-1])
+        else:
+            vwap = current_price
+            
+        std20 = float(close_series.rolling(window=20, min_periods=1).std().iloc[-1])
+        bb_upper = sma20 + (std20 * 2)
+        bb_lower = sma20 - (std20 * 2)
+        
+        tr1 = high_series - low_series
+        tr2 = (high_series - close_series.shift(1)).abs()
+        tr3 = (low_series - close_series.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr14 = float(tr.rolling(window=14, min_periods=1).mean().iloc[-1])
+        
+        p = current_price + 1e-9
+        sma20_scaled = float(np.clip((current_price - sma20) / p, -1.0, 1.0))
+        sma60_scaled = float(np.clip((current_price - sma60) / p, -1.0, 1.0))
+        rsi14_scaled = float(np.clip(rsi14 / 100.0, 0.0, 1.0))
+        vwap_scaled = float(np.clip((current_price - vwap) / p, -1.0, 1.0))
+        bb_upper_scaled = float(np.clip((bb_upper - current_price) / p, -1.0, 1.0))
+        bb_lower_scaled = float(np.clip((current_price - bb_lower) / p, -1.0, 1.0))
+        atr_scaled = float(np.clip(atr14 / p, 0.0, 1.0))
+        
+        indicator_obs = np.array([
+            sma20_scaled, sma60_scaled, rsi14_scaled,
+            vwap_scaled, bb_upper_scaled, bb_lower_scaled, atr_scaled
+        ], dtype=np.float32)
+        
+        # 5. Combine All
+        final_obs = np.concatenate([
+            obs_1d,
+            stock_onehot,
+            portfolio_state,
+            indicator_obs
+        ]).astype(np.float32)
+        
+        return final_obs
 
     def _update_ui_signals(self, action, signal_text, probs):
         vm = getattr(self.config_manager, "_injected_live_vm", None)
