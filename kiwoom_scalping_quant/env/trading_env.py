@@ -134,14 +134,21 @@ class ScalpingTradingEnv(gym.Env):
                 self.precomputed_features = self._feature_cache[sym]
 
             if self.config.get("mode") == "backtest":
-                self.current_step = options.get('start_step', 0)
+                # [수정된 부분] 무작정 0부터 시작하지 않고, 최소 60번 캔들(SMA_60 계산을 위해) 또는 window_size부터 시작하도록 강제
+                min_safe_step = max(self.window_size, 60)
+                req_start_step = options.get('start_step', min_safe_step)
+
+                # 방어 코드: 혹시 밖에서 0을 던졌더라도 안전한 위치로 보정
+                self.current_step = max(req_start_step, min_safe_step)
                 self.end_step = data_len - 1
                 self.logger.info(f"Backtest Reset: Starting at {self.current_step} / End at {self.end_step}")
             else:
                 # 학습 모드: 스마트 샘플링 or 순수 랜덤 분기
-                max_start = max(0, data_len - self.max_steps - 1)
+                min_safe_step = max(self.window_size, 60)  # 학습 때도 0이 아닌 안전 지대부터 시작
+                max_start = max(min_safe_step, data_len - self.max_steps - 1)
+
                 if 'start_step' in options:
-                    self.current_step = options['start_step']
+                    self.current_step = max(options['start_step'], min_safe_step)
                 elif self.use_smart_sampling:
                     # [개선] 스마트 샘플링 시 필요에 따라 장 시작 시점으로 보정
                     raw_start = self._get_smart_start_step(max_start)
@@ -161,12 +168,21 @@ class ScalpingTradingEnv(gym.Env):
             
             self.initial_price = self._get_current_price()
 
-        # 버퍼 초기화
+        # [Zero-padding 방지] 버퍼 초기화
+        # current_step 직전 window_size개의 실제 캔들 데이터로 채운다.
+        # 기존 방식(동일 스텝 반복)은 ret=0, rel_p=0으로 모두 0이 되는 문제가 있었음.
         self.lookback_buffer.clear()
-        for _ in range(self.window_size):
-            self.lookback_buffer.append(self._extract_single_feature(self.current_step))
+        buf_start = max(0, self.current_step - self.window_size + 1)
+        for fill_idx in range(buf_start, self.current_step + 1):
+            self.lookback_buffer.append(self._extract_single_feature(fill_idx))
+        # 데이터가 window_size보다 부족하면 첫 피처로 앞부분 패딩
+        if len(self.lookback_buffer) < self.window_size:
+            first_feat = self._extract_single_feature(buf_start)
+            while len(self.lookback_buffer) < self.window_size:
+                self.lookback_buffer.appendleft(first_feat)
 
         return self._get_observation(), self._get_info()
+
 
     def _get_smart_start_step(self, max_start: int) -> int:
         """
@@ -407,7 +423,7 @@ class ScalpingTradingEnv(gym.Env):
             if unrealized_pnl <= hard_stop_pct:
                 action = 4  # 전량 매도로 오버라이드
                 action_executed = 4
-                step_reward -= 5.0  # 강력한 페널티
+                step_reward -= 1.5  # [완화] 강력한 페널티 축소 (-5.0 -> -1.5)
                 self.logger.debug(
                     f"🚨 [HardStop] 평가손 {unrealized_pnl*100:.2f}% → 강제 전량 청산"
                 )
@@ -520,7 +536,21 @@ class ScalpingTradingEnv(gym.Env):
                 step_reward -= 0.001
                 action_executed = 0
 
-        # action == 0: Hold → 아무것도 하지 않음
+        # ──────────────────────────────────────────────
+        # 1-1. Action 0: Hold (관망) 페널티
+        # ──────────────────────────────────────────────
+        if action == 0 and self.holdings == 0:
+            # "아무것도 안 하는 죄" - 억지로라도 타점을 찾게 만듦
+            step_reward -= 0.001
+
+        # ──────────────────────────────────────────────
+        # 1-2. 첫 매수 진입 보너스 (용기 장려)
+        # ──────────────────────────────────────────────
+        if action in (1, 2) and action_executed in (1, 2):
+            # 이전 상태가 무포지션이었는데 매수했다면 (첫 진입)
+            if self.holdings > 0 and (self.holdings - shares) == 0:
+                step_reward += 0.05
+                self.logger.debug(f"🚀 [EntryBonus] 첫 매수 진입 용기 보너스 +0.05")
 
         # ──────────────────────────────────────────────
         # [눌림목 타점 보너스]
