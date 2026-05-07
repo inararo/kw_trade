@@ -58,6 +58,9 @@ class LiveTradingEngine:
         # [신규] 주문 진행 상태 Lock 플래그 (중복 주문 방지)
         self._is_order_pending = False
 
+        # [동적 유니버스] 이탈 대상 상태 플래그
+        self.is_condition_deleted = False
+
         # [신규] 실시간 피처 정규화기 (Z-score Scaling)
         # AI 모델의 신뢰도 포화(Saturation) 현상을 방지하기 위해 학습 시와 동일한 통계량으로 정규화 수행
         self.normalizer = OnlineRollingNormalizer(window_size=200) 
@@ -297,7 +300,51 @@ class LiveTradingEngine:
         holdings = self.order_manager.holdings.get(self.symbol, 0)
 
         # 매수 가능 조건: 잔고 충분 & 주문 미진행
-        can_buy = (balance >= current_price and not self._is_order_pending)
+        can_buy = (balance >= current_price and not self._is_order_pending and not self.is_condition_deleted)
+        
+        # [하드 필터] 자체 2중 안전장치 검사 (매수 시그널 허용 전)
+        if can_buy:
+            # Indicator에서 계산된 SMA20, VWAP, ATR을 활용
+            # final_obs 내 indicator 값은 스케일링 되어 있으므로 원본 Pandas에서 재추출
+            try:
+                df = pd.DataFrame(buffer_list)
+                close_series = pd.to_numeric(df.get('price', 0), errors='coerce').fillna(0)
+                high_series = pd.to_numeric(df.get('high', close_series), errors='coerce').fillna(0)
+                low_series = pd.to_numeric(df.get('low', close_series), errors='coerce').fillna(0)
+                vol_series = pd.to_numeric(df.get('volume', 0), errors='coerce').fillna(0)
+                
+                sma20 = float(close_series.rolling(window=20, min_periods=1).mean().iloc[-1])
+                
+                if 'timestamp' in df.columns:
+                    date_str = df['timestamp'].astype(str).str[:8]
+                    vp = close_series * vol_series
+                    cum_vp = vp.groupby(date_str).cumsum()
+                    cum_v = vol_series.groupby(date_str).cumsum()
+                    vwap = float((cum_vp / (cum_v + 1e-9)).iloc[-1])
+                else:
+                    vwap = current_price
+                    
+                tr1 = high_series - low_series
+                tr2 = (high_series - close_series.shift(1)).abs()
+                tr3 = (low_series - close_series.shift(1)).abs()
+                tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+                atr14 = float(tr.rolling(window=14, min_periods=1).mean().iloc[-1])
+                
+                # 거래대금 필터 (최근 1시간 기준 거래대금 등, 여기서는 당일 거래대금이 파싱 안되므로 생략 또는 보수적 접근)
+                # 필터 1: SMA20 상향 돌파 (정배열 혹은 반등 확인)
+                if current_price < sma20:
+                    can_buy = False
+                    # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: 현재가({current_price})가 SMA_20({sma20:.2f}) 아래에 있습니다.")
+                
+                # 필터 2: ATR 14가 임계값 (예: 최소 호가단위 2배 이상)
+                min_atr = current_price * 0.005 # 0.5% 변동성
+                if atr14 < min_atr:
+                    can_buy = False
+                    # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: ATR({atr14:.2f})이 최소 기준치({min_atr:.2f}) 미만입니다.")
+                    
+            except Exception as e:
+                self.logger.warning(f"[{self.symbol}] ⚠️ 하드 필터 계산 에러: {e}")
+                can_buy = False
         # 매도 가능 조건: 보유 수량 있음 & 주문 미진행
         can_sell = (holdings > 0 and not self._is_order_pending)
 
@@ -662,3 +709,24 @@ class LiveTradingEngine:
         if vm:
             # ViewModel의 append_log는 내부적으로 sig_log_appended 시그널을 emit함
             vm.append_log(message)
+
+    async def destroy(self):
+        """
+        [동적 유니버스] 조건 이탈 및 잔고 0 확인 후 엔진을 안전하게 종료합니다.
+        더 이상 이 종목에 대해 메모리를 낭비하지 않도록 버퍼를 비웁니다.
+        """
+        self.logger.info(f"[{self.symbol}] 🛑 엔진 안전 종료 (Graceful Shutdown) 절차 시작")
+        
+        # 1. 펜딩 중인 주문 파이프라인이 끝날 때까지 대기 (최대 5초)
+        wait_cnt = 0
+        while self._is_order_pending and wait_cnt < 10:
+            await asyncio.sleep(0.5)
+            wait_cnt += 1
+            
+        # 2. 내부 버퍼 정리
+        self.minute_buffer.clear()
+        if hasattr(self.normalizer, 'history'):
+            self.normalizer.history.clear()
+            
+        self.is_warmed_up = False
+        self.logger.info(f"[{self.symbol}] 🗑️ 엔진 메모리 해제 및 파괴 완료.")

@@ -42,6 +42,10 @@ class StrategyManager:
         self.global_buy_cooldown = 2.5  # [신규] 글로벌 매수 쿨타임 (초)
         self._order_lock = asyncio.Lock() # [신규] 비동기 레이스 컨디션 방지용 락
         self._pending_buy_symbols: set = set() # [신규] 동기적 중복 진입 차단용 집합
+        
+        # [동적 유니버스 필터링]
+        self.MAX_CONCURRENT_STOCKS = 5
+        self.pending_universe_queue: List[str] = [] # 조건검색 대기열
 
     def set_ai_paused(self, paused: bool):
         self.is_ai_paused = paused
@@ -402,3 +406,90 @@ class StrategyManager:
             await asyncio.sleep(0.5)
 
         self.logger.info(f"🏁 StrategyManager: 유니버스 웜업 종료. (성공: {success_count}/{len(engines_to_warmup)})")
+
+    # ==========================================
+    # [동적 유니버스 필터링] 조건검색 이벤트 핸들러
+    # ==========================================
+    async def handle_condition_insert(self, symbol: str, event_data: dict = None):
+        """조건검색 편입 이벤트 수신"""
+        clean_symbol = symbol.split('_')[0]
+        
+        async with self._swap_lock:
+            # 이미 관리 중인 종목이면 무시
+            if clean_symbol in self.symbols or clean_symbol in self.pending_universe_queue:
+                return
+
+            # 최대 감시 종목 수 여유가 있는지 확인
+            active_count = len([s for s in self.symbols if not self.order_manager.has_unexecuted_orders(s) and self.order_manager.holdings.get(s, 0) == 0])
+            # 실제 활성 감시 수 = (총 심볼 수 - 잔고 보유로 인한 강제유지 수)  
+            # 편의상 len(self.symbols)를 기준으로 하되 MAX_CONCURRENT_STOCKS를 초과하면 대기열로 넣음
+            
+            if len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
+                self.logger.info(f"🌟 [조건검색 편입] {clean_symbol} 즉시 감시 시작 (현재 {len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
+                await self._add_dynamic_symbol(clean_symbol)
+            else:
+                self.logger.info(f"⏳ [조건검색 대기] {clean_symbol} 감시 슬롯 초과. 대기열 추가 (현재 큐: {len(self.pending_universe_queue)}개)")
+                self.pending_universe_queue.append(clean_symbol)
+
+    async def handle_condition_delete(self, symbol: str, event_data: dict = None):
+        """조건검색 이탈 이벤트 수신"""
+        clean_symbol = symbol.split('_')[0]
+        
+        async with self._swap_lock:
+            if clean_symbol in self.pending_universe_queue:
+                self.pending_universe_queue.remove(clean_symbol)
+                self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 대기열에서 제거")
+                return
+                
+            if clean_symbol in self.symbols:
+                # 잔고와 미체결 내역이 있는지 확인
+                has_holdings = self.order_manager.holdings.get(clean_symbol, 0) > 0
+                has_unex = self.order_manager.has_unexecuted_orders(clean_symbol)
+                
+                if has_holdings or has_unex:
+                    self.logger.warning(f"⚠️ [조건검색 이탈 보류] {clean_symbol} 잔고 또는 미체결 존재. 청산 시까지 감시 유지")
+                    # 엔진 내부 플래그에 '이탈 대상'임을 표시하여 신규 진입을 막을 수 있도록 함
+                    engine = self.envs.get(clean_symbol)
+                    if engine:
+                        engine.is_condition_deleted = True
+                else:
+                    self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 감시 중단 및 엔진 파괴")
+                    await self._remove_dynamic_symbol(clean_symbol)
+                    await self._process_pending_queue()
+
+    async def _add_dynamic_symbol(self, symbol: str):
+        """단일 종목 동적 추가 및 엔진 구동"""
+        if symbol not in self.symbols:
+            self.symbols.append(symbol)
+            from core.live_trading_engine import LiveTradingEngine
+            new_engine = LiveTradingEngine(symbol, self.config_manager, self.order_manager, self.shared_agent, strategy_manager=self)
+            self.envs[symbol] = new_engine
+            self.last_action_times[symbol] = 0.0
+            
+            # 실시간 구독 요청
+            if hasattr(self.data_collector, 'subscribe_symbol'):
+                await self.data_collector.subscribe_symbol(symbol)
+                
+            # 즉시 웜업
+            token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+            if token:
+                asyncio.create_task(self._safe_sequential_warmup([new_engine], token))
+
+    async def _remove_dynamic_symbol(self, symbol: str):
+        """단일 종목 동적 제거 및 엔진 파괴"""
+        if symbol in self.symbols:
+            self.symbols.remove(symbol)
+            if symbol in self.envs:
+                engine = self.envs.pop(symbol)
+                if hasattr(engine, 'destroy'):
+                    await engine.destroy()
+            
+            if hasattr(self.data_collector, 'unsubscribe_symbol'):
+                await self.data_collector.unsubscribe_symbol(symbol)
+
+    async def _process_pending_queue(self):
+        """빈 슬롯이 생겼을 때 대기열에서 종목을 꺼내어 편입"""
+        while len(self.symbols) < self.MAX_CONCURRENT_STOCKS and self.pending_universe_queue:
+            next_symbol = self.pending_universe_queue.pop(0)
+            self.logger.info(f"🔄 [큐 진입] 빈 슬롯 발생. 대기열에서 {next_symbol} 편입")
+            await self._add_dynamic_symbol(next_symbol)
