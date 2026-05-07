@@ -32,6 +32,8 @@ class ScalpingTradingEnv(gym.Env):
         # [모드 분기] 
         self.single_feature_dim = 11 if self.feature_mode == 'advanced' else 5
         self.feature_dim = self.single_feature_dim * self.window_size
+        # [분할매수/매도] position_ratio, unrealized_pnl 2개 추가
+        self.portfolio_state_dim = 2
 
         # [4] 다종목 학습을 위한 유니버스 정보 및 동적 임배딩 설정
         self.historical_data_dict = config.get("historical_data_dict", {})
@@ -51,22 +53,27 @@ class ScalpingTradingEnv(gym.Env):
         # target_dim이 주어지면 모델에 맞춰 역산하고, 없으면 기본 100 사용
         target_dim = config.get("target_dim")
         if target_dim:
-            self.stock_id_dim = max(1, target_dim - self.feature_dim)
+            # portfolio_state_dim(2)을 함께 차감하여 총 obs가 target_dim에 수렴하도록 역산
+            self.stock_id_dim = max(1, target_dim - self.feature_dim - self.portfolio_state_dim)
             self.max_num_symbols = self.stock_id_dim
-            self.logger.info(f"Target Dimension Detected: Adapting stock_id_dim to {self.stock_id_dim}")
+            self.logger.info(
+                f"Target Dimension Detected: Adapting stock_id_dim to {self.stock_id_dim} "
+                f"(target={target_dim}, feature={self.feature_dim}, portfolio_state={self.portfolio_state_dim})"
+            )
         else:
             self.max_num_symbols = 100 
             self.stock_id_dim = self.max_num_symbols
         
-        # [3] Observation 공간 차원: 특징 + 가변/고정 종목ID 차원 (최종 차원은 target_dim에 수렴)
+        # [3] Observation 공간 차원: 특징 + 가변/고정 종목ID 차원 + 포트폴리오 상태(2)
+        obs_total_dim = self.feature_dim + self.stock_id_dim + self.portfolio_state_dim
         self.observation_space = spaces.Box(
-            low=-10.0, high=10.0, shape=(self.feature_dim + self.stock_id_dim,), dtype=np.float32
+            low=-10.0, high=10.0, shape=(obs_total_dim,), dtype=np.float32
         )
         self.lookback_buffer = deque(maxlen=self.window_size)
-        total_dim = self.feature_dim + self.stock_id_dim
-        self.logger.info(f"PPO Env Init: Obs Shape = {self.observation_space.shape} (Total:{total_dim})")
+        self.logger.info(f"PPO Env Init: Obs Shape = {self.observation_space.shape} (Total:{obs_total_dim})")
 
-        self.action_space = spaces.Discrete(3) # 0:Hold, 1:Buy, 2:Sell
+        # 0:Hold, 1:Buy50%, 2:Buy100%, 3:Sell50%, 4:Sell100%
+        self.action_space = spaces.Discrete(5)
         self.balance = config.get('initial_balance', 10000000)
         self.holdings = 0
         self.current_step = 0
@@ -238,8 +245,25 @@ class ScalpingTradingEnv(gym.Env):
             row.get("OIR", 0.0), row.get("Volatility", 0.0)
         ], dtype=np.float32)
 
+    def _get_portfolio_state(self) -> np.ndarray:
+        """현재 포지션 비율과 평가 수익률을 반환 (0.0~1.0 범위)"""
+        current_price = self._get_current_price()
+        initial_balance = self.config.get('initial_balance', 10000000)
+        net_worth = self.balance + self.holdings * current_price
+        stock_value = self.holdings * current_price
+        position_ratio = stock_value / (net_worth + 1e-9)
+        position_ratio = float(np.clip(position_ratio, 0.0, 1.0))
+
+        if self.holdings > 0 and self.avg_entry_price > 0:
+            unrealized_pnl = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9)
+        else:
+            unrealized_pnl = 0.0
+        unrealized_pnl = float(np.clip(unrealized_pnl, -1.0, 1.0))
+
+        return np.array([position_ratio, unrealized_pnl], dtype=np.float32)
+
     def _get_observation(self):
-        """[2] 특징 배열 + 100차원 고정 Hard-Padding One-hot 결합"""
+        """[2] 특징 배열 + 100차원 고정 Hard-Padding One-hot + 포트폴리오 상태(2) 결합"""
         features = np.concatenate(list(self.lookback_buffer)).astype(np.float32)
         
         # 무조건 100칸짜리 고정 배열 생성
@@ -248,8 +272,9 @@ class ScalpingTradingEnv(gym.Env):
         # 현재 종목의 인덱스가 100 이내인 경우에만 인코딩 (0 ~ 99)
         if hasattr(self, 'current_symbol_idx') and self.current_symbol_idx < self.max_num_symbols:
             stock_onehot[self.current_symbol_idx] = 1.0
-            
-        return np.concatenate([features, stock_onehot])
+
+        portfolio_state = self._get_portfolio_state()
+        return np.concatenate([features, stock_onehot, portfolio_state])
 
     def _get_info(self):
         current_price = self._get_current_price()
@@ -262,126 +287,205 @@ class ScalpingTradingEnv(gym.Env):
         }
 
     def action_masks(self):
-        """인위적인 마스킹 없이 잔고/보유량 기반 기본 마스킹만 수행"""
-        masks = [True, False, False]
+        """5액션 기반 마스킹 (0:Hold 1:Buy50% 2:Buy100% 3:Sell50% 4:Sell100%)"""
+        # 기본: Hold만 허용
+        masks = [True, False, False, False, False]
         curr_p = self._get_current_price()
         if curr_p <= 0: return masks
-        
-        # [당일 청산 규칙] 15:20 ~ 15:30 사이에는 매수(Buy) 차단
+
+        portfolio_state = self._get_portfolio_state()
+        position_ratio = portfolio_state[0]
+
+        # [당일 청산 규칙] 15:20 이후 매수 차단
         is_closing_time = False
         if self.historical_data is not None:
             import datetime
             idx = min(self.current_step, len(self.historical_data)-1)
             ts = self.historical_data[idx].get("timestamp")
             if ts and hasattr(ts, "hour"):
-                # UTC -> KST 보정 (+9시간)
                 kst_ts = ts + datetime.timedelta(hours=9)
                 if kst_ts.hour == 15 and kst_ts.minute >= 20:
                     is_closing_time = True
 
-        if self.balance >= curr_p * 1.001 and self.holdings == 0 and self.steps_since_sell >= self.cooldown_steps:
-            if not is_closing_time: # 마감 시간에는 매수 금지
-                masks[1] = True
-        if self.holdings > 0 and self.steps_since_buy >= self.cooldown_steps:
-            masks[2] = True
+        can_buy = (self.balance >= curr_p * 1.001
+                   and position_ratio < 1.0
+                   and self.steps_since_sell >= self.cooldown_steps
+                   and not is_closing_time)
+        can_sell = self.holdings > 0 and self.steps_since_buy >= self.cooldown_steps
+
+        if can_buy:
+            masks[1] = True  # Buy 50%
+            masks[2] = True  # Buy 100%
+        if can_sell:
+            masks[3] = True  # Sell 50%
+            masks[4] = True  # Sell 100%
         return masks
 
     def step(self, action):
         current_price = self._get_current_price()
         slippage = self.config.get('slippage', 0.0005)
+        hard_stop_pct = self.config.get('hard_stop_pct', -0.03)  # 기본 -3%
         step_reward = 0.0
         action_executed = action
-        
-        # [당일 청산 규칙] 15:20 이후 강제 청산 오버라이드
+
+        # ──────────────────────────────────────────────
+        # [오버라이드 1] 하드 스탑 (무한 물타기 방지)
+        # unrealized_pnl 이 hard_stop_pct 이하이면 강제 전량 매도
+        # ──────────────────────────────────────────────
+        if self.holdings > 0 and self.avg_entry_price > 0:
+            unrealized_pnl = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9)
+            if unrealized_pnl <= hard_stop_pct:
+                action = 4  # 전량 매도로 오버라이드
+                action_executed = 4
+                step_reward -= 5.0  # 강력한 페널티
+                self.logger.debug(
+                    f"🚨 [HardStop] 평가손 {unrealized_pnl*100:.2f}% → 강제 전량 청산"
+                )
+
+        # ──────────────────────────────────────────────
+        # [오버라이드 2] 15:20 당일 청산 규칙
+        # ──────────────────────────────────────────────
         if self.historical_data is not None:
             import datetime
             idx = min(self.current_step, len(self.historical_data)-1)
             ts = self.historical_data[idx].get("timestamp")
             if ts and hasattr(ts, "hour"):
-                # UTC -> KST 보정 (+9시간)
                 kst_ts = ts + datetime.timedelta(hours=9)
                 if kst_ts.hour == 15 and kst_ts.minute >= 20:
                     if self.holdings > 0:
-                        action = 2 # 강제 매도 결정
-                        action_executed = 2 # UI 표시를 위해 실행 액션 업데이트
-                        self.logger.debug(f"[DayTrading] 15:20 데드라인 도달 - 강제 청산 실행 ({kst_ts})")
-        
+                        action = 4  # 전량 매도로 통일
+                        action_executed = 4
+                        self.logger.debug(f"[DayTrading] 15:20 데드라인 - 강제 청산 ({kst_ts})")
+
+        # ──────────────────────────────────────────────
+        # 포트폴리오 상태 계산 (액션 실행 전 기준)
+        # ──────────────────────────────────────────────
+        net_worth = self.balance + self.holdings * current_price
+        stock_value = self.holdings * current_price
+        position_ratio = stock_value / (net_worth + 1e-9)
+
+        # ──────────────────────────────────────────────
         # 1. Action Execution
-        if action == 1: # Buy
-            if self.balance > 0 and self.holdings == 0:
-                # [FIX] 풀베팅 로직: 잔고의 99%를 사용하여 최대 수량 매수
-                invest_amount = self.balance * 0.99
+        # ──────────────────────────────────────────────
+        if action == 1:  # Buy 40% (총자산의 40% 분할 매수 / 물타기)
+            if position_ratio < 1.0 and self.balance > current_price:
+                invest_amount = net_worth * 0.40  # 총자산 40% 투자
+                invest_amount = min(invest_amount, self.balance * 0.99)  # 잔고 초과 방지
                 buy_price = current_price * (1 + slippage)
                 shares = int(invest_amount / buy_price)
-                
                 if shares > 0:
                     total_cost = shares * buy_price
+                    # 평균단가 재계산
+                    prev_cost = self.holdings * self.avg_entry_price
+                    self.holdings += shares
                     self.balance -= total_cost
-                    self.holdings = shares
-                    self.avg_entry_price = buy_price
+                    self.avg_entry_price = (prev_cost + total_cost) / (self.holdings + 1e-9)
                     self.steps_since_buy = 0
                 else:
+                    step_reward -= 0.001
                     action_executed = 0
             else:
+                # 이미 풀매수 상태이거나 잔고 부족
+                step_reward -= 0.001
                 action_executed = 0
-                
-        elif action == 2: # Sell
-            if self.holdings > 0:
-                # [FIX] 일괄 매도 로직: 보유한 모든 수량 매도
-                sell_price = current_price * (1 - slippage)
-                revenue = self.holdings * sell_price
-                self.balance += revenue
-                
-                # % 수익률 기반 보상 계산
-                profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
 
-                # [규칙 A] 손실 회피 강화: profit_pct < 0 인 경우 페널티 1.5배 (20.0 -> 30.0)
-                reward_multiplier = 30.0 if profit_pct < 0 else 20.0
-                step_reward = profit_pct * reward_multiplier
-                
-                # [규칙 B] 빠른 수익 실현 보너스: 5분 이내 익절 시 추가 보너스 (+0.1)
-                if self.steps_since_buy < 5 and profit_pct > 0:
+        elif action == 2:  # Buy 60% (총자산의 60% 분할 매수)
+            if position_ratio < 1.0 and self.balance > current_price:
+                invest_amount = net_worth * 0.60  # 총자산 60% 투자
+                invest_amount = min(invest_amount, self.balance * 0.99)  # 잔고 초과 방지
+                buy_price = current_price * (1 + slippage)
+                shares = int(invest_amount / buy_price)
+                if shares > 0:
+                    total_cost = shares * buy_price
+                    prev_cost = self.holdings * self.avg_entry_price
+                    self.holdings += shares
+                    self.balance -= total_cost
+                    self.avg_entry_price = (prev_cost + total_cost) / (self.holdings + 1e-9)
+                    self.steps_since_buy = 0
+                else:
+                    step_reward -= 0.001
+                    action_executed = 0
+            else:
+                step_reward -= 0.001
+                action_executed = 0
+
+        elif action == 3:  # Sell 60% (보유 물량의 60% 분할 매도)
+            if self.holdings > 0:
+                sell_shares = max(1, int(self.holdings * 0.6))
+                sell_price = current_price * (1 - slippage)
+                revenue = sell_shares * sell_price
+                realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
+                reward_multiplier = 30.0 if realized_pnl_pct < 0 else 20.0
+                step_reward += realized_pnl_pct * reward_multiplier
+                if self.steps_since_buy < 5 and realized_pnl_pct > 0:
                     step_reward += 0.1
-                    self.logger.debug(f"⚡ 속전속결 익절 보너스! (Hold: {self.steps_since_buy}스텝)")
-                
-                self.holdings = 0
-                self.avg_entry_price = 0.0
+                self.balance += revenue
+                self.holdings -= sell_shares
+                # 평단가 유지 (매도 시 평단가는 변하지 않음)
+                if self.holdings == 0:
+                    self.avg_entry_price = 0.0
                 self.steps_since_sell = 0
             else:
+                step_reward -= 0.001
                 action_executed = 0
 
-        # 4. 시간 흐름 업데이트 및 타임 스탑 페널티
+        elif action == 4:  # Sell 40% (보유 물량의 40% 분할 매도)
+            if self.holdings > 0:
+                sell_shares = max(1, int(self.holdings * 0.4))
+                sell_price = current_price * (1 - slippage)
+                revenue = sell_shares * sell_price
+                realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
+                reward_multiplier = 30.0 if realized_pnl_pct < 0 else 20.0
+                step_reward += realized_pnl_pct * reward_multiplier
+                if self.steps_since_buy < 5 and realized_pnl_pct > 0:
+                    step_reward += 0.1
+                    self.logger.debug(f"⚡ 속전속결 익절 보너스! (Hold: {self.steps_since_buy}스텝)")
+                self.balance += revenue
+                self.holdings -= sell_shares
+                # 평단가 유지 (매도 시 평단가는 변하지 않음)
+                if self.holdings == 0:
+                    self.avg_entry_price = 0.0
+                self.steps_since_sell = 0
+            else:
+                step_reward -= 0.001
+                action_executed = 0
+
+        # action == 0: Hold → 아무것도 하지 않음
+
+        # ──────────────────────────────────────────────
+        # 2. 시간 흐름 업데이트
+        # ──────────────────────────────────────────────
         self.current_step += 1
         self.steps_since_buy += 1
         self.steps_since_sell += 1
-        
-        # [규칙 C] 타임 스탑 및 장기 보유 페널티 (UI 명세서 동기화)
-        # 1. 20분 이상 손실 포지션 방치 시 페널티 (-0.001)
+
+        # ──────────────────────────────────────────────
+        # 3. 보유 페널티 (장기 손실 방치 억제)
+        # ──────────────────────────────────────────────
         if self.holdings > 0 and self.steps_since_buy > 20:
             current_profit = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
             if current_profit < 0:
                 step_reward -= 0.001
                 if self.steps_since_buy % 10 == 0:
-                    self.logger.debug(f"⏳ 손실 방치 페널티 적용 중... (Hold: {self.steps_since_buy}스텝)")
-        
-        # 2. 보유 시간당 미세 페널티 (장기 보유 방지, UI 명세서: -0.005)
+                    self.logger.debug(f"⏳ 손실 방치 페널티 (Hold: {self.steps_since_buy}스텝)")
         if self.holdings > 0:
             step_reward -= 0.005
-        
-        # 상태 업데이트
+
+        # ──────────────────────────────────────────────
+        # 4. 상태 업데이트 및 종료 판정
+        # ──────────────────────────────────────────────
         self.lookback_buffer.append(self._extract_single_feature(self.current_step))
-        
-        # 종료 판정
+
         terminated = self.balance < 0
         truncated = False
-        
+
         day_changed = False
         if self.historical_data is not None and self.current_step < len(self.historical_data):
             curr_date = str(self.historical_data[self.current_step-1].get("timestamp", ""))[:10]
             next_date = str(self.historical_data[self.current_step].get("timestamp", ""))[:10]
-            if curr_date and next_date and curr_date != next_date: day_changed = True
-            
-        # [FIX] 백테스트 모드 또는 overnight 허용 시: 실제 데이터의 끝에 도달했을 때만 종료
+            if curr_date and next_date and curr_date != next_date:
+                day_changed = True
+
         is_backtest = self.config.get("mode") == "backtest"
         should_truncate = False
         if self.current_step >= self.end_step:
@@ -391,22 +495,19 @@ class ScalpingTradingEnv(gym.Env):
 
         if should_truncate:
             truncated = True
-            # 장 마감 시(학습 중) 또는 데이터 종료 시(백테스트) 강제 청산 보상 처리
             if self.holdings > 0:
                 sell_price = current_price * (1 - slippage)
                 revenue = self.holdings * sell_price
-                
-                # [FIX] 보상 폭발 버그 수정 (총액 revenue 대신 단가 sell_price 사용)
-                profit_pct = (sell_price - self.avg_entry_price) / self.avg_entry_price * 100.0
+                profit_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
                 step_reward += profit_pct * 20.0
-                
                 self.balance += revenue
                 self.holdings = 0
-                action_executed = 2 # 강제 종료 시 매도 표식 남김
+                self.avg_entry_price = 0.0
+                action_executed = 4
 
         info = self._get_info()
         info["action_executed"] = action_executed
-        
+
         return self._get_observation(), float(np.clip(step_reward, -10, 10)), terminated, truncated, info
 
     def _get_current_price(self):

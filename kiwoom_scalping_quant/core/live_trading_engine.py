@@ -286,18 +286,24 @@ class LiveTradingEngine:
                 obs_1d = padded
 
         # 3. Action Masking 및 예측
-        action_masks = [True, True, True]
+        # 0:Hold  1:Buy40%  2:Buy60%  3:Sell60%  4:Sell40%
+        action_masks = [True, False, False, False, False]
         current_price = self.current_candle['price'] if self.current_candle else 0
         balance = self.order_manager.get_balance() if hasattr(self.order_manager, 'get_balance') else 0
         holdings = self.order_manager.holdings.get(self.symbol, 0)
-        
-        # [중복 진입 방지] 이미 보유 중이거나 주문이 진행 중이면 매수 차단
-        if balance < current_price or holdings > 0 or self._is_order_pending: 
-            action_masks[1] = False
-            
-        if holdings <= 0: 
-            action_masks[2] = False
-        
+
+        # 매수 가능 조건: 잔고 충분 & 주문 미진행
+        can_buy = (balance >= current_price and not self._is_order_pending)
+        # 매도 가능 조건: 보유 수량 있음 & 주문 미진행
+        can_sell = (holdings > 0 and not self._is_order_pending)
+
+        if can_buy:
+            action_masks[1] = True  # Buy 40%
+            action_masks[2] = True  # Buy 60%
+        if can_sell:
+            action_masks[3] = True  # Sell 60%
+            action_masks[4] = True  # Sell 40%
+
         # [검증] AI 모델 주입 직전 데이터 상태 정밀 로깅
         try:
             state_min = np.min(obs_1d)
@@ -305,7 +311,6 @@ class LiveTradingEngine:
             state_mean = np.mean(obs_1d)
             has_nan = np.isnan(obs_1d).any()
             has_inf = np.isinf(obs_1d).any()
-            
             self.logger.info(f"🔍 [State 검증] {self.symbol} | Shape: {obs_1d.shape} | Min: {state_min:.4f} | Max: {state_max:.4f} | Mean: {state_mean:.4f} | NaN: {has_nan} | Inf: {has_inf}")
             self.logger.info(f"🔍 [State 샘플] {self.symbol} 데이터 앞부분: {obs_1d.flatten()[:5]}")
         except Exception as e:
@@ -313,30 +318,27 @@ class LiveTradingEngine:
 
         action, probs = self.agent.predict(np.expand_dims(obs_1d, axis=0), action_masks=np.array(action_masks), return_probs=True)
         if isinstance(action, np.ndarray): action = int(action[0])
-        
-        # [이중 안전장치] 마스킹된 액션이 선택되었을 경우 강제 홀딩 (SB3 버그 방어)
+
+        # [이중 안전장치] 마스킹된 액션이 선택되었을 경우 강제 홀딩
         if not action_masks[action]:
             action = 0
 
-        # 신뢰도 필터 (매수/매도 임계값 분리 적용 및 타입 안정성 확보)
-        if action == 1: # BUY
+        # 신뢰도 필터 (매수/매도 임계값 분리 적용)
+        ACTION_LABELS = {0: "Hold", 1: "Buy40%", 2: "Buy60%", 3: "Sell60%", 4: "Sell40%"}
+        if action in (1, 2):  # 매수 계열
             buy_threshold = self.config_manager.get("ai_buy_threshold", 0.6)
-            confidence = probs[1]
-            
-            # [강제 로깅] 타입과 값 명시적 출력
-            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | 신뢰도: {confidence} | 임계값: {buy_threshold} | 타입: {type(confidence)} vs {type(buy_threshold)} | Masked: {not action_masks[1]}")
-            
-            if float(confidence) < float(buy_threshold): 
+            confidence = probs[action]
+            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | {ACTION_LABELS[action]} | 신뢰도: {confidence:.4f} | 임계값: {buy_threshold}")
+            if float(confidence) < float(buy_threshold):
                 action = 0
-        elif action == 2: # SELL
+        elif action in (3, 4):  # 매도 계열
             sell_threshold = self.config_manager.get("ai_sell_threshold", 0.6)
-            confidence = probs[2]
-            self.logger.warning(f"[AI 판단] 종목 {self.symbol} 매도 신뢰도: {confidence:.4f} (기준: {sell_threshold:.4f})")
-            
-            if float(confidence) < float(sell_threshold): 
+            confidence = probs[action]
+            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | {ACTION_LABELS[action]} | 신뢰도: {confidence:.4f} | 임계값: {sell_threshold}")
+            if float(confidence) < float(sell_threshold):
                 action = 0
-        
-        self._update_ui_signals(action, {0:"Hold", 1:"Buy", 2:"Sell"}.get(action, "Hold"), probs)
+
+        self._update_ui_signals(action, ACTION_LABELS.get(action, "Hold"), probs)
 
         # 4. 주문 실행 (쿨다운 & 장상태 체크)
         current_time = time.time()
@@ -353,7 +355,7 @@ class LiveTradingEngine:
         else:
             max_invest = self.config_manager.get("max_invest_per_symbol", 1000000)
 
-        if action == 1: # BUY
+        if action in (1, 2):  # 매수 계열 (Buy40% / Buy60%)
             # [안전장치] 글로벌 매수 쿨타임(Circuit Breaker) 체크
             if self.strategy_manager and not self.strategy_manager.can_execute_buy():
                 self.logger.warning(f"[{self.symbol}] 🛡️ 글로벌 매수 쿨타임 가동 중 - 주문을 차단합니다.")
@@ -365,47 +367,37 @@ class LiveTradingEngine:
                 self.logger.warning(f"[{self.symbol}] 🚫 매수 차단: 당일 상승률({self.last_change_rate:.2f}%)이 설정값({max_rise}%)을 초과했습니다.")
                 return
 
-            # [신규] 매수 주문 전 최신 잔고 동기화
+            # 매수 비율: action=1 → 40%, action=2 → 60%
+            buy_ratio = 0.40 if action == 1 else 0.60
+
             await self.order_manager.sync_balance(force=True)
-            
-            # [퀀트 최적화] 가용 현금 기반 Partial Order 로직
             orderable_cash = getattr(self.order_manager, 'orderable_cash', 0.0)
-            
-            # 목표 금액 vs 가용 현금 중 작은 값 선택
-            final_invest_amount = min(max_invest, orderable_cash)
-            
-            if final_invest_amount < max_invest and final_invest_amount > 0:
-                self.logger.info(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest:,.0f} -> {final_invest_amount:,.0f}")
-            
-            qty = int(final_invest_amount // current_price)
-            
+            invest_amount = min(max_invest * buy_ratio, orderable_cash)
+
+            if invest_amount < max_invest * buy_ratio and invest_amount > 0:
+                self.logger.info(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest * buy_ratio:,.0f} -> {invest_amount:,.0f}")
+
+            qty = int(invest_amount // current_price)
             if qty > 0:
-                # [안전장치 1] StrategyManager의 _pending_buy_symbols에 동기적으로 등록
-                # await send_order() 호출 전에 일려두어 콘텍스트 스위칭 레이스 컨디션을 방지합니다.
                 if self.strategy_manager:
                     self.strategy_manager._pending_buy_symbols.add(self.symbol)
-
-                # [안전장치 2] 글로벌 매수 시점 기록
-                if self.strategy_manager:
                     self.strategy_manager.record_buy()
-
-                self._is_order_pending = True 
+                self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price, "BUY")
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
-                # 1주조차 살 수 없을 때만 최종 차단
-                if orderable_cash < current_price:
-                    self.logger.warning(f"[{self.symbol}] 현금 잔고 부족: 가용현금({orderable_cash:,.0f})이 현재가({current_price:,.0f})보다 적어 매수를 취소합니다.")
-                else:
-                    self.logger.warning(f"[{self.symbol}] 주문 수량 0: 투자 한도({final_invest_amount:,.0f})가 너무 낮아 주문을 생성할 수 없습니다.")
-        elif action == 2: # SELL
-            # [강화] 주문 직전 실제 OrderManager 보유 수량 재확인 (지연 데이터로 인한 중복 매도 방지)
+                self.logger.warning(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
+
+        elif action in (3, 4):  # 매도 계열 (Sell60% / Sell40%)
             real_holdings = self.order_manager.holdings.get(self.symbol, 0)
             if real_holdings > 0:
+                # 매도 비율: action=3 → 60%, action=4 → 40%
+                sell_ratio = 0.60 if action == 3 else 0.40
+                sell_qty = max(1, int(real_holdings * sell_ratio))
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price, "SELL")
-                asyncio.create_task(self._execute_order_background("SELL", valid_price, real_holdings))
+                asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
                 self.last_action_time = current_time
             else:
                 self.logger.warning(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
@@ -542,7 +534,10 @@ class LiveTradingEngine:
                 vm.symbols_summary[self.symbol] = {"name": self.symbol, "price": 0, "ai_signal": "-", "holdings": 0}
             vm.symbols_summary[self.symbol]["ai_signal"] = signal_text
             if vm.selected_symbol == self.symbol:
-                conf = {"Hold": int(probs[0]*100), "Buy": int(probs[1]*100), "Sell": int(probs[2]*100)}
+                # 5-액션: Buy = max(probs[1], probs[2]), Sell = max(probs[3], probs[4])
+                buy_conf  = int(max(probs[1], probs[2]) * 100) if len(probs) >= 5 else int(probs[1] * 100)
+                sell_conf = int(max(probs[3], probs[4]) * 100) if len(probs) >= 5 else int(probs[2] * 100)
+                conf = {"Hold": int(probs[0]*100), "Buy": buy_conf, "Sell": sell_conf}
                 vm.sig_ai_confidence_updated.emit(conf)
             vm._ui_dirty = True
 
