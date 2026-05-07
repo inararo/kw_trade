@@ -39,8 +39,8 @@ ACTION_LABELS = {
     4: ("🟠", "Sell 40%"),
 }
 NUM_ACTIONS    = 5
-BUY_THRESHOLD  = 0.6
-SELL_THRESHOLD = 0.6
+BUY_THRESHOLD  = 0.3
+SELL_THRESHOLD = 0.3
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -338,13 +338,16 @@ async def run_diagnosis(symbol: str = "001440"):
             if raw_action in (1, 2) and inds:
                 if inds.get('SMA_20', 0) > inds.get('SMA_60', 0) and inds.get('RSI_14', 100) < 40:
                     pullback_mrk = " 🎯눌림목!"
+            
             p_str = "  ".join(
                 f"{ACTION_LABELS.get(j, ('?','?'))[1].strip()}:{probs[j]:.3f}"
                 for j in range(min(NUM_ACTIONS, len(probs)))
             )
             cs = env.current_step
+            curr_price = env._get_current_price()
+            
             print(
-                f"  {icon} step={cs:4d} | {lbl.strip()} | 신뢰도:{conf:.4f}"
+                f"  {icon} step={cs:4d} | {lbl.strip()} | 신뢰도:{conf:.4f} | 현재가:{curr_price:,.0f}원"
                 f"{override_mrk}{pullback_mrk}\n"
                 f"     [{p_str}]"
             )

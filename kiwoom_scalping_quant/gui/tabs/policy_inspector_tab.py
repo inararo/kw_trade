@@ -76,8 +76,8 @@ ACTION_LABELS = {
     4: ("🟠", "Sell 40%"),
 }
 NUM_ACTIONS    = 5
-BUY_THRESHOLD  = 0.6
-SELL_THRESHOLD = 0.6
+BUY_THRESHOLD  = 0.3
+SELL_THRESHOLD = 0.3
 
 # ─── Obs 구성 상수 (trading_env.__init__ 역산과 동일) ─────────
 WINDOW_SIZE     = 10
@@ -373,7 +373,8 @@ class PolicyCheckWorker(QThread):
                         for j in range(NUM_ACTIONS)
                     )
                     
-                    log_entry = f"  {icon} step={env.current_step:4d} | {lbl.strip()} | 신뢰도:{conf:.4f}{omk}{pmk}\n     [{ps}]"
+                    curr_price = env._get_current_price()
+                    log_entry = f"  {icon} step={env.current_step:4d} | {lbl.strip()} | 신뢰도:{conf:.4f} | 현재가:{curr_price:,.0f}원{omk}{pmk}\n     [{ps}]"
                     if potential_prob > 0.1 and raw_action == 0:
                         log_entry = " ⭐ [잠재] " + log_entry
                     
