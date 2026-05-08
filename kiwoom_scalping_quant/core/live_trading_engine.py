@@ -65,6 +65,9 @@ class LiveTradingEngine:
         # AI 모델의 신뢰도 포화(Saturation) 현상을 방지하기 위해 학습 시와 동일한 통계량으로 정규화 수행
         self.normalizer = OnlineRollingNormalizer(window_size=200) 
 
+        # [좀비 방어] 완전히 파괴되었음을 알리는 플래그
+        self._is_destroyed = False
+
     async def warmup(self, access_token: str):
         """부팅 시 최근 약 1시간 정도의 데이터를 로드하여 지표 계산 기반을 마련합니다."""
         fetcher = HistoricalFetcher(self.config_manager)
@@ -74,6 +77,11 @@ class LiveTradingEngine:
         # [수정] max_pages=5로 변경하여 약 하루치(500분)의 데이터를 수집합니다 (1페이지=100분)
         data_result = await fetcher.fetch_historical_data(self.symbol, today_str, access_token, max_pages=5)
         
+        # [좀비 방어] 데이터 수집 대기 중에 엔진 파괴 명령이 내려졌다면 즉시 중단
+        if self._is_destroyed:
+            self.logger.warning(f"[{self.symbol}] 웜업 중 파괴 명령 감지! 웜업을 중단합니다.")
+            return
+
         if data_result is None or (hasattr(data_result, 'is_failure') and data_result.is_failure()):
             self.logger.warning(f"웜업 실패: {getattr(data_result, 'failure', lambda: 'Data is None')()}")
             self.is_warmed_up = True
@@ -376,18 +384,45 @@ class LiveTradingEngine:
 
         # 신뢰도 필터 (매수/매도 임계값 분리 적용)
         ACTION_LABELS = {0: "Hold", 1: "Buy40%", 2: "Buy60%", 3: "Sell60%", 4: "Sell40%"}
+        buy_threshold  = float(self.config_manager.get("ai_buy_threshold", 0.6))
+        sell_threshold = float(self.config_manager.get("ai_sell_threshold", 0.6))
+
+        # --- 심장박동 로그 (1분봉 확정마다 출력) ---
+        buy_conf  = int(max(probs[1], probs[2]) * 100) if len(probs) >= 2 else 0
+        sell_conf = int(max(probs[3], probs[4]) * 100) if len(probs) >= 4 else 0
+        hold_conf = int(probs[0] * 100) if len(probs) >= 1 else 0
+
         if action in (1, 2):  # 매수 계열
-            buy_threshold = self.config_manager.get("ai_buy_threshold", 0.6)
             confidence = probs[action]
-            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | {ACTION_LABELS[action]} | 신뢰도: {confidence:.4f} | 임계값: {buy_threshold}")
-            if float(confidence) < float(buy_threshold):
+            if float(confidence) >= buy_threshold:
+                self.logger.warning(
+                    f"[🔥 매수 포착] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
+                    f" | (매수확신도: {buy_conf}%) | ➡️ API 주문 전송!"
+                )
+            else:
+                self.logger.warning(
+                    f"[🧠 AI 판단] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]}(임계값 미달)"
+                    f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
+                )
                 action = 0
         elif action in (3, 4):  # 매도 계열
-            sell_threshold = self.config_manager.get("ai_sell_threshold", 0.6)
             confidence = probs[action]
-            self.logger.warning(f"🧠 [AI 판단] {self.symbol} | {ACTION_LABELS[action]} | 신뢰도: {confidence:.4f} | 임계값: {sell_threshold}")
-            if float(confidence) < float(sell_threshold):
+            if float(confidence) >= sell_threshold:
+                self.logger.warning(
+                    f"[📉 매도 포착] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
+                    f" | (매도확신도: {sell_conf}%) | ➡️ API 주문 전송!"
+                )
+            else:
+                self.logger.warning(
+                    f"[🧠 AI 판단] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]}(임계값 미달)"
+                    f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
+                )
                 action = 0
+        else:  # Hold
+            self.logger.info(
+                f"[🧠 AI 판단] 종목: {self.symbol} | 결과: Hold"
+                f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
+            )
 
         self._update_ui_signals(action, ACTION_LABELS.get(action, "Hold"), probs)
 
@@ -436,7 +471,11 @@ class LiveTradingEngine:
                     self.strategy_manager._pending_buy_symbols.add(self.symbol)
                     self.strategy_manager.record_buy()
                 self._is_order_pending = True
-                valid_price = get_valid_tick_price(current_price * 1.001, "BUY")  # 확실한 체결을 위해 1틱 위 지정가 던짐
+                valid_price = get_valid_tick_price(current_price * 1.001, "BUY")
+                self.logger.warning(
+                    f"[📤 매수 주문 전송] {self.symbol} | {qty}주 @ {valid_price:,}원"
+                    f" | 투자금: {invest_amount:,.0f}원 | 비율: {buy_ratio*100:.0f}%"
+                )
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
@@ -445,11 +484,14 @@ class LiveTradingEngine:
         elif action in (3, 4):  # 매도 계열 (Sell60% / Sell40%)
             real_holdings = self.order_manager.holdings.get(self.symbol, 0)
             if real_holdings > 0:
-                # 매도 비율: action=3 → 60%, action=4 → 40%
                 sell_ratio = 0.60 if action == 3 else 0.40
                 sell_qty = max(1, int(real_holdings * sell_ratio))
                 self._is_order_pending = True
-                valid_price = get_valid_tick_price(current_price * 0.999, "SELL") # 확실한 체결을 위해 1틱 아래 지정가 던짐
+                valid_price = get_valid_tick_price(current_price * 0.999, "SELL")
+                self.logger.warning(
+                    f"[📤 매도 주문 전송] {self.symbol} | {sell_qty}주 @ {valid_price:,}원"
+                    f" | 보유: {real_holdings}주 | 비율: {sell_ratio*100:.0f}%"
+                )
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
                 self.last_action_time = current_time
             else:
@@ -717,6 +759,13 @@ class LiveTradingEngine:
         """
         self.logger.info(f"[{self.symbol}] 🛑 엔진 안전 종료 (Graceful Shutdown) 절차 시작")
         
+        # [좀비 방어] 즉시 파괴 상태 진입 (이후 틱/웜업 원천 차단)
+        self._is_destroyed = True
+        
+        if getattr(self, 'warmup_task', None) and not self.warmup_task.done():
+            self.warmup_task.cancel()
+            self.logger.info(f"[{self.symbol}] 🛑 진행 중인 웜업 태스크 강제 취소 완료.")
+
         # 1. 펜딩 중인 주문 파이프라인이 끝날 때까지 대기 (최대 5초)
         wait_cnt = 0
         while self._is_order_pending and wait_cnt < 10:
