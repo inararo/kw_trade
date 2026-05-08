@@ -42,10 +42,15 @@ class KiwoomBrokerWrapper:
         """OAuth2 토큰 발급 (키움 규격)"""
         logger.info(f"🔑 키움증권 REST API 로그인 시도: {self.base_url}")
         endpoint = f"{self.base_url}/oauth2/token"
+        if not self.app_key or not self.app_secret:
+            logger.error("❌ 환경변수(.env) 또는 설정에서 API KEY(KIWOOM_APP_KEY, KIWOOM_APP_SECRET)를 불러오지 못했습니다. 값이 비어있습니다!")
+            return False
+
         payload = {
             "grant_type": "client_credentials",
             "appkey": self.app_key,
-            "appsecret": self.app_secret
+            "appsecret": self.app_secret,
+            "secretkey": self.app_secret  # 일부 프록시/API 버전 호환성용
         }
         
         try:
@@ -54,13 +59,13 @@ class KiwoomBrokerWrapper:
                 async with session.post(endpoint, json=payload, timeout=5) as resp:
                     resp.raise_for_status()
                     data = await resp.json()
-                    self.access_token = data.get("access_token")
+                    self.access_token = data.get("access_token") or data.get("token")
                     
             if self.access_token:
                 logger.info("✅ 키움 API 토큰 발급 및 로그인 완료!")
                 return True
             else:
-                logger.error("❌ 토큰 응답에 access_token이 없습니다.")
+                logger.error(f"❌ 토큰 응답에 access_token이 없습니다. API 서버 원본 응답: {data}")
                 return False
         except Exception as e:
             logger.error(f"❌ 로그인 통신 에러: {e}")
@@ -140,15 +145,18 @@ class KiwoomBrokerWrapper:
             for entry in entries:
                 msg_type = entry.get("type", "") or data.get("type", "")
                 
-                # 조건검색 실시간 이벤트 (가상 포맷)
-                if trnm == "COND" or msg_type == "CONDITION":
-                    # type_str: I(편입), D(이탈)
-                    status_str = entry.get("status", "I")
+                # 조건검색 실시간 이벤트 (키움 공식 API 규격: type="02", name="조건검색")
+                if trnm == "COND" or msg_type == "CONDITION" or entry.get("name") == "조건검색" or msg_type == "02":
+                    values = entry.get("values", {})
+                    # 키움 실시간 조건검색 FID: 843(I/D 여부), 9001(종목코드), 20(발생시간)
+                    status_str = values.get("843", "I")
+                    code_str = values.get("9001") or entry.get("item", "")
+                    
                     return {
                         "event": "condition",
-                        "code": entry.get("stk_cd", ""),
-                        "status": "I" if status_str in ["I", "INSERT", "편입"] else "D",
-                        "name": entry.get("cond_name", "")
+                        "code": str(code_str),
+                        "status": "I" if status_str in ["I", "INSERT", "편입", "1"] else "D",
+                        "name": entry.get("cond_name", "AI스캘핑주도주")
                     }
                 
                 # 0B: 주식체결 (틱 데이터)
@@ -184,27 +192,14 @@ class KiwoomBrokerWrapper:
             return {"event": "error"}
 
     async def ws_listener_loop(self, target_condition_idx: str):
-        """키움증권 WebSocket 인증 및 실시간 스트림 수신 루프"""
+        """키움증권 WebSocket 인증 및 실시간 스트림 수신 루프 (공식 스펙 기반)"""
         logger.info(f"📡 키움 WebSocket 리스너 시작: {self.ws_url}")
         
-        # 키움증권 LOGIN 페이로드
         login_payload = {
             "trnm": "LOGIN",
             "token": self.access_token
         }
         
-        # 조건검색 실시간 등록 (REG)
-        cond_sub_payload = {
-            "trnm": "REG",
-            "grp_no": "2",
-            "refresh": "0",
-            "data": [
-                {"type": ["COND"], "item": [target_condition_idx]}
-            ]
-        }
-        
-        logger.info(f"✉️ 키움 WS LOGIN & 조건검색 구독 페이로드 전송 대기")
-
         while True:
             try:
                 logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
@@ -213,28 +208,74 @@ class KiwoomBrokerWrapper:
                     
                     # 1. 인증(LOGIN)
                     await ws.send(json.dumps(login_payload))
-                    login_resp = await ws.recv()
-                    logger.info(f"✉️ 웹소켓 로그인 응답 수신: {login_resp}")
+                    logger.warning(f"✉️ [WS SEND] LOGIN 요청 전송")
                     
-                    # 2. 실시간 조건검색 구독 (간헐적 딜레이 방지)
-                    await asyncio.sleep(0.5)
-                    await ws.send(json.dumps(cond_sub_payload))
-                    logger.info("✉️ 실시간 조건검색 구독 페이로드 전송 완료")
-                    
-                    # 3. 메시지 수신 무한 루프
+                    # 2. 메시지 수신 무한 루프
                     async for message in ws:
-                        parsed = self._parse_ws_message(message)
+                        logger.warning(f"📩 [WS RECV] {message}")
                         
-                        if parsed["event"] == "ping":
-                            await ws.send(json.dumps({"trnm": "PONG"}))
-                            logger.debug("❤️ PONG 하트비트 응답 전송")
-                        elif parsed["event"] == "condition" and self.on_condition_event:
-                            await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
-                        elif parsed["event"] == "tick" and self.on_tick_event:
-                            await self.on_tick_event(parsed)
-                        elif parsed["event"] == "execution" and self.on_execution_event:
-                            await self.on_execution_event(parsed)
+                        try:
+                            response = json.loads(message)
+                        except json.JSONDecodeError:
+                            continue
+
+                        trnm = response.get("trnm")
+
+                        if trnm == "LOGIN":
+                            if str(response.get("return_code")) != "0":
+                                logger.error(f"❌ 웹소켓 로그인 실패: {response.get('return_msg')}")
+                                return
+                            logger.info("✅ 웹소켓 로그인 성공! 조건검색식 목록을 요청합니다.")
+                            # 로그인 성공 시 조건검색식 목록(CNSRLST) 요청
+                            await ws.send(json.dumps({"trnm": "CNSRLST"}))
+                            logger.warning("✉️ [WS SEND] CNSRLST 전송")
+
+                        elif trnm == "CNSRLST":
+                            data_list = response.get("data", [])
+                            logger.info(f"✅ 조건검색식 목록 수신: {data_list}")
                             
+                            # 대상 조건식 고유번호(seq) 찾기 (이름으로 매칭, 없으면 파라미터 값 사용)
+                            target_seq = target_condition_idx
+                            for item in data_list:
+                                # 구조: [seq, name] 또는 {"seq": ..., "name": ...} 대비
+                                if isinstance(item, list) and len(item) >= 2:
+                                    if item[1] == "AI스캘핑주도주":
+                                        target_seq = str(item[0])
+                                elif isinstance(item, dict):
+                                    if item.get("name") == "AI스캘핑주도주":
+                                        target_seq = str(item.get("seq"))
+                            
+                            # 실시간 조건검색 등록(CNSRREQ)
+                            req_payload = {
+                                "trnm": "CNSRREQ",
+                                "seq": target_seq,
+                                "search_type": "1", # 1: 조건검색 + 실시간조건검색
+                                "stex_tp": "K"      # KRX 거래소
+                            }
+                            await ws.send(json.dumps(req_payload))
+                            logger.warning(f"✉️ [WS SEND] CNSRREQ 전송 (seq={target_seq})")
+
+                        elif trnm == "CNSRREQ":
+                            if str(response.get("return_code")) == "0":
+                                logger.info("✅ 조건검색 실시간 감시 등록 완료!")
+                            else:
+                                logger.error(f"❌ 조건검색 실시간 등록 실패: {response.get('return_msg')}")
+
+                        elif trnm == "REAL":
+                            # 실시간 시세 및 조건검색 이벤트 파싱
+                            parsed = self._parse_ws_message(message)
+                            if parsed["event"] == "condition" and self.on_condition_event:
+                                await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
+                            elif parsed["event"] == "tick" and self.on_tick_event:
+                                await self.on_tick_event(parsed)
+                            elif parsed["event"] == "execution" and self.on_execution_event:
+                                await self.on_execution_event(parsed)
+
+                        elif trnm == "PING":
+                            # 서버 PING 메시지 에코 응답
+                            await ws.send(message)
+                            logger.warning("❤️ [WS SEND] PING 하트비트 응답")
+
             except websockets.exceptions.ConnectionClosed as e:
                 logger.error(f"❌ 웹소켓 연결이 끊어졌습니다. ({e}) 5초 후 재접속을 시도합니다.")
                 await asyncio.sleep(5.0)
@@ -250,10 +291,11 @@ async def main():
     logger.info("🚀 동적 유니버스 기반 AI 트레이딩 봇 부팅 시작...")
 
     # 1. 코어 모듈 초기화
-    config_manager = ConfigManager()
+    config_manager = ConfigManager(config_path="config.yaml")
     data_collector = DataCollector(config_manager)
-    risk_manager = RiskManager(config_manager)
-    order_manager = OrderManager(config_manager, risk_manager)
+    order_manager = OrderManager(config_manager)
+    risk_manager = RiskManager(config_manager, order_manager)
+    order_manager.risk_manager = risk_manager
     
     strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager)
     condition_manager = ConditionManager(config_manager, data_collector)
@@ -266,16 +308,23 @@ async def main():
     # 3. 비동기 통신 래퍼 초기화 및 REST API 로그인 (키움 기준)
     # =====================================================================
     broker_api = KiwoomBrokerWrapper(
-        app_key="KIWOOM_APP_KEY", 
-        app_secret="KIWOOM_SECRET", 
-        base_url="https://api.kiwoom.com",
-        ws_url="wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
+        app_key=config_manager.get("KIWOOM_APP_KEY", ""), 
+        app_secret=config_manager.get("KIWOOM_APP_SECRET", ""), 
+        base_url=config_manager.get_rest_url(),
+        ws_url=config_manager.get_ws_url()
     )
 
     is_logged_in = await broker_api.login()
     if not is_logged_in:
         logger.error("시스템 종료: 로그인에 실패했습니다.")
         return
+
+    # OrderManager가 REST API를 쓸 수 있도록 토큰 공급기 주입
+    class SimpleAuthManager:
+        def get_token(self):
+            return broker_api.access_token
+    
+    order_manager.auth_manager = SimpleAuthManager()
 
     # 잔고 동기화 (REST API)
     await order_manager.sync_balance()

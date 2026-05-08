@@ -44,7 +44,7 @@ class StrategyManager:
         self._pending_buy_symbols: set = set() # [신규] 동기적 중복 진입 차단용 집합
         
         # [동적 유니버스 필터링]
-        self.MAX_CONCURRENT_STOCKS = 5
+        self.MAX_CONCURRENT_STOCKS = 8
         self.pending_universe_queue: List[str] = [] # 조건검색 대기열
 
     def set_ai_paused(self, paused: bool):
