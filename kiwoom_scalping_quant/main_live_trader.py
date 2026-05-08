@@ -49,25 +49,42 @@ class KiwoomBrokerWrapper:
         }
         
         try:
-            # 실제 호출 시:
-            # async with aiohttp.ClientSession() as session:
-            #     async with session.post(endpoint, json=payload) as resp:
-            #         data = await resp.json()
-            #         self.access_token = data.get("access_token")
-            await asyncio.sleep(0.5)
-            self.access_token = "kiwoom_mock_access_token_12345"
-            logger.info("✅ 키움 API 토큰 발급 완료!")
-            return True
+            # 실제 API 서버와 통신하여 토큰 발급
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, json=payload, timeout=5) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                    self.access_token = data.get("access_token")
+                    
+            if self.access_token:
+                logger.info("✅ 키움 API 토큰 발급 및 로그인 완료!")
+                return True
+            else:
+                logger.error("❌ 토큰 응답에 access_token이 없습니다.")
+                return False
         except Exception as e:
-            logger.error(f"❌ 로그인 실패: {e}")
+            logger.error(f"❌ 로그인 통신 에러: {e}")
             return False
 
     async def get_condition_list(self) -> Dict[str, str]:
         """서버에 저장된 조건검색식 목록 조회 (키움 api-id: ka10050 등 가상 TR)"""
-        logger.info("📋 키움 REST API: 조건검색식 목록 조회 중...")
-        await asyncio.sleep(0.3)
-        # 키움증권 HTS에 저장된 조건식 반환 예시
-        return {"001": "AI스캘핑주도주", "002": "수급단타"}
+        endpoint = f"{self.base_url}/api/dostk/rkinfo" # 예시 엔드포인트
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(endpoint, headers=headers, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        # 서버 응답 구조에 맞게 파싱 필요, 임시로 데이터 반환
+                        logger.info(f"✅ 조건식 목록 수신 완료 ({len(data)}개 항목)")
+                        return data.get("conditions", {"001": "AI스캘핑주도주", "002": "수급단타"})
+                    else:
+                        logger.error(f"❌ 조건식 조회 HTTP 에러: {resp.status}")
+                        return {"001": "AI스캘핑주도주", "002": "수급단타"} # Fallback
+        except Exception as e:
+            logger.error(f"❌ 조건식 조회 통신 에러: {e}")
+            return {"001": "AI스캘핑주도주", "002": "수급단타"} # Fallback
 
     async def send_order(self, action: int, symbol: str, price: float, qty: int):
         """키움 주식주문 TR (KOA) 전송"""
@@ -82,9 +99,28 @@ class KiwoomBrokerWrapper:
         else:
             return False
 
-        logger.info(f"📤 키움 주문 전송 [구분:{order_type}] {symbol} | 수량: {qty} | 단가: {order_price}")
-        await asyncio.sleep(0.1)
-        return True
+        endpoint = f"{self.base_url}/api/dostk/order" # 주식주문 엔드포인트
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        payload = {
+            "symbol": symbol,
+            "order_type": order_type,
+            "qty": qty,
+            "price": order_price
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, headers=headers, json=payload, timeout=3) as resp:
+                    if resp.status == 200:
+                        logger.info(f"✅ 키움 주문 전송 성공 [구분:{order_type}] {symbol} | 수량: {qty} | 단가: {order_price}")
+                        return True
+                    else:
+                        err_msg = await resp.text()
+                        logger.error(f"❌ 주문 전송 실패 (HTTP {resp.status}): {err_msg}")
+                        return False
+        except Exception as e:
+            logger.error(f"❌ 주문 전송 중 통신 에러: {e}")
+            return False
 
     # ------------------ WebSocket Listener ------------------
     def _parse_ws_message(self, message: str) -> Dict[str, Any]:
@@ -170,45 +206,41 @@ class KiwoomBrokerWrapper:
         logger.info(f"✉️ 키움 WS LOGIN & 조건검색 구독 페이로드 전송 대기")
 
         while True:
-            await asyncio.sleep(5.0)
-            
-            # --- 실전용 코드 ---
-            async with websockets.connect(self.ws_url) as ws:
-                # 1. 인증(LOGIN)
-                await ws.send(json.dumps(login_payload))
-                login_resp = await ws.recv()
-
-                # 2. 실시간 조건검색 구독
-                await ws.send(json.dumps(cond_sub_payload))
-
-                # 3. 메시지 수신 무한 루프
-                async for message in ws:
-                    parsed = self._parse_ws_message(message)
-                    if parsed["event"] == "ping":
-                        await ws.send(json.dumps({"trnm": "PONG"}))
-                    elif parsed["event"] == "condition" and self.on_condition_event:
-                        await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
-                    elif parsed["event"] == "tick" and self.on_tick_event:
-                        await self.on_tick_event(parsed)
-                    elif parsed["event"] == "execution" and self.on_execution_event:
-                        await self.on_execution_event(parsed)
-            # -------------------
-
-            # [모의 이벤트 발생기]
-            import random
-            rand_val = random.random()
-            if rand_val < 0.2 and self.on_condition_event:
-                sym = random.choice(["005930", "000660", "035420"])
-                status = random.choice(["I", "D"])
-                await self.on_condition_event(sym, status, "AI스캘핑주도주")
-            
-            elif rand_val < 0.7 and self.on_tick_event:
-                await self.on_tick_event({
-                    "symbol": "005930", "price": 80000, "volume": 100, "change_rate": 1.5
-                })
-                
-            elif self.on_execution_event:
-                await self.on_execution_event({"type": "체결", "symbol": "005930"})
+            try:
+                logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
+                async with websockets.connect(self.ws_url, ping_interval=None) as ws:
+                    logger.info("✅ 웹소켓 서버 접속 성공!")
+                    
+                    # 1. 인증(LOGIN)
+                    await ws.send(json.dumps(login_payload))
+                    login_resp = await ws.recv()
+                    logger.info(f"✉️ 웹소켓 로그인 응답 수신: {login_resp}")
+                    
+                    # 2. 실시간 조건검색 구독 (간헐적 딜레이 방지)
+                    await asyncio.sleep(0.5)
+                    await ws.send(json.dumps(cond_sub_payload))
+                    logger.info("✉️ 실시간 조건검색 구독 페이로드 전송 완료")
+                    
+                    # 3. 메시지 수신 무한 루프
+                    async for message in ws:
+                        parsed = self._parse_ws_message(message)
+                        
+                        if parsed["event"] == "ping":
+                            await ws.send(json.dumps({"trnm": "PONG"}))
+                            logger.debug("❤️ PONG 하트비트 응답 전송")
+                        elif parsed["event"] == "condition" and self.on_condition_event:
+                            await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
+                        elif parsed["event"] == "tick" and self.on_tick_event:
+                            await self.on_tick_event(parsed)
+                        elif parsed["event"] == "execution" and self.on_execution_event:
+                            await self.on_execution_event(parsed)
+                            
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.error(f"❌ 웹소켓 연결이 끊어졌습니다. ({e}) 5초 후 재접속을 시도합니다.")
+                await asyncio.sleep(5.0)
+            except Exception as e:
+                logger.error(f"❌ 웹소켓 통신 중 오류 발생: {e}")
+                await asyncio.sleep(5.0)
 
 
 # =====================================================================
