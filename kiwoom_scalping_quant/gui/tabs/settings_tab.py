@@ -221,6 +221,9 @@ class SettingsTab(QWidget):
         self.spin_sell_threshold.setDecimals(2)
         ai_form.addRow("AI 매도 임계값 (Sell):", self.spin_sell_threshold)
         
+        self.chk_strict_filter = QCheckBox("하드 필터(SMA20/ATR) 활성화")
+        ai_form.addRow("필터 모드:", self.chk_strict_filter)
+        
         ai_group.setLayout(ai_form)
         right_column.addWidget(ai_group) # [이동] 좌측 -> 우측
         
@@ -270,6 +273,7 @@ class SettingsTab(QWidget):
             "protected_symbols": protected_symbols,
             "ai_buy_threshold": self.spin_buy_threshold.value(),
             "ai_sell_threshold": self.spin_sell_threshold.value(),
+            "strict_filter_mode": self.chk_strict_filter.isChecked(),
             "max_daily_rise_pct": self.spin_max_daily_rise.value()
         }
 
@@ -326,8 +330,9 @@ class SettingsTab(QWidget):
         self.time_cutoff.setTime(QTime.fromString(cutoff_str, "HH:mm"))
         self.chk_enable_universe_update.setChecked(config.get("enable_universe_update", True))
 
-        self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.65)))
-        self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.55)))
+        self.spin_buy_threshold.setValue(float(config.get("ai_buy_threshold", 0.55)))
+        self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.60)))
+        self.chk_strict_filter.setChecked(config.get("strict_filter_mode", False))
         self.spin_max_daily_rise.setValue(float(config.get("max_daily_rise_pct", 20.0)))
 
     @pyqtSlot(str)

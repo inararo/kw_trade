@@ -69,6 +69,9 @@ class LiveTradingEngine:
         # [좀비 방어] 완전히 파괴되었음을 알리는 플래그
         self._is_destroyed = False
 
+        # [공격적 설정] 하드 필터 모드 (설정 파일의 strict_filter_mode 연동)
+        self.STRICT_FILTER_MODE = self.config_manager.get("strict_filter_mode", False)
+
     async def warmup(self, access_token: str):
         """부팅 시 최근 약 1시간 정도의 데이터를 로드하여 지표 계산 기반을 마련합니다."""
         fetcher = HistoricalFetcher(self.config_manager)
@@ -190,16 +193,19 @@ class LiveTradingEngine:
                 if holdings > 0:
                     avg_price = getattr(self.order_manager, 'avg_entry_prices', {}).get(self.symbol, 0.0)
                     if avg_price > 0:
+                        # [동적 설정 반영] 매 틱마다 최신 손절/익절 라인 확인
+                        sl_limit = float(self.config_manager.get("stop_loss_pct", -3.5)) / 100.0
+                        tp_limit = float(self.config_manager.get("take_profit_pct", 4.0)) / 100.0
+                        
                         pnl_pct = (price - avg_price) / avg_price
-                        if pnl_pct <= self.tick_stop_loss or pnl_pct >= self.tick_take_profit:
-                            reason = "스탑로스" if pnl_pct <= self.tick_stop_loss else "익절"
+                        if pnl_pct <= sl_limit or pnl_pct >= tp_limit:
+                            reason = "스탑로스" if pnl_pct <= sl_limit else "익절"
                             msg = f"🚨 [긴급] {self.symbol} 틱 단위 {reason} 발동! (수익률: {pnl_pct * 100:.2f}%)"
                             self.logger.error(msg)
                             self._ui_log(msg)
                             self._is_order_pending = True
                             
                             # [개선] 하드 손절 시 체결 확률을 높이기 위해 현재가보다 1호가 아래로 주문 (Slippage 대응)
-                            # 매도의 경우 price * 0.999 정도면 충분히 최우선 매수호가에 체결됨
                             raw_sell_price = price * 0.999 if reason == "스탑로스" else price
                             sell_price = get_valid_tick_price(raw_sell_price, "SELL")
                             asyncio.create_task(self._execute_order_background("SELL", sell_price, holdings))
@@ -342,22 +348,25 @@ class LiveTradingEngine:
                 atr14 = float(tr.rolling(window=14, min_periods=1).mean().iloc[-1])
                 
                 # 거래대금 필터 (최근 1시간 기준 거래대금 등, 여기서는 당일 거래대금이 파싱 안되므로 생략 또는 보수적 접근)
-                # 필터 1: SMA20 상향 돌파 (정배열 혹은 반등 확인)
-                if current_price < sma20:
-                    can_buy = False
-                    filter_reasons.append("주가 20일선 이탈")
-                    # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: 현재가({current_price})가 SMA_20({sma20:.2f}) 아래에 있습니다.")
+                # [동적 설정] 최신 필터 모드 상태 읽기
+                strict_mode = self.config_manager.get("strict_filter_mode", True)
                 
-                # 필터 2: ATR 14가 임계값 (예: 최소 호가단위 2배 이상)
-                min_atr = current_price * 0.005 # 0.5% 변동성
-                if atr14 < min_atr:
-                    can_buy = False
-                    filter_reasons.append(f"변동성 부족(ATR {atr14:.1f} < {min_atr:.1f})")
-                    # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: ATR({atr14:.2f})이 최소 기준치({min_atr:.2f}) 미만입니다.")
+                # [공격적 매매] strict_mode가 False인 경우 모든 하드 필터 조건을 무시하고 통과(Bypass)합니다.
+                if strict_mode:
+                    # 필터 1: SMA20 상향 돌파 (정배열 혹은 반등 확인)
+                    if current_price < sma20:
+                        can_buy = False
+                        filter_reasons.append("주가 20일선 이탈")
+                    
+                    # 필터 2: ATR 14가 임계값 (예: 최소 호가단위 2배 이상)
+                    min_atr = current_price * 0.005 # 0.5% 변동성
+                    if atr14 < min_atr:
+                        can_buy = False
+                        filter_reasons.append(f"변동성 부족(ATR {atr14:.1f} < {min_atr:.1f})")
 
                 # 필터 3: 당일 급등 종목 매수 제한 (추격 매수 방지)
                 max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
-                if self.last_change_rate >= max_rise:
+                if strict_mode and self.last_change_rate >= max_rise:
                     can_buy = False
                     filter_reasons.append(f"당일 급등({self.last_change_rate:.1f}%)")
 
@@ -368,7 +377,8 @@ class LiveTradingEngine:
                     
             except Exception as e:
                 self.logger.warning(f"[{self.symbol}] ⚠️ 하드 필터 계산 에러: {e}")
-                can_buy = False
+                if self.config_manager.get("strict_filter_mode", True):
+                    can_buy = False
         # 매도 가능 조건: 보유 수량 있음 & 주문 미진행
         can_sell = (holdings > 0 and not self._is_order_pending)
 
@@ -398,9 +408,9 @@ class LiveTradingEngine:
         if not action_masks[action]:
             action = 0
 
-        # 신뢰도 필터 (매수/매도 임계값 분리 적용)
+        # 신뢰도 필터 (매수/매도 임계값 분리 적용 - 공격적 매매를 위해 0.55로 하향)
         ACTION_LABELS = {0: "Hold", 1: "Buy40%", 2: "Buy60%", 3: "Sell60%", 4: "Sell40%"}
-        buy_threshold  = float(self.config_manager.get("ai_buy_threshold", 0.6))
+        buy_threshold  = float(self.config_manager.get("ai_buy_threshold", 0.55))
         sell_threshold = float(self.config_manager.get("ai_sell_threshold", 0.6))
 
         # --- 심장박동 로그 (1분봉 확정마다 출력) ---
@@ -420,12 +430,12 @@ class LiveTradingEngine:
         if action in (1, 2):  # 매수 계열
             confidence = probs[action]
             if float(confidence) >= buy_threshold:
-                self.logger.warning(
+                self.logger.error(
                     f"[🔥 매수 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
                     f" | (매수확신: {buy_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
-                self.logger.warning(
+                self.logger.error(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -433,12 +443,12 @@ class LiveTradingEngine:
         elif action in (3, 4):  # 매도 계열
             confidence = probs[action]
             if float(confidence) >= sell_threshold:
-                self.logger.warning(
+                self.logger.error(
                     f"[📉 매도 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
                     f" | (매도확신: {sell_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
-                self.logger.warning(
+                self.logger.error(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -448,10 +458,10 @@ class LiveTradingEngine:
             if buy_conf >= int(buy_threshold * 100) and filter_reasons:
                 reason_str = ", ".join(filter_reasons)
                 msg = f"[🚫 필터 차단{status_tag}] {self.symbol} | 매수확신 {buy_conf}% ➡️ Hold 변환 (사유: {reason_str})"
-                self.logger.warning(msg)
+                self.logger.error(msg)
                 self._ui_log(msg)
             else:
-                self.logger.info(
+                self.logger.error(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: Hold"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -481,7 +491,7 @@ class LiveTradingEngine:
             invest_amount = min(max_invest * buy_ratio, orderable_cash * 0.99) # 수수료 등 감안 99%
 
             if invest_amount < max_invest * buy_ratio and invest_amount > 0:
-                self.logger.info(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest * buy_ratio:,.0f} -> {invest_amount:,.0f}")
+                self.logger.error(f"[{self.symbol}] 가용 현금 부족으로 투자 금액 하향 조정: {max_invest * buy_ratio:,.0f} -> {invest_amount:,.0f}")
 
             # 슬리피지 방지: 지정가(최우선 매도호가)를 추정하여 안전하게 주문 산출
             # 여기서는 편의상 current_price(시장가)를 기준으로 매수 주문. 
@@ -493,14 +503,17 @@ class LiveTradingEngine:
                     self.strategy_manager.record_buy()
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price * 1.001, "BUY")
-                self.logger.warning(
-                    f"[📤 매수 주문 전송] {self.symbol} | {qty}주 @ {valid_price:,}원"
+                self.logger.error(
+                    f" [🔥 매수 주문 전송] 종목: {self.symbol} | Action: {ACTION_LABELS[action]} | API 전송 완료!"
+                )
+                self.logger.error(
+                    f"[📤 매수 주문 전송 상세] {self.symbol} | {qty}주 @ {valid_price:,}원"
                     f" | 투자금: {invest_amount:,.0f}원 | 비율: {buy_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
-                self.logger.warning(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
+                self.logger.error(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
 
         elif action in (3, 4):  # 매도 계열 (Sell60% / Sell40%)
             real_holdings = self.order_manager.holdings.get(self.symbol, 0)
@@ -509,14 +522,14 @@ class LiveTradingEngine:
                 sell_qty = max(1, int(real_holdings * sell_ratio))
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price * 0.999, "SELL")
-                self.logger.warning(
+                self.logger.error(
                     f"[📤 매도 주문 전송] {self.symbol} | {sell_qty}주 @ {valid_price:,}원"
                     f" | 보유: {real_holdings}주 | 비율: {sell_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
                 self.last_action_time = current_time
             else:
-                self.logger.warning(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
+                self.logger.error(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
 
     async def _execute_order_background(self, side, price, qty):
         """
@@ -541,7 +554,7 @@ class LiveTradingEngine:
                     # 실패 시(Failure) 크래시 방지를 위해 unwrap()을 호출하지 않고 로그 출력 후 종료
                     # RiskManager 차단 등 정상적인 거부 사유를 로깅합니다.
                     failure_reason = result.failure()
-                    self.logger.warning(f"🚫 [주문 스킵] RiskManager 차단 또는 에러: {failure_reason}")
+                    self.logger.error(f"🚫 [주문 스킵] RiskManager 차단 또는 에러: {failure_reason}")
                     return
             else:
                 # Result 객체가 아닌 일반 값인 경우 그대로 사용
@@ -594,7 +607,7 @@ class LiveTradingEngine:
                 trade_logger.log_trade(self.symbol, side, executed_qty, price, pnl=pnl, pnl_pct=pnl_pct, note=f"Status: {status}")
                 
                 res_msg = f"🎯 [{self.symbol}] {side} 체결 완료 ({executed_qty}주, 수익률: {pnl_pct*100:+.2f}%)"
-                self.logger.warning(res_msg) # visibility 강화
+                self.logger.error(res_msg) # visibility 강화
                 self._ui_log(res_msg)
 
                 # [실현 손익 업데이트] 글로벌 잔고 매니저 및 리스크 매니저에 반영
@@ -605,7 +618,7 @@ class LiveTradingEngine:
                         order_info['pnl_processed'] = True
                         if self.order_manager.risk_manager:
                             self.order_manager.risk_manager.update_pnl(pnl)
-                        self.logger.warning(f"💰 [PnL 업데이트] {self.symbol} 매도로 인한 실현손익 반영: {pnl:,.0f}원 (당일 누적: {self.order_manager.daily_realized_pnl:,.0f}원)")
+                        self.logger.error(f"💰 [PnL 업데이트] {self.symbol} 매도로 인한 실현손익 반영: {pnl:,.0f}원 (당일 누적: {self.order_manager.daily_realized_pnl:,.0f}원)")
 
                 # [Firebase] 최종 매매 결과 기록 (OrderManager의 체잔 데이터 누락 대비 백업)
                 firebase_manager = getattr(self.order_manager, 'firebase_manager', None)
