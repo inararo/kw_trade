@@ -152,10 +152,45 @@ class QuantSystem:
 
         # GUI 초기화: ViewModel 주입 및 MainWindow 생성
         self.main_window = MainWindow(self.live_vm, self)
-        
+
+        # ──────────────────────────────────────────────────────────────
+        # [비동기 매매 백엔드 격리] LiveTradingThread 생성 및 탭에 주입
+        # ──────────────────────────────────────────────────────────────
+        from gui.live_trading_thread import LiveTradingThread
+        from main_live_trader import KiwoomBrokerWrapper
+
+        _cfg = self.container.config_manager()
+        _app_key    = _cfg.get("KIWOOM_APP_KEY", "")
+        _app_secret = _cfg.get("KIWOOM_APP_SECRET", "")
+        _base_url   = _cfg.get_rest_url()
+        _ws_url     = _cfg.get_ws_url()
+
+        self._broker_api = KiwoomBrokerWrapper(_app_key, _app_secret, _base_url, _ws_url)
+        self.live_trading_thread = LiveTradingThread(
+            config_manager    = _cfg,
+            order_manager     = self.order_manager,
+            risk_manager      = self.risk_manager,
+            strategy_manager  = self.strategy_manager,
+            condition_manager = self.container.condition_manager(),
+            broker_api        = self._broker_api,
+            firebase_manager  = getattr(self, 'firebase_manager', None),  # Firebase 주입
+            parent            = None,
+        )
+        # 대시보드 탭에 스레드 주입 (시그널 자동 연결)
+        self.main_window.tab_live.inject_live_thread(self.live_trading_thread)
+        # Firebase 원격 제어 시그널 연결 (모바일 앱 → GUI 버튼 상태 동기화)
+        self.live_trading_thread.signal_monitoring_toggled.connect(
+            self.main_window.tab_live.on_monitoring_toggled
+        )
+        self.live_trading_thread.signal_ai_trading_toggled.connect(
+            self.main_window.tab_live.on_ai_trading_toggled
+        )
+        print("시스템: LiveTradingThread 생성 완료 → 라이브 대시보드 [실전매매 시작] 버튼으로 가동하세요.")
+        # ──────────────────────────────────────────────────────────────
+
         # [신규] 대시보드 자산/현금 폴링 루프 시작 (1초 주기 UI 갱신)
         asyncio.create_task(self.live_vm.start_polling())
-        
+
         # Connect Signals
         self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
         self.token_manager.signals.token_updated.connect(self._on_token_updated)
@@ -167,11 +202,17 @@ class QuantSystem:
         self.main_window.show()
         print("시스템: 부팅 시퀀스를 시작합니다. (모델 기반 에이전트 모드)")
 
+
         # [Firebase] Firebase 매니저 초기화 및 부팅 상태 전송
         self.firebase_manager = self.container.firebase_manager()
         # [역방향 동기화 활성화] ConfigManager에 FirebaseManager 주입
         config_mgr.firebase_manager = self.firebase_manager
-        
+
+        # [LiveTradingThread] Firebase 지연 주입 (스레드 생성 시점에는 아직 초기화 전이었으므로)
+        if hasattr(self, 'live_trading_thread'):
+            self.live_trading_thread.inject_firebase_manager(self.firebase_manager)
+            print("시스템: [Firebase] LiveTradingThread에 FirebaseManager 주입 완료")
+
         asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
         # 초기 제어 상태도 함께 보고 (기본값: Monitoring=False, AI=True)
         asyncio.create_task(self.firebase_manager.update_control_status(

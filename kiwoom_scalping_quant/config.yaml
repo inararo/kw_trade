@@ -1,12 +1,12 @@
 account_number: ''
-active_model_path: ./saved_models/bob/model_advanced_smart_best.zip
+active_model_path: ./saved_models/bob/best_model_random_fine1.zip
 ai_buy_threshold: 0.7
 ai_sell_threshold: 0.55
 cb_timeout_sec: 3
 cutoff_time: '14:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
-enable_cutoff: true
+enable_cutoff: false
 enable_universe_update: false
 global_max_exposure: 30000000.0
 global_max_loss: -500000
@@ -23,9 +23,9 @@ kiwoom:
 live_trading_model_type: smart
 log_level: ERROR
 max_buffer_size: 100000
-max_daily_rise_pct: 20.0
+max_daily_rise_pct: 14.0
 max_invest_per_symbol: 300000.0
-max_open_positions: 10
+max_open_positions: 7
 max_position_pct: 100.0
 protected_symbols:
 - '323410'

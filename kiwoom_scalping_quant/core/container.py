@@ -11,6 +11,7 @@ from core.token_manager import TokenManager
 from core.scheduler import MarketScheduler
 from core.risk_manager import RiskManager
 from core.telegram_notifier import TelegramNotifier
+from core.condition_manager import ConditionManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 from infrastructure.firebase_manager import FirebaseManager
@@ -88,6 +89,12 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         risk_manager=risk_manager
+    )
+
+    condition_manager = providers.Singleton(
+        ConditionManager,
+        config_manager=config_manager,
+        data_collector=data_collector
     )
 
 

@@ -19,6 +19,7 @@ from core.order_manager import OrderManager
 from core.risk_manager import RiskManager
 from core.strategy_manager import StrategyManager
 from core.condition_manager import ConditionManager
+from infrastructure.firebase_manager import FirebaseManager
 
 # =====================================================================
 # 1. 키움증권 Open API (REST / WebSocket) 통신 래퍼
@@ -300,6 +301,88 @@ async def main():
     strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager)
     condition_manager = ConditionManager(config_manager, data_collector)
 
+    # 1-1. Firebase 초기화 및 리스너 설정
+    firebase_manager = FirebaseManager(config_manager)
+    config_manager.firebase_manager = firebase_manager
+    
+    # [Firebase] 부팅 시 초기화 (상태 보고 및 기본 설정 업로드)
+    if getattr(firebase_manager, '_initialized', False):
+        await firebase_manager.update_system_status("RUNNING")
+        await firebase_manager.update_engine_status("RUNNING")
+        await firebase_manager.update_control_status(
+            is_monitoring_active=True,
+            is_ai_trading_active=True
+        )
+        
+        # 기본 설정 업로드 (보안 항목 제외)
+        _EXCLUDED = {
+            "account_number", "KIWOOM_APP_KEY", "KIWOOM_APP_SECRET",
+            "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG",
+            "influx_bucket", "INFLUX_BUCKET", "TELEGRAM_BOT_TOKEN",
+            "telegram_chat_id", "FIREBASE_KEY_PATH", "active_model_path",
+            "kiwoom", "ws_url", "symbols", "universe"
+        }
+        _default_settings = {
+            k: v for k, v in config_manager._config_cache.items()
+            if k not in _EXCLUDED and isinstance(v, (int, float, str, bool))
+        }
+        await firebase_manager.initialize_default_settings(_default_settings)
+        logger.info("✅ [Firebase] 부팅 상태 보고 및 기본 설정 업로드 완료")
+
+    # [Firebase] 실시간 리스너 설정 (클로저를 활용해 현재 루프 및 매니저들과 연동)
+    loop = asyncio.get_running_loop()
+    
+    def setup_firebase_listeners():
+        if not getattr(firebase_manager, '_initialized', False):
+            return
+
+        # 리스너 1: 설정 변경
+        def on_settings_changed(data: dict):
+            def _apply():
+                _CONTROL_KEYS = {"last_updated_by_engine", "last_heartbeat", "engine_status", "current_state", "updated_at"}
+                filtered = {k: v for k, v in data.items() if k not in _CONTROL_KEYS}
+                if filtered:
+                    applied = config_manager.hot_reload_settings(filtered)
+                    if applied:
+                        asyncio.run_coroutine_threadsafe(firebase_manager.report_settings_applied(), loop)
+                        logger.info(f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}")
+            loop.call_soon_threadsafe(_apply)
+        firebase_manager.listen_to_settings(on_settings_changed)
+
+        # 리스너 2: 엔진 제어 (모니터링, AI 매매)
+        def on_engine_status_changed(data: dict):
+            def _apply():
+                if "is_monitoring_active" in data:
+                    active = data["is_monitoring_active"]
+                    logger.info(f"[Firebase] 원격 제어: 종목 감시 {'재개' if active else '중지'}")
+                    # CLI 버전에서는 웹소켓 루프를 직접 끄기보다 strategy_manager나 condition_manager의 플래그로 제어하거나
+                    # 필요시 추가 로직 구현 가능. 여기선 로그로 우선 표시.
+                
+                if "is_ai_trading_active" in data:
+                    active = data["is_ai_trading_active"]
+                    strategy_manager.set_ai_paused(not active)
+                    logger.info(f"🤖 [Firebase] 원격 제어: AI 매매 {'재개' if active else '일시정지'}")
+            loop.call_soon_threadsafe(_apply)
+        firebase_manager.listen_to_engine_status(on_engine_status_changed)
+
+        # 리스너 3: 긴급 명령 (전량 청산)
+        def on_command_received(doc_id: str, data: dict):
+            action = data.get("action", "")
+            if action == "PANIC_SELL":
+                logger.critical(f"🚨 [Firebase] 긴급 청산(PANIC_SELL) 명령 수신! (ID: {doc_id})")
+                async def _execute():
+                    try:
+                        await order_manager.emergency_liquidate()
+                        await firebase_manager.update_command_status(doc_id, "COMPLETED")
+                        logger.info("✅ [Firebase] 긴급 청산 완료 보고 완료.")
+                    except Exception as e:
+                        await firebase_manager.update_command_status(doc_id, "FAILED")
+                        logger.error(f"❌ [Firebase] 긴급 청산 실패: {e}")
+                asyncio.run_coroutine_threadsafe(_execute(), loop)
+        firebase_manager.listen_to_commands(on_command_received)
+
+    setup_firebase_listeners()
+
     # 2. 모델 로드 및 StrategyManager 초기 세팅
     strategy_manager.load_model_from_config()
     await strategy_manager.init_engines([]) # 초기 유니버스 빈 상태로 구동
@@ -390,12 +473,19 @@ async def main():
         asyncio.create_task(broker_api.ws_listener_loop(target_idx)),  # 웹소켓 펌프 루프
         asyncio.create_task(strategy_manager.start())                  # 매매 엔진 워치독 및 웜업 루프
     ]
+    
+    # [Firebase] 하트비트 태스크 추가
+    if getattr(firebase_manager, '_initialized', False):
+        tasks.append(asyncio.create_task(firebase_manager.start_heartbeat()))
 
     try:
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         logger.info("🛑 강제 종료 감지. 안전 종료 절차 시작...")
         await strategy_manager.stop()
+        if getattr(firebase_manager, '_initialized', False):
+            await firebase_manager.update_engine_status("OFFLINE")
+            logger.info("👋 [Firebase] 엔진 종료 상태(OFFLINE) 보고 완료.")
         if hasattr(data_collector, 'stop'):
             await data_collector.stop()
 

@@ -11,9 +11,10 @@ class LiveDashboardTab(QWidget):
     탭 A: 실시간 매매
     호가창 래더, AI 신뢰도 모니터, 패닉 버튼 등을 포함.
     """
-    def __init__(self, view_model):
+    def __init__(self, view_model, live_thread=None):
         super().__init__()
         self.view_model = view_model
+        self.live_thread = live_thread   # LiveTradingThread 인스턴스 (선택적)
         self._current_pnl = 0.0
         self._current_balance = 0.0
         self._available_limit = 0.0
@@ -102,6 +103,27 @@ class LiveDashboardTab(QWidget):
         # 시스템 실시간 제어 패널 (위로 이동)
         sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
         sys_ctrl_layout = QVBoxLayout()
+
+        # ── [실전매매 엔진] 시작/종료 버튼 ──────────────────
+        engine_row = QHBoxLayout()
+        self.btn_engine_start = QPushButton("▶ 실전매매 시작")
+        self.btn_engine_start.setStyleSheet(
+            "background-color: #1b5e20; color: white; font-weight: bold; height: 38px; border-radius: 4px;"
+        )
+        self.btn_engine_start.clicked.connect(self._on_engine_start_clicked)
+
+        self.btn_engine_stop = QPushButton("■ 매매 종료")
+        self.btn_engine_stop.setStyleSheet(
+            "background-color: #b71c1c; color: white; font-weight: bold; height: 38px; border-radius: 4px;"
+        )
+        self.btn_engine_stop.setEnabled(False)
+        self.btn_engine_stop.clicked.connect(self._on_engine_stop_clicked)
+
+        engine_row.addWidget(self.btn_engine_start)
+        engine_row.addWidget(self.btn_engine_stop)
+        sys_ctrl_layout.addLayout(engine_row)
+        # ─────────────────────────────────────────────────────
+
         self.btn_monitor_toggle = QPushButton("🛰️ 종목 감시 중지")
         self.btn_monitor_toggle.setCheckable(True)
         self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
@@ -172,9 +194,28 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_status_alert.connect(self.on_status_alert)
         self.view_model.sig_error_occurred.connect(self.on_error)
         self.view_model.sig_universe_changed.connect(self.on_universe_changed)
-        # [원격 제어 연동] Firebase에서 제어 명령이 올 때 버튼 UI 상태를 즉시 갱신
         self.view_model.sig_trading_paused.connect(self.on_ai_trading_toggled)
         self.view_model.sig_monitoring_stopped.connect(self.on_monitoring_toggled)
+
+        # LiveTradingThread 시그널 연결 (스레드가 주입된 경우)
+        if self.live_thread is not None:
+            self.live_thread.signal_log_message.connect(self.on_log_appended)
+            self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
+            self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
+            self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
+            self.live_thread.signal_engine_status.connect(self._on_engine_status_changed)
+
+    def inject_live_thread(self, live_thread):
+        """
+        탭 생성 이후에 LiveTradingThread를 늦게 주입할 때 사용합니다.
+        main.py 또는 QuantSystem에서 스레드가 준비된 시점에 호출하세요.
+        """
+        self.live_thread = live_thread
+        self.live_thread.signal_log_message.connect(self.on_log_appended)
+        self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
+        self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
+        self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
+        self.live_thread.signal_engine_status.connect(self._on_engine_status_changed)
 
     @pyqtSlot(bool)
     def on_monitoring_toggled(self, stopped: bool):
@@ -196,6 +237,60 @@ class LiveDashboardTab(QWidget):
             self.btn_monitor_toggle.setText("🛰️ 종목 감시 중지")
             self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
             self.btn_ai_toggle.setEnabled(True)
+
+    # ──────────────────────────────────────────
+    # 엔진 시작/종료 버튼 슬롯
+    # ──────────────────────────────────────────
+    def _on_engine_start_clicked(self):
+        if self.live_thread is None:
+            self.on_log_appended("⚠️ LiveTradingThread가 주입되지 않았습니다. main.py를 확인하세요.")
+            return
+        if self.live_thread.isRunning():
+            self.on_log_appended("⚠️ 이미 매매 엔진이 실행 중입니다.")
+            return
+        self.live_thread.start()
+        self.on_log_appended("▶ 실전매매 엔진 시작 요청됨...")
+
+    def _on_engine_stop_clicked(self):
+        if self.live_thread and self.live_thread.isRunning():
+            self.live_thread.request_stop()
+            self.on_log_appended("■ 매매 엔진 종료 요청됨... (안전 종료 대기 중)")
+
+    @pyqtSlot(bool)
+    def _on_engine_status_changed(self, is_running: bool):
+        """엔진 상태 변화에 따라 버튼 활성/비활성 전환"""
+        self.btn_engine_start.setEnabled(not is_running)
+        self.btn_engine_stop.setEnabled(is_running)
+        if is_running:
+            self.btn_engine_start.setText("▶ 실전매매 실행 중")
+            self.status_bar.setText("🟢 실전매매 엔진 가동 중")
+            self.status_bar.setStyleSheet(
+                "background-color: #1b5e20; color: white; padding: 10px; font-weight: bold;"
+            )
+        else:
+            self.btn_engine_start.setText("▶ 실전매매 시작")
+            self.status_bar.setText("🔴 매매 엔진 종료됨")
+            self.status_bar.setStyleSheet(
+                "background-color: #2b5b84; color: white; padding: 10px; font-weight: bold;"
+            )
+
+    # ──────────────────────────────────────────
+    # LiveTradingThread 이벤트 슬롯
+    # ──────────────────────────────────────────
+    @pyqtSlot(str, str)
+    def _on_thread_condition_inserted(self, symbol: str, name: str):
+        self.on_log_appended(f"🌟 [편입] {symbol} ({name}) - 유니버스에 추가됨")
+
+    @pyqtSlot(str)
+    def _on_thread_condition_deleted(self, symbol: str):
+        self.on_log_appended(f"🗑️ [이탈] {symbol} - 유니버스에서 제거 대기 중 (30초 유예)")
+
+    @pyqtSlot(str, str, float, int)
+    def _on_thread_order_executed(self, symbol: str, side: str, price: float, qty: int):
+        side_str = "매수" if side == "BUY" else "매도"
+        self.on_log_appended(
+            f"📤 [{side_str} 체결] {symbol} | {qty}주 @ {price:,.0f}원"
+        )
 
     @pyqtSlot(bool)
     def on_ai_trading_toggled(self, paused: bool):
