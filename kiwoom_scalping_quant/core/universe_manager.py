@@ -30,7 +30,98 @@ class UniverseManager:
         self.cache_dir = "data"
         self.cache_path = os.path.join(self.cache_dir, "stock_names.json")
         self._name_cache = {}
+        # 종목명 로컬 캐시 설정
+        self.cache_dir = "data"
+        self.cache_path = os.path.join(self.cache_dir, "stock_names.json")
+        self._name_cache = {}
         self._load_name_cache()
+
+    async def get_condition_list(self, access_token: str) -> Dict[str, str]:
+        """서버에 저장된 조건검색식 목록 조회 (가상 TR: ka10050)"""
+        endpoint = f"{self.base_url}/api/dostk/rkinfo"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "api-id": "ka10050",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(endpoint, headers=headers, json={}, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("ka10050", []) or data.get("output", [])
+                        conditions = {item.get("cond_idx"): item.get("cond_nm") for item in items if item.get("cond_idx")}
+                        self.logger.info(f"✅ 조건식 목록 수신 완료 ({len(conditions)}개 항목)")
+                        return conditions
+                    else:
+                        self.logger.error(f"❌ 조건식 목록 조회 실패 (Status {resp.status})")
+                        return {}
+        except Exception as e:
+            self.logger.error(f"❌ 조건식 목록 조회 통신 에러: {e}")
+            return {}
+
+    async def get_condition_symbols(self, access_token: str, cond_idx: str, cond_nm: str) -> List[Dict[str, Any]]:
+        """특정 조건식에 해당하는 실시간 종목 리스트 조회 (가상 TR: ka10051)"""
+        endpoint = f"{self.base_url}/api/dostk/rkinfo"
+        headers = {
+            "authorization": f"Bearer {access_token}",
+            "api-id": "ka10051",
+            "Content-Type": "application/json"
+        }
+        params = {
+            "cond_idx": cond_idx,
+            "cond_nm": cond_nm
+        }
+        
+        symbols = []
+        try:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.post(endpoint, headers=headers, json=params, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("ka10051", []) or data.get("output", [])
+                        for item in items:
+                            code = item.get("stk_cd") or item.get("code", "")
+                            name = item.get("stk_nm") or item.get("name", f"Unknown_{code}")
+                            symbols.append({
+                                "code": code.split('_')[0].strip(),
+                                "name": name,
+                                "price": float(str(item.get("cur_prc", 0)).replace(',', '')),
+                                "flu_rt": float(str(item.get("flu_rt", 0)).replace(',', '')),
+                                "volume": float(str(item.get("trde_qty", 0)).replace(',', ''))
+                            })
+                        self.logger.info(f"✅ 조건검색 결과 수신 완료: {cond_nm} ({len(symbols)}개 종목)")
+                    else:
+                        self.logger.error(f"❌ 조건검색 종목 조회 실패 (Status {resp.status})")
+        except Exception as e:
+            self.logger.error(f"❌ 조건검색 종목 조회 통신 에러: {e}")
+        
+        return symbols
+
+    @future_safe
+    async def build_condition_universe(self, access_token: str, target_cond_nm: str = "AI스캘핑주도주") -> List[Dict[str, Any]]:
+        """서버 조건식을 검색하여 실전 매매 유니버스를 구성하는 통합 메서드"""
+        conditions = await self.get_condition_list(access_token)
+        if not conditions:
+            return []
+
+        # 대상 조건식 찾기
+        cond_idx = next((idx for idx, nm in conditions.items() if target_cond_nm in nm), None)
+        if not cond_idx:
+            # Fallback: 만약 대상이 없으면 첫 번째 조건식 사용
+            cond_idx, cond_nm = list(conditions.items())[0]
+            self.logger.warning(f"⚠️ '{target_cond_nm}' 조건식을 찾을 수 없어 '{cond_nm}'을 대신 사용합니다.")
+        else:
+            cond_nm = conditions[cond_idx]
+
+        symbols = await self.get_condition_symbols(access_token, cond_idx, cond_nm)
+        
+        # 필터링 적용
+        valid_symbols = [s for s in symbols if self._is_valid_scalping_symbol(s["name"], s["code"])]
+        return valid_symbols
 
     def _load_name_cache(self):
         """로컬 JSON 파일에서 종목명 캐시를 불러옵니다."""

@@ -600,3 +600,11 @@ class StrategyManager:
             next_symbol = self.pending_universe_queue.pop(0)
             self.logger.info(f"🔄 [큐 진입] 빈 슬롯 발생. 대기열에서 {next_symbol} 편입")
             await self._add_dynamic_symbol(next_symbol)
+
+    async def add_to_universe(self, symbol: str):
+        """실시간 편입 이벤트 대응 공개 메서드"""
+        await self._add_dynamic_symbol(symbol)
+
+    async def remove_from_universe(self, symbol: str):
+        """실시간 이탈 이벤트 대응 공개 메서드"""
+        await self._remove_dynamic_symbol(symbol)

@@ -457,6 +457,71 @@ class AssetDataViewModel(QObject):
         self.firebase_manager = firebase_manager
         self.logger = logging.getLogger("AssetDataViewModel")
 
+        # [신규] 실시간 조건검색 웹소켓 스레드 초기화
+        from core.condition_ws_thread import ConditionWebSocketThread
+        self.condition_ws_thread = ConditionWebSocketThread(self.config_manager)
+        self.condition_ws_thread.signal_condition_event.connect(self._on_condition_event)
+        self.condition_ws_thread.signal_error.connect(lambda msg: self.fetch_failed.emit(f"WS Error: {msg}"))
+
+        # 메모리 상의 현재 실전 매매 유니버스 (동적 관리용)
+        self._current_trading_universe = []
+
+    @pyqtSlot(str, str)
+    def _on_condition_event(self, event_type: str, symbol: str):
+        """실시간 편입(I)/이탈(D) 이벤트 처리 슬롯"""
+        self.logger.info(f"[동적 유니버스] 이벤트 수신: {event_type} | {symbol}")
+        
+        # 1. StrategyManager 및 LiveVM 참조 획득
+        sm = getattr(self.config_manager, "_injected_strategy_manager", None)
+        live_vm = getattr(self.config_manager, "_injected_live_vm", None)
+        
+        if not sm or not live_vm:
+            self.logger.warning("StrategyManager 또는 LiveVM이 초기화되지 않아 실시간 이벤트를 무시합니다.")
+            return
+
+        if event_type == 'I': # 편입
+            # 이미 존재하는지 확인
+            if any(s['code'] == symbol for s in self._current_trading_universe):
+                return
+            
+            # 종목 정보 구성 (이름 등은 캐시에서 로드)
+            name = self.universe_manager.get_stock_name_from_cache(symbol) or f"New_{symbol}"
+            new_item = {"code": symbol, "name": name, "price": 0, "flu_rt": 0, "volume": 0}
+            
+            self._current_trading_universe.append(new_item)
+            self.logger.info(f"✅ [편입] {name}({symbol}) 종목이 유니버스에 추가되었습니다.")
+            
+            # 매매 엔진에 추가 알림 및 구독 시작
+            asyncio.create_task(sm.add_to_universe(symbol))
+            
+            # UI 갱신
+            live_vm.update_universe_list(self._current_trading_universe)
+            
+        elif event_type == 'D': # 이탈
+            # 해당 종목 제거
+            original_len = len(self._current_trading_universe)
+            self._current_trading_universe = [s for s in self._current_trading_universe if s['code'] != symbol]
+            
+            if len(self._current_trading_universe) < original_len:
+                self.logger.info(f"❌ [이탈] {symbol} 종목이 유니버스에서 제거되었습니다.")
+                
+                # 매매 엔진에서 감시 중단 요청
+                asyncio.create_task(sm.remove_from_universe(symbol))
+                
+                # UI 갱신
+                live_vm.update_universe_list(self._current_trading_universe)
+
+    def start_condition_ws(self):
+        """웹소켓 감시 시작"""
+        if not self.condition_ws_thread.isRunning():
+            self.condition_ws_thread.start()
+            self.logger.info("📡 실시간 조건검색 모니터링 스레드 가동!")
+
+    def stop_condition_ws(self):
+        """웹소켓 감시 중단"""
+        self.condition_ws_thread.stop()
+        self.logger.info("🛑 실시간 조건검색 모니터링 중단")
+
     def build_universe(self, top_n: int = 20):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
         asyncio.create_task(self._build_universe_task(top_n=top_n, is_auto=False))
@@ -537,7 +602,13 @@ class AssetDataViewModel(QObject):
             return []
 
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
-        result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n)
+        if save_to_config:
+            # 데이터 관리용: 기존 거래대금 상위 방식 유지
+            result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n)
+        else:
+            # 실전 매매용: 서버 조건 검색(AI스캘핑주도주) 방식 사용
+            self.sig_status_updated.emit("서버 실시간 조건 검색 종목(주도주) 수집 중...")
+            result = await self.universe_manager.build_condition_universe(access_token, target_cond_nm="AI스캘핑주도주")
 
         if isinstance(result, IOFailure):
             err_msg = str(result.failure()._inner_value if hasattr(result.failure(), '_inner_value') else result.failure())

@@ -81,13 +81,12 @@ class QuantSystem:
             self.main_window.statusBar().showMessage(f"[알림] {msg}", 5000)
 
     def _on_universe_ready(self, symbols: list):
+        """데이터 관리 탭의 유니버스 로드/저장 완료 시 호출됩니다."""
         self.universe_ready_event.set()
         
-        # [신규] 장중 수동 유니버스 갱신 대응
-        # 시스템이 이미 실행 중(is_running)이라면 전략 매니저에게 즉각적인 엔진 및 구독 교체를 요청합니다.
-        if hasattr(self, 'strategy_manager') and self.strategy_manager.is_running:
-            print(f"시스템: 장중 유니버스 수동 갱신 감지 (총 {len(symbols)}개 종목) - 실시간 구독 및 엔진 교체 시작...")
-            asyncio.create_task(self.strategy_manager.update_universe(symbols))
+        # [분리 완료] 더 이상 데이터 관리 탭의 변경이 실전 매매 엔진에 영향을 주지 않습니다.
+        # 실전 매매 유니버스는 부팅 시 초기화 및 웹소켓(ConditionWS) 이벤트에 의해서만 동적으로 관리됩니다.
+        self.logger.info(f"시스템: 데이터 관리용 유니버스 동기화 완료 (총 {len(symbols)}개 종목).")
 
     def _on_token_error(self, msg: str):
         if hasattr(self.main_window, 'statusBar'):
@@ -348,6 +347,10 @@ class QuantSystem:
             
             print("시스템: [Step 4] 실전 매매 엔진 초기화 시작...")
             await self.strategy_manager.init_engines(trading_universe)
+
+            # [신규] 실시간 조건 검색 웹소켓 감시 시작
+            print("시스템: [Step 5] 실시간 조건 검색(편입/이탈) 웹소켓 모니터링 가동...")
+            self.asset_vm.start_condition_ws()
             
             # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
             try:
