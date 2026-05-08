@@ -22,21 +22,37 @@ class ConditionService:
         """웹소켓 메시지 수신 및 유형별 분기 처리"""
         try:
             data = json.loads(message)
-            msg_type = data.get("type") # I, D, CNSRREQ 등
+            # trnm: CNSRREQ, CNSRLST 등 (REST 응답 스타일)
+            # type: I, D 등 (실시간 이벤트 스타일)
+            msg_type = data.get("trnm") or data.get("type")
             
             if msg_type == "CNSRREQ":
                 self._handle_snapshot(data)
-            elif msg_type == "I":
+            elif msg_type == "I" or (data.get("event") == "condition" and data.get("status") == "I"):
                 self._handle_insert(data)
-            elif msg_type == "D":
+            elif msg_type == "D" or (data.get("event") == "condition" and data.get("status") == "D"):
                 self._handle_delete(data)
                 
         except Exception as e:
             self.logger.error(f"ConditionService: 메시지 파싱 에러: {e}")
 
     def _handle_snapshot(self, data: Dict[str, Any]):
-        """초기 조건검색 결과 스냅샷 처리"""
-        symbols = data.get("symbols", []) # 예: ["005930", "000660"]
+        """초기 조건검색 결과 스냅샷 처리 (CNSRREQ)"""
+        # [수정] 키움 API 규격: data 필드 내에 [{jmcode: A005930}, ...] 형태로 수신됨
+        raw_items = data.get("data", [])
+        symbols = []
+        
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                code = ""
+                if isinstance(item, dict):
+                    code = item.get("jmcode", "")
+                elif isinstance(item, str):
+                    code = item
+                
+                if code:
+                    symbols.append(code.lstrip("A"))
+
         self.logger.info(f"📋 조건검색 스냅샷 수신: {len(symbols)} 종목")
         self.current_symbols = set(symbols)
         for cb in self.on_snapshot:

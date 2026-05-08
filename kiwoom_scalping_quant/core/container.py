@@ -15,7 +15,8 @@ from core.condition_manager import ConditionManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
 from core.broker.rest_broker import RESTBrokerWrapper
-from core.account_manager import AccountManager
+from core.account_service import AccountService
+from core.condition_service import ConditionService
 from infrastructure.firebase_manager import FirebaseManager
 
 class Container(containers.DeclarativeContainer):
@@ -77,19 +78,12 @@ class Container(containers.DeclarativeContainer):
         token_manager=token_manager
     )
 
-    account_manager = providers.Singleton(
-        AccountManager,
-        config_manager=config_manager,
-        broker_wrapper=rest_broker_wrapper,
-        data_collector=data_collector,
-        firebase_manager=firebase_manager
-    )
-
     # Shared Core Services (공유 서비스)
     account_service = providers.Singleton(
         AccountService,
         broker_wrapper=rest_broker_wrapper,
-        data_collector=data_collector
+        data_collector=data_collector,
+        firebase_manager=firebase_manager
     )
 
     condition_service = providers.Singleton(
@@ -102,7 +96,6 @@ class Container(containers.DeclarativeContainer):
         auth_manager=token_manager,
         telegram_notifier=telegram_notifier,
         firebase_manager=firebase_manager,
-        account_manager=account_manager,
         account_service=account_service
     )
 
@@ -142,7 +135,7 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         config_manager=config_manager,
-        account_manager=account_manager
+        account_service=account_service
     )
 
     asset_data_view_model = providers.Singleton(

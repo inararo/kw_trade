@@ -52,7 +52,7 @@ class LiveTradingThread(QThread):
 
     def __init__(self, config_manager, order_manager, risk_manager,
                  strategy_manager, condition_manager, broker_api,
-                 firebase_manager=None, parent=None):
+                 condition_service=None, firebase_manager=None, parent=None):
         super().__init__(parent)
         self.config_manager    = config_manager
         self.order_manager     = order_manager
@@ -60,6 +60,7 @@ class LiveTradingThread(QThread):
         self.strategy_manager  = strategy_manager
         self.condition_manager = condition_manager
         self.broker_api        = broker_api
+        self.condition_service = condition_service # [Shared Core] 서비스
         self.firebase_manager  = firebase_manager  # 선택적 (None이면 Firebase 비활성)
 
         self._loop: asyncio.AbstractEventLoop = None
@@ -137,19 +138,30 @@ class LiveTradingThread(QThread):
         # 5. 부팅 시 Firebase 제어 플래그 초기 상태 반영
         await self._firebase_sync_initial_flags()
 
-        # 6. 조건검색 이벤트 콜백 등록 (Thread-Safe 시그널로 브릿지)
-        async def _on_condition_event(code: str, status: str, name: str):
-            clean = code.lstrip("A")
-            if status == "I":
-                self.signal_log_message.emit(f"🌟 [편입] {clean} ({name})")
-                self.signal_condition_inserted.emit(clean, name)
-                await self.strategy_manager.handle_condition_insert(clean)
-            else:
-                self.signal_log_message.emit(f"🗑️ [이탈] {clean} ({name})")
-                self.signal_condition_deleted.emit(clean)
-                await self.strategy_manager.handle_condition_delete(clean)
+        # 6. [Shared Core] 조건검색 서비스 연동 (스냅샷 및 실시간 이벤트)
+        if self.condition_service:
+            def _handle_snapshot(symbols):
+                self.signal_log_message.emit(f"📋 초기 조건 만족 종목 {len(symbols)}개 편입 시퀀스 시작...")
+                for sym in symbols:
+                    self._loop.create_task(self.strategy_manager.handle_condition_insert(sym))
+                    self.signal_condition_inserted.emit(sym, "AI스캘핑주도주")
 
-        self.broker_api.on_condition_event = _on_condition_event
+            def _handle_insert(sym, data):
+                self.signal_log_message.emit(f"🌟 [편입] {sym}")
+                self.signal_condition_inserted.emit(sym, "AI스캘핑주도주")
+                self._loop.create_task(self.strategy_manager.handle_condition_insert(sym))
+
+            def _handle_delete(sym, data):
+                self.signal_log_message.emit(f"🗑️ [이탈] {sym}")
+                self.signal_condition_deleted.emit(sym)
+                self._loop.create_task(self.strategy_manager.handle_condition_delete(sym))
+
+            self.condition_service.register_callbacks(
+                on_snapshot=_handle_snapshot,
+                on_insert=_handle_insert,
+                on_delete=_handle_delete
+            )
+            self.signal_log_message.emit("✅ [SharedCore] 조건검색 콜백 바인딩 완료")
 
         # 7. 조건식 인덱스(target_idx) 조회
         target_condition_name = "AI스캘핑주도주"
@@ -161,13 +173,20 @@ class LiveTradingThread(QThread):
         tasks = [
             asyncio.create_task(self.strategy_manager.start(),
                                 name="strategy_loop"),
-            asyncio.create_task(self.broker_api.ws_listener_loop(target_idx),
-                                name="ws_listener"),
             asyncio.create_task(self._balance_sync_loop(),
                                 name="balance_sync"),
             asyncio.create_task(self._stop_event.wait(),
                                 name="stop_sentinel"),
         ]
+
+        # [안정화] 웹소켓 리스너가 이미 (main.py 등에 의해) 실행 중인 경우 중복 가동 방지
+        if not getattr(self.broker_api, 'ws_running', False):
+            self.signal_log_message.emit("📡 웹소켓 리스너를 새로 가동합니다.")
+            tasks.append(asyncio.create_task(
+                self.broker_api.ws_listener_loop(target_idx), name="ws_listener"
+            ))
+        else:
+            self.signal_log_message.emit("🌐 이미 가동 중인 웹소켓 리스너를 공유합니다.")
 
         # Firebase 하트비트 (Firebase 초기화된 경우에만)
         if self.firebase_manager and getattr(self.firebase_manager, '_initialized', False):

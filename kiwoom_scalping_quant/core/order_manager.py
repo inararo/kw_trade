@@ -24,13 +24,12 @@ class OrderState:
     FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
-    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None, account_manager=None, account_service=None):
+    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None, account_service=None):
         self.config = config
         self.auth_manager = auth_manager
         self.notifier = telegram_notifier
         self.firebase_manager = firebase_manager  # [Firebase] Firestore 연동 매니저
-        self.account_manager = account_manager    # [기존] UI용 매니저
-        self.account_service = account_service    # [신규] Shared Core 서비스
+        self.account_service = account_service    # [Shared Core] 서비스
         self.logger = logging.getLogger("OrderManager")
         self.logger.info(f"🛠️ [OrderManager] 초기화 완료 (AccountService 주입 여부: {self.account_service is not None})")
         self.signals = OrderSignals()
@@ -181,13 +180,13 @@ class OrderManager:
         await self._throttle_order()
 
         # [사전 필터] 매수 주문 시 주문 가능 금액(kt00010) 확인
-        if order_type == "BUY" and self.account_manager:
+        if order_type == "BUY" and self.account_service:
             try:
                 # 주문 직전 최신 가용 자금 동기화
-                await asyncio.wait_for(self.account_manager.sync_account_status(), timeout=5.0)
-                if not self.account_manager.can_afford(price * qty):
+                await asyncio.wait_for(self.account_service.sync_all(), timeout=5.0)
+                if not self.account_service.can_afford(price * qty):
                     order_amt = price * qty
-                    available = self.account_manager.orderable_cash
+                    available = self.account_service.orderable_cash
                     self.logger.error(f"❌ [자금 부족] 주문 가능 금액 초과: 필요 {order_amt:,.0f}원 / 가용 {available:,.0f}원")
                     raise Exception(f"INSUFFICIENT_FUNDS: Required {order_amt:,.0f}, Available {available:,.0f}")
             except asyncio.TimeoutError:
@@ -649,11 +648,12 @@ class OrderManager:
                     if order['type'] == 'SELL':
                         self._last_sell_fill_time[symbol] = time.time()
                         # [핵심] 매도 완료 직후 실제 실현 손익 동기화 (ka10077)
-                        if self.account_manager:
+                        if self.account_service:
                             async def deferred_sync():
                                 await asyncio.sleep(1.0) # 체결 후 정산 반영 대기
-                                await self.account_manager.sync_account_status()
-                                self.daily_realized_pnl = self.account_manager.today_realized_profit
+                                await self.account_service.sync_all()
+                                summary = self.account_service.get_summary()
+                                self.daily_realized_pnl = summary.get("today_realized_profit", 0.0)
                                 self.logger.info(f"🔄 [손익 동기화 완료] 실전 데이터 반영: {self.daily_realized_pnl:,.0f}원")
                             
                             asyncio.create_task(deferred_sync())
@@ -962,14 +962,11 @@ class OrderManager:
                             self.logger.warning(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
 
                             # 3. 당일 실현 손익 파싱
-                            # [핵심] AccountService 또는 AccountManager가 가져온 공식 실현 손익을 최우선 신뢰합니다.
+                            # [핵심] AccountService가 가져온 공식 실현 손익을 최우선 신뢰합니다.
                             if self.account_service:
                                 summary = self.account_service.get_summary()
-                                self.daily_realized_pnl = summary.get("realized_profit", 0.0)
-                                self.logger.info(f"✅ [손익 동기화] AccountService 기반 실현손익 동기화: {self.daily_realized_pnl:,.0f}원")
-                            elif self.account_manager:
-                                self.daily_realized_pnl = self.account_manager.today_realized_profit
-                                self.logger.info(f"✅ [손익 동기화] AccountManager 기반 실현손익 동기화: {self.daily_realized_pnl:,.0f}원")
+                                self.daily_realized_pnl = summary.get("today_realized_profit", 0.0)
+                                self.logger.info(f"✅ [손익 동기화] AccountService [ID:{id(self.account_service)}] 데이터 수신: 실현손익={self.daily_realized_pnl:,.0f}원 | 가용현금={summary.get('orderable_cash', 0):,.0f}원")
                             else:
                                 pnl_candidates = ['thdt_dbt_shrt_asst_amt', 'tdy_afr_pnl_amt', 'tot_pnl_amt', 'thst_exca_amt']
                                 daily_pnl = find_val(res_data, pnl_candidates) or 0.0
@@ -987,12 +984,12 @@ class OrderManager:
                             # [핵심] AccountService가 kt00010으로 가져온 정확한 가용 현금을 우선 사용합니다.
                             if self.account_service:
                                 summary = self.account_service.get_summary()
-                                if summary.get("orderable_cash", 0) > 0:
-                                    self._broker_orderable_cash = summary["orderable_cash"]
-                                    self.logger.info(f"💳 [자금 동기화] AccountService 기반 가용현금 동기화: {self._broker_orderable_cash:,.0f}원")
-                            elif self.account_manager and self.account_manager.orderable_cash > 0:
-                                self._broker_orderable_cash = self.account_manager.orderable_cash
-                                self.logger.info(f"💳 [자금 동기화] AccountManager 기반 가용현금 동기화: {self._broker_orderable_cash:,.0f}원")
+                                cash_val = summary.get("orderable_cash", 0.0)
+                                if cash_val > 0:
+                                    self._broker_orderable_cash = cash_val
+                                    self.logger.info(f"💳 [자금 동기화] AccountService [ID:{id(self.account_service)}] 기반 가용현금 동기화 완료: {self._broker_orderable_cash:,.0f}원")
+                                else:
+                                    self.logger.warning(f"⚠️ [자금 동기화] AccountService [ID:{id(self.account_service)}]에 가용현금 데이터가 아직 없거나 0입니다. 폴백 파싱을 시도합니다.")
                             else:
                                 cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt', 'n_ord_psbl_amt', 'dnca_tot_amt']
                                 cash_val = find_val(res_data, cash_candidates)

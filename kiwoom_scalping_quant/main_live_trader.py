@@ -32,11 +32,15 @@ class KiwoomBrokerWrapper:
         self.base_url = base_url
         self.ws_url = ws_url
         self.access_token = None
+        self.ws_running = False  # [추가] 웹소켓 실행 중 여부 플래그
         
         # 콜백 함수들
         self.on_condition_event = None
         self.on_tick_event = None
         self.on_execution_event = None
+        
+        # [Shared Core] 콜백 라우팅용
+        self.on_condition_ws_message = None
 
     # ------------------ REST API (aiohttp) ------------------
     async def login(self):
@@ -240,112 +244,121 @@ class KiwoomBrokerWrapper:
 
     async def ws_listener_loop(self, target_condition_idx: str):
         """키움증권 WebSocket 인증 및 실시간 스트림 수신 루프 (공식 스펙 기반)"""
+        if self.ws_running:
+            logger.warning("⚠️ [WS] 웹소켓 리스너가 이미 실행 중입니다. 중복 가동을 방지합니다.")
+            return
+            
+        self.ws_running = True
         logger.info(f"📡 키움 WebSocket 리스너 시작: {self.ws_url}")
         
-        login_payload = {
-            "trnm": "LOGIN",
-            "token": self.access_token
-        }
+        try:
+            login_payload = {
+                "trnm": "LOGIN",
+                "token": self.access_token
+            }
         
-        while True:
-            try:
-                logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
-                async with websockets.connect(self.ws_url, ping_interval=None) as ws:
-                    logger.info("✅ 웹소켓 서버 접속 성공!")
-                    
-                    # 1. 인증(LOGIN)
-                    await ws.send(json.dumps(login_payload))
-                    logger.warning(f"✉️ [WS SEND] LOGIN 요청 전송")
-                    
-                    # 2. 메시지 수신 무한 루프
-                    async for message in ws:
-                        logger.warning(f"📩 [WS RECV] {message}")
+            while True:
+                try:
+                    logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
+                    async with websockets.connect(self.ws_url, ping_interval=None) as ws:
+                        logger.info("✅ 웹소켓 서버 접속 성공!")
                         
-                        # [Shared Core] ConditionService로 메시지 라우팅
-                        if hasattr(self, 'on_condition_ws_message') and self.on_condition_ws_message:
-                            self.on_condition_ws_message(message)
+                        # 1. 인증(LOGIN)
+                        await ws.send(json.dumps(login_payload))
+                        logger.warning(f"✉️ [WS SEND] LOGIN 요청 전송")
                         
-                        try:
-                            response = json.loads(message)
-                        except json.JSONDecodeError:
-                            continue
-
-                        trnm = response.get("trnm")
-
-                        if trnm == "LOGIN":
-                            if str(response.get("return_code")) != "0":
-                                logger.error(f"❌ 웹소켓 로그인 실패: {response.get('return_msg')}")
-                                return
-                            logger.info("✅ 웹소켓 로그인 성공! 조건검색식 목록을 요청합니다.")
-                            # 로그인 성공 시 조건검색식 목록(CNSRLST) 요청
-                            await ws.send(json.dumps({"trnm": "CNSRLST"}))
-                            logger.warning("✉️ [WS SEND] CNSRLST 전송")
-
-                        elif trnm == "CNSRLST":
-                            data_list = response.get("data", [])
-                            logger.info(f"✅ 조건검색식 목록 수신: {data_list}")
+                        # 2. 메시지 수신 무한 루프
+                        async for message in ws:
+                            logger.warning(f"📩 [WS RECV] {message}")
                             
-                            # 대상 조건식 고유번호(seq) 찾기 (이름으로 매칭, 없으면 파라미터 값 사용)
-                            target_seq = target_condition_idx
-                            for item in data_list:
-                                # 구조: [seq, name] 또는 {"seq": ..., "name": ...} 대비
-                                if isinstance(item, list) and len(item) >= 2:
-                                    if item[1] == "AI스캘핑주도주":
-                                        target_seq = str(item[0])
-                                elif isinstance(item, dict):
-                                    if item.get("name") == "AI스캘핑주도주":
-                                        target_seq = str(item.get("seq"))
+                            # [Shared Core] ConditionService로 메시지 라우팅
+                            if hasattr(self, 'on_condition_ws_message') and self.on_condition_ws_message:
+                                self.on_condition_ws_message(message)
                             
-                            # 실시간 조건검색 등록(CNSRREQ)
-                            req_payload = {
-                                "trnm": "CNSRREQ",
-                                "seq": target_seq,
-                                "search_type": "1", # 1: 조건검색 + 실시간조건검색
-                                "stex_tp": "K"      # KRX 거래소
-                            }
-                            await ws.send(json.dumps(req_payload))
-                            logger.warning(f"✉️ [WS SEND] CNSRREQ 전송 (seq={target_seq})")
-
-                        elif trnm == "CNSRREQ":
-                            if str(response.get("return_code")) == "0":
-                                logger.info("✅ 조건검색 실시간 감시 등록 완료!")
-                                # [수정] 초기 조건 만족 종목 리스트(Snapshot) 추출 및 편입
-                                jm_list = response.get("data", [])
-                                if isinstance(jm_list, list) and jm_list:
-                                    logger.info(f"📋 초기 조건 만족 종목 {len(jm_list)}개 편입 시퀀스 시작...")
-                                    for item in jm_list:
-                                        # item이 딕셔너리인 경우와 문자열인 경우 모두 대응
-                                        raw_code = item.get("jmcode", "") if isinstance(item, dict) else str(item)
-                                        clean_code = self._clean_code(raw_code)
-                                        if clean_code and self.on_condition_event:
-                                            # 편입('I') 이벤트로 처리하여 엔진에 주입
-                                            await self.on_condition_event(clean_code, "I", "초기스냅샷")
+                            try:
+                                response = json.loads(message)
+                            except json.JSONDecodeError:
+                                continue
+    
+                            trnm = response.get("trnm")
+    
+                            if trnm == "LOGIN":
+                                if str(response.get("return_code")) != "0":
+                                    logger.error(f"❌ 웹소켓 로그인 실패: {response.get('return_msg')}")
+                                    return
+                                logger.info("✅ 웹소켓 로그인 성공! 조건검색식 목록을 요청합니다.")
+                                # 로그인 성공 시 조건검색식 목록(CNSRLST) 요청
+                                await ws.send(json.dumps({"trnm": "CNSRLST"}))
+                                logger.warning("✉️ [WS SEND] CNSRLST 전송")
+    
+                            elif trnm == "CNSRLST":
+                                data_list = response.get("data", [])
+                                logger.info(f"✅ 조건검색식 목록 수신: {data_list}")
+                                
+                                # 대상 조건식 고유번호(seq) 찾기 (이름으로 매칭, 없으면 파라미터 값 사용)
+                                target_seq = target_condition_idx
+                                for item in data_list:
+                                    # 구조: [seq, name] 또는 {"seq": ..., "name": ...} 대비
+                                    if isinstance(item, list) and len(item) >= 2:
+                                        if item[1] == "AI스캘핑주도주":
+                                            target_seq = str(item[0])
+                                    elif isinstance(item, dict):
+                                        if item.get("name") == "AI스캘핑주도주":
+                                            target_seq = str(item.get("seq"))
+                                
+                                # 실시간 조건검색 등록(CNSRREQ)
+                                req_payload = {
+                                    "trnm": "CNSRREQ",
+                                    "seq": target_seq,
+                                    "search_type": "1", # 1: 조건검색 + 실시간조건검색
+                                    "stex_tp": "K"      # KRX 거래소
+                                }
+                                await ws.send(json.dumps(req_payload))
+                                logger.warning(f"✉️ [WS SEND] CNSRREQ 전송 (seq={target_seq})")
+    
+                            elif trnm == "CNSRREQ":
+                                if str(response.get("return_code")) == "0":
+                                    logger.info("✅ 조건검색 실시간 감시 등록 완료!")
+                                    # [수정] 초기 조건 만족 종목 리스트(Snapshot) 추출 및 편입
+                                    jm_list = response.get("data", [])
+                                    if isinstance(jm_list, list) and jm_list:
+                                        logger.info(f"📋 초기 조건 만족 종목 {len(jm_list)}개 편입 시퀀스 시작...")
+                                        for item in jm_list:
+                                            # item이 딕셔너리인 경우와 문자열인 경우 모두 대응
+                                            raw_code = item.get("jmcode", "") if isinstance(item, dict) else str(item)
+                                            clean_code = self._clean_code(raw_code)
+                                            if clean_code and self.on_condition_event:
+                                                # 편입('I') 이벤트로 처리하여 엔진에 주입
+                                                await self.on_condition_event(clean_code, "I", "초기스냅샷")
+                                    else:
+                                        logger.warning(f"⚠️ 초기 스냅샷 데이터가 비어있거나 올바르지 않습니다: {jm_list}")
                                 else:
-                                    logger.warning(f"⚠️ 초기 스냅샷 데이터가 비어있거나 올바르지 않습니다: {jm_list}")
-                            else:
-                                logger.error(f"❌ 조건검색 실시간 등록 실패: {response.get('return_msg')}")
-
-                        elif trnm == "REAL":
-                            # 실시간 시세 및 조건검색 이벤트 파싱
-                            parsed = self._parse_ws_message(message)
-                            if parsed["event"] == "condition" and self.on_condition_event:
-                                await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
-                            elif parsed["event"] == "tick" and self.on_tick_event:
-                                await self.on_tick_event(parsed)
-                            elif parsed["event"] == "execution" and self.on_execution_event:
-                                await self.on_execution_event(parsed)
-
-                        elif trnm == "PING":
-                            # 서버 PING 메시지 에코 응답
-                            await ws.send(message)
-                            logger.warning("❤️ [WS SEND] PING 하트비트 응답")
-
-            except websockets.exceptions.ConnectionClosed as e:
-                logger.error(f"❌ 웹소켓 연결이 끊어졌습니다. ({e}) 5초 후 재접속을 시도합니다.")
-                await asyncio.sleep(5.0)
-            except Exception as e:
-                logger.error(f"❌ 웹소켓 통신 중 오류 발생: {e}")
-                await asyncio.sleep(5.0)
+                                    logger.error(f"❌ 조건검색 실시간 등록 실패: {response.get('return_msg')}")
+    
+                            elif trnm == "REAL":
+                                # 실시간 시세 및 조건검색 이벤트 파싱
+                                parsed = self._parse_ws_message(message)
+                                if parsed["event"] == "condition" and self.on_condition_event:
+                                    await self.on_condition_event(parsed["code"], parsed["status"], parsed["name"])
+                                elif parsed["event"] == "tick" and self.on_tick_event:
+                                    await self.on_tick_event(parsed)
+                                elif parsed["event"] == "execution" and self.on_execution_event:
+                                    await self.on_execution_event(parsed)
+    
+                            elif trnm == "PING":
+                                # 서버 PING 메시지 에코 응답
+                                await ws.send(message)
+                                logger.warning("❤️ [WS SEND] PING 하트비트 응답")
+    
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.error(f"❌ 웹소켓 연결이 끊어졌습니다. ({e}) 5초 후 재접속을 시도합니다.")
+                    await asyncio.sleep(5.0)
+                except Exception as e:
+                    logger.error(f"❌ 웹소켓 통신 중 오류 발생: {e}")
+                    await asyncio.sleep(5.0)
+        finally:
+            self.ws_running = False
+            logger.warning("🛑 [WS] 웹소켓 리스너가 종료되었습니다.")
 
 
 # =====================================================================
@@ -508,7 +521,7 @@ async def main():
     summary = await account_service.sync_all()
     # OrderManager에 결과 반영 (호환성 유지)
     order_manager._broker_orderable_cash = summary["orderable_cash"]
-    order_manager.daily_realized_pnl = summary["realized_profit"]
+    order_manager.daily_realized_pnl = summary["today_realized_profit"]
     logger.info(f"📊 [SharedCore] 잔고 동기화 완료: {summary}")
 
     # 조건식 고유 ID 조회 (REST API)
@@ -583,14 +596,11 @@ async def main():
         logger.info("🛑 안전 종료 절차 시작...")
 
         # 1. [Firebase] 종료 상태 전송 (가장 먼저 수행하여 루프 종료 전 전송 보장)
-        # 335번 라인 근처에서 정의된 firebase_manager 변수를 안전하게 참조
-        fb_mgr = locals().get('firebase_manager')
-        if fb_mgr and getattr(fb_mgr, '_initialized', False):
+        if firebase_manager and getattr(firebase_manager, '_initialized', False):
             try:
                 logger.info("📡 [Firebase] 종료 상태(STOPPED/OFFLINE) 전송 중...")
-                # gather 대신 순차적으로 전송하여 확실성 제고, 타임아웃은 유지
-                await asyncio.wait_for(fb_mgr.update_engine_status("OFFLINE"), timeout=2.0)
-                await asyncio.wait_for(fb_mgr.update_system_status("STOPPED"), timeout=2.0)
+                await asyncio.wait_for(firebase_manager.update_engine_status("OFFLINE"), timeout=2.0)
+                await asyncio.wait_for(firebase_manager.update_system_status("STOPPED"), timeout=2.0)
                 logger.info("👋 [Firebase] 엔진 종료 상태 보고 완료.")
             except Exception as e:
                 logger.warning(f"⚠️ [Firebase] 종료 상태 전송 중 오류 (무시): {e}")

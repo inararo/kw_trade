@@ -131,7 +131,7 @@ class QuantSystem:
         self.risk_manager = self.container.risk_manager()
         self.live_vm = self.container.live_dashboard_view_model()
         self.asset_vm = self.container.asset_data_view_model()
-        self.account_manager = self.container.account_manager()
+        self.account_service = self.container.account_service()
 
         # Risk Manager injection loop closing
         self.order_manager.risk_manager = self.risk_manager
@@ -168,16 +168,16 @@ class QuantSystem:
         self._broker_api = KiwoomBrokerWrapper(_app_key, _app_secret, _base_url, _ws_url)
         
         # [Shared Core] 서비스 및 UI 브릿지 초기화 (Broker 생성 후로 이동)
-        from core.account_service import AccountService
-        from core.condition_service import ConditionService
         from gui.condition_worker import ConditionWorkerThread
 
-        # 1. 자산 관리 서비스 초기화 및 초기 동기화
-        self.account_service = AccountService(self.container.rest_broker_wrapper(), self.data_collector)
+        # 1. 자산 관리 서비스 초기화 및 초기 동기화 (DI 컨테이너 싱글톤 활용)
+        # [🚨 중요] AccountService에 필요한 의존성 수동 연결 (주입 시점에 data_collector가 아직 없었을 수 있음)
+        self.account_service.data_collector = self.data_collector
+        
         asyncio.create_task(self.account_service.sync_all()) # 초기 잔고 동기화 태스크 가동
         
         # 2. 조건검색 서비스 및 워커 스레드 가동
-        self.condition_service = ConditionService()
+        self.condition_service = self.container.condition_service()
         # [안정화] 웹소켓 메시지 핸들러를 서비스로 라우팅
         self._broker_api.on_condition_ws_message = self.condition_service.handle_websocket_message
         
@@ -186,6 +186,22 @@ class QuantSystem:
         self.condition_worker.sig_snapshot_received.connect(self.live_vm.update_universe_list)
         self.condition_worker.start()
 
+        # [신규] 부팅 시 실시간 조건검색 모니터링 즉시 가동
+        async def start_monitoring():
+            try:
+                # 1. 조건식 목록 조회
+                condition_dict = await self._broker_api.get_condition_list()
+                target_idx = next((idx for idx, name in condition_dict.items() if name == "AI스캘핑주도주"), "0")
+                self.logger.info(f"🚀 부팅 시 모니터링 가동: AI스캘핑주도주 (Index: {target_idx})")
+                
+                # 2. 웹소켓 리스너 가동 (백그라운드 태스크)
+                # 이미 실행 중인지 여부는 KiwoomBrokerWrapper 내부에서 관리되도록 추후 보강 가능
+                asyncio.create_task(self._broker_api.ws_listener_loop(target_idx))
+            except Exception as e:
+                self.logger.error(f"❌ 부팅 시 모니터링 가동 실패: {e}")
+
+        asyncio.create_task(start_monitoring())
+
         self.live_trading_thread = LiveTradingThread(
             config_manager    = _cfg,
             order_manager     = self.order_manager,
@@ -193,6 +209,7 @@ class QuantSystem:
             strategy_manager  = self.strategy_manager,
             condition_manager = self.container.condition_manager(),
             broker_api        = self._broker_api,
+            condition_service = self.condition_service,
             firebase_manager  = getattr(self, 'firebase_manager', None),  # Firebase 주입
             parent            = None,
         )
@@ -323,7 +340,7 @@ class QuantSystem:
         
             # [Step 2.5] 초기 계좌 잔고 동기화 (REST API 활용)
             print("시스템: [Step 2.5] 초기 계좌 잔고 동기화 시도...")
-            await self.account_manager.sync_account_status()
+            await self.account_service.sync_all()
             
             # [기존] 실시간 잔고 동기화 (WebSocket/TR 병행)
             await self.order_manager.sync_balance(force=True)

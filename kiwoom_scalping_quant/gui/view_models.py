@@ -37,19 +37,19 @@ class LiveDashboardViewModel(QObject):
     sig_trading_paused = pyqtSignal(bool)    # True: 일시정지, False: 재개
     sig_monitoring_stopped = pyqtSignal(bool) # True: 중지, False: 감시중
 
-    def __init__(self, data_collector, order_manager, config_manager, account_manager=None):
+    def __init__(self, data_collector, order_manager, config_manager, account_service=None):
         super().__init__()
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config_manager = config_manager
-        self.account_manager = account_manager
+        self.account_service = account_service
 
         # [핵심 패치 1] 엔진이 나를 찾을 수 있도록 config_manager에 스스로를 주입!
         self.config_manager._injected_live_vm = self
 
-        # [신규] 계좌 상태 실시간 업데이트 연결
-        if self.account_manager:
-            self.account_manager.account_updated.connect(self._on_account_updated)
+        # [신규] 계좌 상태 실시간 업데이트 연결 (Shared Core 콜백 활용)
+        if self.account_service and hasattr(self.account_service, 'register_callback'):
+            self.account_service.register_callback(self._on_account_updated)
 
         self.logger = logging.getLogger("LiveDashboardViewModel")
         self._is_running = False
@@ -111,11 +111,25 @@ class LiveDashboardViewModel(QObject):
         """
         self.logger.info(f"ViewModel: 유니버스 교체 감지 ({len(new_symbols)} 종목)")
         
+        # [보정] 문자열 리스트(종목코드만 온 경우)를 딕셔너리 리스트로 변환
+        formatted_symbols = []
+        for s in new_symbols:
+            if isinstance(s, str):
+                code = s.lstrip("A").strip()
+                name = self._symbol_names.get(code) or "-"
+                # DataCollector 마스터 데이터에서 이름 찾기 시도
+                if name == "-" and hasattr(self.data_collector, 'master_data'):
+                    master = self.data_collector.master_data.get(code)
+                    if master: name = master.get("name", "-")
+                formatted_symbols.append({"code": code, "name": name})
+            else:
+                formatted_symbols.append(s)
+
         # 1. 기존 요약 데이터 완전 초기화
         self.symbols_summary.clear()
         
         # 2. 종목명 캐시 및 요약 뼈대 재구축
-        for s in new_symbols:
+        for s in formatted_symbols:
             code = s.get("code", "").split('_')[0].strip()
             name = s.get("name", "-")
             if code:
@@ -139,8 +153,8 @@ class LiveDashboardViewModel(QObject):
         
         # 4. UI 갱신 플래그 및 시그널 발생
         self._ui_dirty = True
-        self.sig_universe_changed.emit(new_symbols)
-        self.sig_log_appended.emit(f"[시스템] 장중 유니버스가 {len(new_symbols)}개 종목으로 교체되었습니다. 화면을 갱신합니다.")
+        self.sig_universe_changed.emit(formatted_symbols)
+        self.sig_log_appended.emit(f"[시스템] 장중 유니버스가 {len(formatted_symbols)}개 종목으로 교체되었습니다. 화면을 갱신합니다.")
 
     def _init_summary_data(self):
         """부팅 시 유니버스 리스트 및 보유 종목을 바탕으로 요약 테이블 초기 뼈대 구성"""
@@ -293,7 +307,7 @@ class LiveDashboardViewModel(QObject):
 
     def _on_account_updated(self, data: dict):
         """
-        [신규] AccountManager에서 REST API 동기화 완료 시 직접 호출되는 슬롯.
+        [신규] AccountService에서 데이터 동기화 완료 시 호출되는 콜백 슬롯.
         주문 가능 현금(ord_alowa) 등을 즉시 UI 리스크 지표에 반영합니다.
         """
         realized_pnl = data.get("today_realized_profit", 0.0)
@@ -324,8 +338,8 @@ class LiveDashboardViewModel(QObject):
             try:
                 now = time.time()
                 # [신규] 20초마다 실제 계좌 상태(실현손익, 주문가능금액) 동기화 트리거
-                if self.account_manager and (now - last_sync_time > 20):
-                    asyncio.create_task(self.account_manager.sync_account_status())
+                if self.account_service and (now - last_sync_time > 20):
+                    asyncio.create_task(self.account_service.sync_all())
                     last_sync_time = now
 
                 # Polling 시점에도 리스크 지표와 잔고를 최신화하여 UI에 전송
