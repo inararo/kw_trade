@@ -245,6 +245,8 @@ class QuantSystem:
             "slippage", "seq_len", "initial_balance", "live_trading_model_type",
             "is_monitoring_active", "is_ai_trading_active", # [이동] system_status/engine으로 이동됨
             "last_updated_by_engine", # 시스템 관리용 타임스탬프 (yaml 저장 제외)
+            "live_trading_model_type", "max_buffer_size", "db_batch_size",
+            "global_max_loss", "slippage", "seq_len", "initial_balance"
         }
         # config_mgr에서 스칼라(int/float/str/bool) 값만 추려 업로드
         _default_settings = {

@@ -215,6 +215,8 @@ class LiveTradingThread(QThread):
                 "symbols", "universe", "protected_symbols", "global_max_loss",
                 "slippage", "seq_len", "initial_balance", "live_trading_model_type",
                 "is_monitoring_active", "is_ai_trading_active", "last_updated_by_engine",
+                "live_trading_model_type", "max_buffer_size", "db_batch_size",
+                "global_max_loss", "slippage", "seq_len", "initial_balance"
             }
             config_cache = getattr(self.config_manager, '_config_cache', {})
             default_settings = {
