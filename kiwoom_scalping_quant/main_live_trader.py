@@ -323,6 +323,12 @@ async def main():
 
     # 1. 코어 모듈 초기화
     config_manager = ConfigManager(config_path="config.yaml")
+
+    # [추가] 로그 레벨 동적 적용
+    log_level_str = config_manager.get("log_level", "INFO").upper()
+    logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
+    logger.info(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
+
     data_collector = DataCollector(config_manager)
     order_manager = OrderManager(config_manager)
     risk_manager = RiskManager(config_manager, order_manager)
@@ -382,6 +388,12 @@ async def main():
                 if filtered:
                     applied = config_manager.hot_reload_settings(filtered)
                     if applied:
+                        # [추가] 로그 레벨 실시간 변경 반영
+                        if "log_level" in filtered:
+                            new_level = filtered["log_level"].upper()
+                            logging.getLogger().setLevel(getattr(logging, new_level, logging.INFO))
+                            logger.info(f"🔧 [Firebase] 로그 레벨이 {new_level}로 변경되었습니다.")
+                            
                         asyncio.run_coroutine_threadsafe(firebase_manager.report_settings_applied(), loop)
                         logger.info(f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}")
             loop.call_soon_threadsafe(_apply)
@@ -531,25 +543,23 @@ async def main():
         logger.error(f"❌ 메인 루프 실행 중 에러 발생: {e}")
     finally:
         logger.info("🛑 안전 종료 절차 시작...")
-        
-        # 1. 엔진 및 백그라운드 태스크 정지
-        await strategy_manager.stop()
-        
-        # 2. [Firebase] 종료 상태 전송 (main.py와 동일하게 gather로 안전하게 전송)
-        if getattr(firebase_manager, '_initialized', False):
+
+        # 1. [Firebase] 종료 상태 전송 (가장 먼저 수행하여 루프 종료 전 전송 보장)
+        # 335번 라인 근처에서 정의된 firebase_manager 변수를 안전하게 참조
+        fb_mgr = locals().get('firebase_manager')
+        if fb_mgr and getattr(fb_mgr, '_initialized', False):
             try:
                 logger.info("📡 [Firebase] 종료 상태(STOPPED/OFFLINE) 전송 중...")
-                await asyncio.wait_for(
-                    asyncio.gather(
-                        firebase_manager.update_engine_status("OFFLINE"),
-                        firebase_manager.update_system_status("STOPPED"),
-                        return_exceptions=True
-                    ),
-                    timeout=3.0
-                )
+                # gather 대신 순차적으로 전송하여 확실성 제고, 타임아웃은 유지
+                await asyncio.wait_for(fb_mgr.update_engine_status("OFFLINE"), timeout=2.0)
+                await asyncio.wait_for(fb_mgr.update_system_status("STOPPED"), timeout=2.0)
                 logger.info("👋 [Firebase] 엔진 종료 상태 보고 완료.")
             except Exception as e:
                 logger.warning(f"⚠️ [Firebase] 종료 상태 전송 중 오류 (무시): {e}")
+        
+        # 2. 엔진 및 백그라운드 태스크 정지
+        if 'strategy_manager' in locals():
+            await strategy_manager.stop()
 
         # 3. 기타 리소스 정리
         if hasattr(data_collector, 'stop'):

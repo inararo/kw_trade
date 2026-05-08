@@ -469,9 +469,25 @@ class LiveTradingEngine:
         self._update_ui_signals(action, ACTION_LABELS.get(action, "Hold"), probs)
 
         # 4. 주문 실행 (쿨다운 & 장상태 체크)
-        current_time = time.time()
-        if current_time - self.last_action_time < self.cooldown_seconds: return
+        current_time_val = time.time()
+        if current_time_val - self.last_action_time < self.cooldown_seconds: return
         
+        # [신규] 마감 시간(Cutoff) 체크 로직 추가
+        if action in (1, 2):  # 매수 계열일 때만 체크
+            enable_cutoff = self.config_manager.get("enable_cutoff", False)
+            if enable_cutoff:
+                cutoff_str = self.config_manager.get("cutoff_time", "13:00")
+                try:
+                    now_time = datetime.now().time()
+                    cutoff_time = datetime.strptime(cutoff_str, "%H:%M").time()
+                    if now_time >= cutoff_time:
+                        msg = f"[⏳ 마감 제한] 현재 시간({now_time.strftime('%H:%M')})이 마감 시간({cutoff_str})을 경과하여 매수를 차단합니다."
+                        self.logger.error(msg)
+                        self._ui_log(msg)
+                        return
+                except Exception as e:
+                    self.logger.warning(f"마감 시간 파싱 에러: {e}")
+
         scheduler = getattr(self.config_manager, "_injected_scheduler", None)
         if scheduler and scheduler.current_state != MarketState.TRADING: return
 
