@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 import os
 import glob
 import pandas as pd
@@ -36,14 +37,19 @@ class LiveDashboardViewModel(QObject):
     sig_trading_paused = pyqtSignal(bool)    # True: 일시정지, False: 재개
     sig_monitoring_stopped = pyqtSignal(bool) # True: 중지, False: 감시중
 
-    def __init__(self, data_collector, order_manager, config_manager):
+    def __init__(self, data_collector, order_manager, config_manager, account_manager=None):
         super().__init__()
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config_manager = config_manager
+        self.account_manager = account_manager
 
         # [핵심 패치 1] 엔진이 나를 찾을 수 있도록 config_manager에 스스로를 주입!
         self.config_manager._injected_live_vm = self
+
+        # [신규] 계좌 상태 실시간 업데이트 연결
+        if self.account_manager:
+            self.account_manager.account_updated.connect(self._on_account_updated)
 
         self.logger = logging.getLogger("LiveDashboardViewModel")
         self._is_running = False
@@ -285,6 +291,26 @@ class LiveDashboardViewModel(QObject):
             # UI로 전달 (실현손익, 평가손익, 전체 주문 가능 현금, 종목당 한도)
             self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, total_cash, per_symbol_limit)
 
+    def _on_account_updated(self, data: dict):
+        """
+        [신규] AccountManager에서 REST API 동기화 완료 시 직접 호출되는 슬롯.
+        주문 가능 현금(ord_alowa) 등을 즉시 UI 리스크 지표에 반영합니다.
+        """
+        realized_pnl = data.get("today_realized_profit", 0.0)
+        orderable_cash = data.get("orderable_cash", 0.0)
+        
+        # 리스크 매니저를 통한 종목당 투자 한도 계산
+        per_symbol_limit = 0.0
+        if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
+            per_symbol_limit = self.order_manager.risk_manager.get_dynamic_max_invest()
+            
+        evaluation_pnl = getattr(self.order_manager, 'daily_evaluation_pnl', 0.0)
+        
+        self.logger.info(f"📊 [UI_UPDATE] 실전 계좌 동기화 반영: 가용현금={orderable_cash:,.0f}")
+        
+        # UI 시그널 발행 (실현손익, 평가손익, 가용현금, 종목당한도)
+        self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, orderable_cash, per_symbol_limit)
+
     async def start_polling(self):
         """실전 매매/백테스트 모드에서의 일반 폴링 (1초 주기 자산 갱신)"""
         if getattr(self, "_polling_active", False):
@@ -293,9 +319,15 @@ class LiveDashboardViewModel(QObject):
         self._polling_active = True
         self._is_running = True
         self.logger.info("LiveDashboardViewModel: 자산 상태 폴링 루프 시작")
-        
+        last_sync_time = 0
         while self._is_running:
             try:
+                now = time.time()
+                # [신규] 20초마다 실제 계좌 상태(실현손익, 주문가능금액) 동기화 트리거
+                if self.account_manager and (now - last_sync_time > 20):
+                    asyncio.create_task(self.account_manager.sync_account_status())
+                    last_sync_time = now
+
                 # Polling 시점에도 리스크 지표와 잔고를 최신화하여 UI에 전송
                 if hasattr(self.order_manager, 'risk_manager') and self.order_manager.risk_manager:
                     rm = self.order_manager.risk_manager

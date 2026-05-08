@@ -24,13 +24,14 @@ class OrderState:
     FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
-    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None):
+    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None, account_manager=None):
         self.config = config
         self.auth_manager = auth_manager
         self.notifier = telegram_notifier
         self.firebase_manager = firebase_manager  # [Firebase] Firestore 연동 매니저
+        self.account_manager = account_manager    # [신규] 계좌 및 자산 매니저
         self.logger = logging.getLogger("OrderManager")
-        self.logger.error(f"🛠️ [OrderManager] 초기화 완료 (FirebaseManager 주입 여부: {self.firebase_manager is not None})")
+        self.logger.error(f"🛠️ [OrderManager] 초기화 완료 (AccountManager 주입 여부: {self.account_manager is not None})")
         self.signals = OrderSignals()
 
         # 고유 주문 ID(내부)를 키로, 상태 딕셔너리를 값으로 가지는 중앙 추적기
@@ -177,6 +178,22 @@ class OrderManager:
                 raise Exception("글로벌 리스크 점검 실패로 주문이 거부되었습니다.")
 
         await self._throttle_order()
+
+        # [사전 필터] 매수 주문 시 주문 가능 금액(kt00010) 확인
+        if order_type == "BUY" and self.account_manager:
+            try:
+                # 주문 직전 최신 가용 자금 동기화
+                await asyncio.wait_for(self.account_manager.sync_account_status(), timeout=5.0)
+                if not self.account_manager.can_afford(price * qty):
+                    order_amt = price * qty
+                    available = self.account_manager.orderable_cash
+                    self.logger.error(f"❌ [자금 부족] 주문 가능 금액 초과: 필요 {order_amt:,.0f}원 / 가용 {available:,.0f}원")
+                    raise Exception(f"INSUFFICIENT_FUNDS: Required {order_amt:,.0f}, Available {available:,.0f}")
+            except asyncio.TimeoutError:
+                self.logger.warning("⚠️ 주문 가능 금액 동기화 타임아웃. 내부 잔고 기준으로 계속 진행합니다.")
+            except Exception as e:
+                if "INSUFFICIENT_FUNDS" in str(e): raise
+                self.logger.error(f"계좌 동기화 중 오류 발생: {e}")
 
         async with self.order_semaphore:
             internal_id = f"INT_{int(time.time() * 1000)}"
@@ -627,9 +644,18 @@ class OrderManager:
                     else:
                         self.logger.error(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
                     
-                    # [신규] 매도 완료 시 시간 기록 (API 지연 방어용)
+                    # [신규] 매도 완료 시 시간 기록 및 실현 손익 동기화
                     if order['type'] == 'SELL':
                         self._last_sell_fill_time[symbol] = time.time()
+                        # [핵심] 매도 완료 직후 실제 실현 손익 동기화 (ka10077)
+                        if self.account_manager:
+                            async def deferred_sync():
+                                await asyncio.sleep(1.0) # 체결 후 정산 반영 대기
+                                await self.account_manager.sync_account_status()
+                                self.daily_realized_pnl = self.account_manager.today_realized_profit
+                                self.logger.info(f"🔄 [손익 동기화 완료] 실전 데이터 반영: {self.daily_realized_pnl:,.0f}원")
+                            
+                            asyncio.create_task(deferred_sync())
                 else:
                     order['status'] = OrderState.PARTIAL
                     self.logger.info(f"주문 부분 체결 (Broker ID: {broker_id}, 잔여: {order['unexecuted_qty']})")
@@ -935,10 +961,15 @@ class OrderManager:
                             self.logger.warning(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
 
                             # 3. 당일 실현 손익 파싱
-                            pnl_candidates = ['thdt_dbt_shrt_asst_amt', 'tdy_afr_pnl_amt', 'tot_pnl_amt', 'thst_exca_amt']
-                            daily_pnl = find_val(res_data, pnl_candidates) or 0.0
-                            if daily_pnl != 0:
-                                self.daily_realized_pnl = daily_pnl
+                            # [핵심] AccountManager가 ka10077로 가져온 공식 실현 손익을 최우선 신뢰합니다.
+                            if self.account_manager:
+                                self.daily_realized_pnl = self.account_manager.today_realized_profit
+                                self.logger.info(f"✅ [손익 동기화] AccountManager 기반 실현손익 동기화: {self.daily_realized_pnl:,.0f}원")
+                            else:
+                                pnl_candidates = ['thdt_dbt_shrt_asst_amt', 'tdy_afr_pnl_amt', 'tot_pnl_amt', 'thst_exca_amt']
+                                daily_pnl = find_val(res_data, pnl_candidates) or 0.0
+                                if daily_pnl != 0:
+                                    self.daily_realized_pnl = daily_pnl
                             
                             # 평가 손익 파싱
                             evlt_pnl = find_val(res_data, ['tot_evlt_pl', 'evlt_pnl_amt']) or 0.0
@@ -948,23 +979,25 @@ class OrderManager:
                             loan_amt = find_val(res_data, ['tot_crd_loan_amt', 'tot_loan_amt', 'crd_loan_amt']) or 0.0
 
                             # 4. 실제 주문 가능 현금 (Orderable Cash)
-                            # 후보 필드들: puse_amt(주문가능), dnca_tot_amt(예수금), d2_dpst_amt(D+2예수금)
-                            cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt', 'n_ord_psbl_amt', 'dnca_tot_amt']
-                            cash_val = find_val(res_data, cash_candidates)
-                            
-                            if cash_val is not None and cash_val > 0:
-                                self._broker_orderable_cash = cash_val
-                                self.logger.warning(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
+                            # [핵심] AccountManager가 kt00010으로 가져온 정확한 가용 현금을 우선 사용합니다.
+                            if self.account_manager and self.account_manager.orderable_cash > 0:
+                                self._broker_orderable_cash = self.account_manager.orderable_cash
+                                self.logger.info(f"💳 [자금 동기화] AccountManager 기반 가용현금 동기화: {self._broker_orderable_cash:,.0f}원")
                             else:
-                                # [핵심 수정] 자동 계산: 예수금 = 총자산 - (총평가금액 - 융자금)
-                                # 사용자의 경우: 8,436,310 - (20,586,750 - 16,054,840) = 3,904,400
-                                tot_evlt_amt = find_val(res_data, ['tot_evlt_amt', 'evlt_amt_tot']) or 0.0
-                                net_equity_in_stocks = max(0, tot_evlt_amt - loan_amt)
-                                calculated_cash = max(0, balance - net_equity_in_stocks)
+                                cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt', 'n_ord_psbl_amt', 'dnca_tot_amt']
+                                cash_val = find_val(res_data, cash_candidates)
                                 
-                                self._broker_orderable_cash = calculated_cash
-                                self.logger.warning(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
-                                self.logger.warning(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
+                                if cash_val is not None and cash_val > 0:
+                                    self._broker_orderable_cash = cash_val
+                                    self.logger.warning(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
+                                else:
+                                    tot_evlt_amt = find_val(res_data, ['tot_evlt_amt', 'evlt_amt_tot']) or 0.0
+                                    net_equity_in_stocks = max(0, tot_evlt_amt - loan_amt)
+                                    calculated_cash = max(0, balance - net_equity_in_stocks)
+                                    
+                                    self._broker_orderable_cash = calculated_cash
+                                    self.logger.warning(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
+                                    self.logger.warning(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
 
                             # 5. 보유 종목 (Holdings) 파싱
                             holdings_list = res_data.get('output2') or res_data.get('items') or res_data.get('acnt_evlt_remn_indv_tot') or []

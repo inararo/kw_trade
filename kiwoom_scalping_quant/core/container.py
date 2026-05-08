@@ -14,6 +14,8 @@ from core.telegram_notifier import TelegramNotifier
 from core.condition_manager import ConditionManager
 from db.influx_client import AsyncInfluxDBClient
 from gui.view_models import AssetDataViewModel, SettingsViewModel, LiveDashboardViewModel, AITrainingViewModel, BacktestViewModel
+from core.broker.rest_broker import RESTBrokerWrapper
+from core.account_manager import AccountManager
 from infrastructure.firebase_manager import FirebaseManager
 
 class Container(containers.DeclarativeContainer):
@@ -69,12 +71,27 @@ class Container(containers.DeclarativeContainer):
         config=config_manager
     )
 
+    rest_broker_wrapper = providers.Singleton(
+        RESTBrokerWrapper,
+        config_manager=config_manager,
+        token_manager=token_manager
+    )
+
+    account_manager = providers.Singleton(
+        AccountManager,
+        config_manager=config_manager,
+        broker_wrapper=rest_broker_wrapper,
+        data_collector=data_collector,
+        firebase_manager=firebase_manager
+    )
+
     order_manager = providers.Singleton(
         OrderManager,
         config=config_manager,
         auth_manager=token_manager,
         telegram_notifier=telegram_notifier,
-        firebase_manager=firebase_manager
+        firebase_manager=firebase_manager,
+        account_manager=account_manager
     )
 
     risk_manager = providers.Singleton(
@@ -112,7 +129,8 @@ class Container(containers.DeclarativeContainer):
         LiveDashboardViewModel,
         data_collector=data_collector,
         order_manager=order_manager,
-        config_manager=config_manager
+        config_manager=config_manager,
+        account_manager=account_manager
     )
 
     asset_data_view_model = providers.Singleton(
