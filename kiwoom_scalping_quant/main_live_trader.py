@@ -136,6 +136,35 @@ class KiwoomBrokerWrapper:
             logger.error(f"❌ 주문 전송 중 통신 에러: {e}")
             return False
 
+    async def request_tr(self, api_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        """공통 TR 요청 메서드 (RESTBrokerWrapper 호환용)"""
+        endpoint = f"{self.base_url}/api/dostk/acnt" # 계좌 관련 엔드포인트 통합
+        headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "Authorization": f"Bearer {self.access_token}",
+            "api-id": api_id
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, headers=headers, json=body, timeout=5) as resp:
+                    return await resp.json()
+        except Exception as e:
+            logger.error(f"❌ [TR 요청 에러] {api_id}: {e}")
+            return {"return_code": "99", "return_msg": str(e)}
+
+    async def get_realized_profit_details(self) -> Dict[str, Any]:
+        """당일 실현 손익 상세 조회 (ka10077)"""
+        return await self.request_tr("ka10077", {"stk_cd": "000000"})
+
+    async def get_orderable_cash(self, symbol: str = "005930", price: int = 0) -> Dict[str, Any]:
+        """주문 인출 가능 금액 조회 (kt00010)"""
+        body = {
+            "io_amt": "", "stk_cd": symbol, "trde_tp": "2",
+            "trde_qty": "", "uv": str(price) if price > 0 else "250000",
+            "exp_buy_unp": ""
+        }
+        return await self.request_tr("kt00010", body)
+
     # ------------------ WebSocket Listener ------------------
     def _parse_ws_message(self, message: str) -> Dict[str, Any]:
         """키움증권 WebSocket JSON 파싱 (FID 기반)"""
@@ -232,6 +261,10 @@ class KiwoomBrokerWrapper:
                     async for message in ws:
                         logger.warning(f"📩 [WS RECV] {message}")
                         
+                        # [Shared Core] ConditionService로 메시지 라우팅
+                        if hasattr(self, 'on_condition_ws_message') and self.on_condition_ws_message:
+                            self.on_condition_ws_message(message)
+                        
                         try:
                             response = json.loads(message)
                         except json.JSONDecodeError:
@@ -321,6 +354,9 @@ class KiwoomBrokerWrapper:
 async def main():
     logger.info("🚀 동적 유니버스 기반 AI 트레이딩 봇 부팅 시작...")
 
+    from core.account_service import AccountService
+    from core.condition_service import ConditionService
+
     # 1. 코어 모듈 초기화
     config_manager = ConfigManager(config_path="config.yaml")
 
@@ -330,7 +366,19 @@ async def main():
     logger.info(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
 
     data_collector = DataCollector(config_manager)
-    order_manager = OrderManager(config_manager)
+    # [Shared Core] 서비스 초기화
+    # 3. 비동기 통신 래퍼 초기화
+    broker_api = KiwoomBrokerWrapper(
+        app_key=config_manager.get("KIWOOM_APP_KEY", ""), 
+        app_secret=config_manager.get("KIWOOM_APP_SECRET", ""), 
+        base_url=config_manager.get_rest_url(),
+        ws_url=config_manager.get_ws_url()
+    )
+    
+    account_service = AccountService(broker_api, data_collector)
+    condition_service = ConditionService()
+
+    order_manager = OrderManager(config_manager, account_service=account_service)
     risk_manager = RiskManager(config_manager, order_manager)
     order_manager.risk_manager = risk_manager
     
@@ -442,34 +490,26 @@ async def main():
     strategy_manager.load_model_from_config()
     await strategy_manager.init_engines([]) # 초기 유니버스 빈 상태로 구동
 
-    # =====================================================================
-    # 3. 비동기 통신 래퍼 초기화 및 REST API 로그인 (키움 기준)
-    # =====================================================================
-    broker_api = KiwoomBrokerWrapper(
-        app_key=config_manager.get("KIWOOM_APP_KEY", ""), 
-        app_secret=config_manager.get("KIWOOM_APP_SECRET", ""), 
-        base_url=config_manager.get_rest_url(),
-        ws_url=config_manager.get_ws_url()
-    )
-
-    # 3. 각 매니저 내부의 HistoricalFetcher가 토큰 재발급을 할 수 있도록 broker_api 주입
-    if hasattr(strategy_manager, 'broker_api'):
-        strategy_manager.broker_api = broker_api
-
+    # [수정] REST API 로그인 및 인증 관리자 주입
     is_logged_in = await broker_api.login()
     if not is_logged_in:
         logger.error("시스템 종료: 로그인에 실패했습니다.")
         return
 
-    # OrderManager가 REST API를 쓸 수 있도록 토큰 공급기 주입
+    if hasattr(strategy_manager, 'broker_api'):
+        strategy_manager.broker_api = broker_api
+
     class SimpleAuthManager:
         def get_token(self):
             return broker_api.access_token
-    
     order_manager.auth_manager = SimpleAuthManager()
 
-    # 잔고 동기화 (REST API)
-    await order_manager.sync_balance()
+    # 잔고 동기화 (Shared Core Service 활용)
+    summary = await account_service.sync_all()
+    # OrderManager에 결과 반영 (호환성 유지)
+    order_manager._broker_orderable_cash = summary["orderable_cash"]
+    order_manager.daily_realized_pnl = summary["realized_profit"]
+    logger.info(f"📊 [SharedCore] 잔고 동기화 완료: {summary}")
 
     # 조건식 고유 ID 조회 (REST API)
     target_condition_name = "AI스캘핑주도주"
@@ -484,18 +524,16 @@ async def main():
     # 4. WebSocket 라우팅 콜백 바인딩
     # =====================================================================
     
-    # 4-1. 조건검색 이벤트 라우팅
-    async def on_condition_ws_event(code: str, status: str, name: str):
-        if status == 'I': # 편입
-            await condition_manager.handle_insert_event(code, {"name": name})
-        elif status == 'D': # 이탈
-            await condition_manager.handle_delete_event(code, {"name": name})
+    # 4-1. 조건검색 서비스 연동 및 콜백 바인딩
+    condition_service.register_callbacks(
+        on_insert=strategy_manager.handle_condition_insert,
+        on_delete=strategy_manager.handle_condition_delete
+    )
+    
+    # 웹소켓 리스너에서 메시지를 ConditionService로 전달하도록 설정
+    broker_api.on_condition_ws_message = condition_service.handle_websocket_message
 
-    broker_api.on_condition_event = on_condition_ws_event
-    condition_manager.register_insert_callback(strategy_manager.handle_condition_insert)
-    condition_manager.register_delete_callback(strategy_manager.handle_condition_delete)
-
-    # 4-2. 틱 데이터 라우팅 (DataCollector 우회 직접 주입)
+    # 4-2. 틱 데이터 라우팅 (기존 유지)
     async def on_tick_ws_event(tick_data: dict):
         sym = tick_data["symbol"]
         engine = strategy_manager.envs.get(sym)

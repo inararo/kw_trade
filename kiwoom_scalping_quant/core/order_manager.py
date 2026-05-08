@@ -24,14 +24,15 @@ class OrderState:
     FAILED = "FAILED"          # 거부/오류
 
 class OrderManager:
-    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None, account_manager=None):
+    def __init__(self, config: Dict[str, Any], auth_manager=None, telegram_notifier=None, firebase_manager=None, account_manager=None, account_service=None):
         self.config = config
         self.auth_manager = auth_manager
         self.notifier = telegram_notifier
         self.firebase_manager = firebase_manager  # [Firebase] Firestore 연동 매니저
-        self.account_manager = account_manager    # [신규] 계좌 및 자산 매니저
+        self.account_manager = account_manager    # [기존] UI용 매니저
+        self.account_service = account_service    # [신규] Shared Core 서비스
         self.logger = logging.getLogger("OrderManager")
-        self.logger.error(f"🛠️ [OrderManager] 초기화 완료 (AccountManager 주입 여부: {self.account_manager is not None})")
+        self.logger.info(f"🛠️ [OrderManager] 초기화 완료 (AccountService 주입 여부: {self.account_service is not None})")
         self.signals = OrderSignals()
 
         # 고유 주문 ID(내부)를 키로, 상태 딕셔너리를 값으로 가지는 중앙 추적기
@@ -961,8 +962,12 @@ class OrderManager:
                             self.logger.warning(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
 
                             # 3. 당일 실현 손익 파싱
-                            # [핵심] AccountManager가 ka10077로 가져온 공식 실현 손익을 최우선 신뢰합니다.
-                            if self.account_manager:
+                            # [핵심] AccountService 또는 AccountManager가 가져온 공식 실현 손익을 최우선 신뢰합니다.
+                            if self.account_service:
+                                summary = self.account_service.get_summary()
+                                self.daily_realized_pnl = summary.get("realized_profit", 0.0)
+                                self.logger.info(f"✅ [손익 동기화] AccountService 기반 실현손익 동기화: {self.daily_realized_pnl:,.0f}원")
+                            elif self.account_manager:
                                 self.daily_realized_pnl = self.account_manager.today_realized_profit
                                 self.logger.info(f"✅ [손익 동기화] AccountManager 기반 실현손익 동기화: {self.daily_realized_pnl:,.0f}원")
                             else:
@@ -979,8 +984,13 @@ class OrderManager:
                             loan_amt = find_val(res_data, ['tot_crd_loan_amt', 'tot_loan_amt', 'crd_loan_amt']) or 0.0
 
                             # 4. 실제 주문 가능 현금 (Orderable Cash)
-                            # [핵심] AccountManager가 kt00010으로 가져온 정확한 가용 현금을 우선 사용합니다.
-                            if self.account_manager and self.account_manager.orderable_cash > 0:
+                            # [핵심] AccountService가 kt00010으로 가져온 정확한 가용 현금을 우선 사용합니다.
+                            if self.account_service:
+                                summary = self.account_service.get_summary()
+                                if summary.get("orderable_cash", 0) > 0:
+                                    self._broker_orderable_cash = summary["orderable_cash"]
+                                    self.logger.info(f"💳 [자금 동기화] AccountService 기반 가용현금 동기화: {self._broker_orderable_cash:,.0f}원")
+                            elif self.account_manager and self.account_manager.orderable_cash > 0:
                                 self._broker_orderable_cash = self.account_manager.orderable_cash
                                 self.logger.info(f"💳 [자금 동기화] AccountManager 기반 가용현금 동기화: {self._broker_orderable_cash:,.0f}원")
                             else:

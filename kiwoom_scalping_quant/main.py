@@ -166,6 +166,26 @@ class QuantSystem:
         _ws_url     = _cfg.get_ws_url()
 
         self._broker_api = KiwoomBrokerWrapper(_app_key, _app_secret, _base_url, _ws_url)
+        
+        # [Shared Core] 서비스 및 UI 브릿지 초기화 (Broker 생성 후로 이동)
+        from core.account_service import AccountService
+        from core.condition_service import ConditionService
+        from gui.condition_worker import ConditionWorkerThread
+
+        # 1. 자산 관리 서비스 초기화 및 초기 동기화
+        self.account_service = AccountService(self.container.rest_broker_wrapper(), self.data_collector)
+        asyncio.create_task(self.account_service.sync_all()) # 초기 잔고 동기화 태스크 가동
+        
+        # 2. 조건검색 서비스 및 워커 스레드 가동
+        self.condition_service = ConditionService()
+        # [안정화] 웹소켓 메시지 핸들러를 서비스로 라우팅
+        self._broker_api.on_condition_ws_message = self.condition_service.handle_websocket_message
+        
+        self.condition_worker = ConditionWorkerThread(self.condition_service, ws_client=None) # 메인 루프에서 이미 수신 중이므로 모니터링용
+        self.condition_worker.sig_symbol_inserted.connect(self.live_vm.update_universe_list)
+        self.condition_worker.sig_snapshot_received.connect(self.live_vm.update_universe_list)
+        self.condition_worker.start()
+
         self.live_trading_thread = LiveTradingThread(
             config_manager    = _cfg,
             order_manager     = self.order_manager,

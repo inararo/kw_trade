@@ -85,13 +85,25 @@ class Container(containers.DeclarativeContainer):
         firebase_manager=firebase_manager
     )
 
+    # Shared Core Services (공유 서비스)
+    account_service = providers.Singleton(
+        AccountService,
+        broker_wrapper=rest_broker_wrapper,
+        data_collector=data_collector
+    )
+
+    condition_service = providers.Singleton(
+        ConditionService
+    )
+
     order_manager = providers.Singleton(
         OrderManager,
         config=config_manager,
         auth_manager=token_manager,
         telegram_notifier=telegram_notifier,
         firebase_manager=firebase_manager,
-        account_manager=account_manager
+        account_manager=account_manager,
+        account_service=account_service
     )
 
     risk_manager = providers.Singleton(
