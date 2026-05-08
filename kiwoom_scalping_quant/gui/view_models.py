@@ -521,7 +521,12 @@ class AssetDataViewModel(QObject):
         else:
             self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
 
-    async def _build_universe_task(self, top_n: int = 20, is_auto=False):
+    async def _build_universe_task(self, top_n: int = 20, is_auto=False, save_to_config: bool = True):
+        """
+        유니버스를 생성합니다.
+        - save_to_config=True: config.yaml의 symbols를 덮어씁니다. (데이터 관리용)
+        - save_to_config=False: config를 건드리지 않고 리스트만 반환합니다. (실전 매매용)
+        """
         self.sig_progress_updated.emit(0)
         if not is_auto:
             self.sig_status_updated.emit(f"시장 전체 종목 조회 및 주도주 필터링 중 (Top {top_n})...")
@@ -529,19 +534,16 @@ class AssetDataViewModel(QObject):
         access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
         if not access_token:
             self.fetch_failed.emit("API 접근 토큰이 없습니다. 설정에서 발급해 주세요.")
-            return False
+            return []
 
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
         result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n)
 
-        # @future_safe returns IOFailure on exception and IOSuccess on success
         if isinstance(result, IOFailure):
-            # IOFailure.failure() returns the unwrapped exception inside an IO, so we use _inner_value or str()
             err_msg = str(result.failure()._inner_value if hasattr(result.failure(), '_inner_value') else result.failure())
             self.fetch_failed.emit(f"유니버스 생성 실패: {err_msg}")
-            return False
+            return []
 
-        # unwrap() on IOSuccess returns an IO object. We extract the raw list with _inner_value
         try:
             top_stocks = result.unwrap()._inner_value
         except Exception as e:
@@ -550,11 +552,20 @@ class AssetDataViewModel(QObject):
         if not isinstance(top_stocks, list):
             top_stocks = []
 
-        # Bulk save newly selected top_stocks to config
+        # 수집된 종목 정제
         new_symbols = []
+        local_codes = set([s.get("code") for s in self.config_manager.get_symbols()])
+        excluded_count = 0
+
         for stock in top_stocks:
             if isinstance(stock, dict) and "code" in stock and "name" in stock:
                 clean_code = str(stock["code"]).split('_')[0].strip()
+                
+                # [분리 핵심] 실전 매매용 수집(save_to_config=False)일 경우, 데이터 관리용 종목은 제외
+                if not save_to_config and clean_code in local_codes:
+                    excluded_count += 1
+                    continue
+
                 new_symbols.append({
                     "code": clean_code, 
                     "name": stock["name"],
@@ -563,72 +574,56 @@ class AssetDataViewModel(QObject):
                     "volume": stock.get("volume", 0.0)
                 })
 
-        # =========================================================================
-        # 1. 보유 종목 우선 편입(Mandatory Retention) 로직 추가
-        # 새로운 감시 리스트 갱신 시, 보유 중인 종목(Balance > 0) 혹은 미체결 주문이 
-        # 있는 종목은 새로운 감시 리스트에 무조건 강제로 포함시킵니다.
-        # =========================================================================
+        if excluded_count > 0:
+            self.logger.info(f"[유니버스 분리] 데이터 관리용 종목 {excluded_count}개를 실전 매매 감시 대상에서 제외했습니다.")
+
+        # 보유 종목 우선 편입 로직 (실전 매매 시 잔고 누락 방지)
         try:
             strategy_manager = getattr(self.config_manager, '_injected_strategy_manager', None)
             if strategy_manager and hasattr(strategy_manager, 'order_manager'):
                 holdings = strategy_manager.order_manager.holdings
                 new_codes = set([s["code"] for s in new_symbols])
                 
-                # 기존 유니버스 데이터(price, name 등 복원용) 매핑
                 old_symbols = self.config_manager.get_symbols()
                 old_sym_map = {s.get("code"): s for s in old_symbols}
 
                 for code, qty in holdings.items():
-                    # 미체결 여부도 확인 (보유 수량이 없더라도 미체결 매수가 있을 수 있음)
                     has_unexecuted = False
                     if hasattr(strategy_manager.order_manager, 'has_unexecuted_orders'):
                         has_unexecuted = strategy_manager.order_manager.has_unexecuted_orders(code)
 
-                    # 1주 이상 보유 중이거나 미체결 물량이 있는 종목 강제 편입
                     if (qty > 0 or has_unexecuted) and code not in new_codes:
                         old_s = old_sym_map.get(code, {})
                         name = old_s.get("name", self.universe_manager.get_stock_name_from_cache(code) if hasattr(self, 'universe_manager') else f"Held_{code}")
-                        if not name:
-                            name = f"Held_{code}"
+                        if not name: name = f"Held_{code}"
 
-                        self.logger.warning(f"[Zombie Position 방어] {name}({code}) 종목이 유니버스 조건에서 탈락했으나, 잔고({qty}주) 또는 미체결로 인해 강제 유지됩니다.")
+                        self.logger.warning(f"[보유 종목 유지] {name}({code}) 종목이 조건에서 탈락했으나 잔고/미체결로 인해 감시 리스트에 유지됩니다.")
                         
                         new_symbols.append({
-                            "code": code,
-                            "name": name,
+                            "code": code, "name": name,
                             "price": old_s.get("price", 0.0),
                             "flu_rt": old_s.get("flu_rt", 0.0),
                             "volume": old_s.get("volume", 0.0)
                         })
         except Exception as e:
-            self.logger.error(f"보유 종목 강제 유지 로직 실행 에러: {e}")
+            self.logger.error(f"보유 종목 강제 유지 로직 에러: {e}")
 
-        # [버그 수정] 장외 시간이거나 API 응답이 없어 리스트가 비어있을 경우 덮어쓰지 않음
+        # 결과 처리
         if not new_symbols:
-            existing_symbols = self.config_manager.get_symbols()
-            if existing_symbols:
-                msg = "현재 장외 시간이거나 API 수신 데이터가 없습니다. 기존 유니버스 리스트를 유지합니다."
-                self.sig_status_updated.emit(msg)
-                if not is_auto:
-                    self.fetch_completed.emit(msg)
-                self.logger.info(msg)
-                self.load_symbols() # 부팅 시퀀스 Event Set을 위해 호출 필수
-                return True
+            self.logger.warning("새로운 유니버스 리스트가 비어 있습니다.")
+            return self.config_manager.get_symbols() if not save_to_config else []
 
-        self.config_manager.set_symbols(new_symbols)
-
+        if save_to_config:
+            self.config_manager.set_symbols(new_symbols)
+            self.load_symbols() # UI 갱신 트리거
+        
         self.sig_progress_updated.emit(100)
-
-        msg = f"상위 {len(top_stocks)}개(+유지 종목) 유니버스 생성 완료!"
-        if is_auto:
-            msg = "[POST-MARKET COLLECTION] " + msg
-
+        msg = f"유니버스 수집 완료! ({len(new_symbols)} 종목)"
         self.sig_status_updated.emit(msg)
         if not is_auto:
             self.fetch_completed.emit(msg)
 
-        self.load_symbols() # 갱신
-        return True
+        return new_symbols
 
     def load_symbols(self):
         # ConfigManager의 Result 처리

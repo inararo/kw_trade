@@ -312,35 +312,42 @@ class QuantSystem:
         # 스케줄러 및 유니버스 세팅
         self.scheduler_task = asyncio.create_task(self.market_scheduler.start())
 
-        # [기능 개선] 장시간(매매 가능 시간)에 부팅할 경우에만 유니버스를 자동으로 갱신합니다.
-        # 장시간 외(야간, 주말 등) 부팅 시에는 불필요한 API 호출을 방지하기 위해 수동 수집만 허용합니다.
-        current_state = self.market_scheduler.determine_state(self.market_scheduler.get_current_time())
-        prepare_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
-        
-        if current_state in prepare_states:
-            print("시스템: 장시간 부팅 - 로컬 로드를 생략하고 서버에서 실시간 유니버스를 수집합니다.")
-            try:
-                # 서버에서 최신 주도주 수집 (자동으로 config 저장 및 UI 갱신 시그널 발생)
-                await asyncio.wait_for(self.asset_vm._build_universe_task(is_auto=True), timeout=15.0)
-            except Exception as e:
-                print(f"시스템: [Step 2] 유니버스 자동 갱신 중 오류 발생: {e}")
-                # 서버 수집 실패 시 폴백으로 로컬 로드 시도
-                self.asset_vm.load_symbols()
-        else:
-            print("시스템: 장외시간 부팅 - 실시간 주도주 유니버스 갱신을 생략하고 로컬 데이터를 로드합니다. (잔고는 동기화됨)")
-            self.asset_vm.load_symbols()
-            await asyncio.sleep(0.5)
+        # [분리] 1. 데이터 관리용 유니버스 로드 (학습, 백테스트용)
+        print("시스템: [Step 2] 데이터 관리용 유니버스 로드 중 (로컬 저장 데이터)...")
+        self.asset_vm.load_symbols()
+        await asyncio.sleep(0.5)
+
+        # [분리] 2. 실전 매매용 집중 감시 유니버스 수집 (서버 실시간 수집)
+        # 로컬 config.yaml을 덮어쓰지 않고 메모리에만 유지하여 매매 엔진에 전달합니다.
+        print("시스템: [Step 3] 실전 매매용 집중 감시 유니버스 수집 시작 (서버)...")
+        trading_universe = []
+        try:
+            # save_to_config=False 설정을 통해 로컬 symbols 리스트를 보호합니다.
+            trading_universe = await asyncio.wait_for(
+                self.asset_vm._build_universe_task(top_n=20, is_auto=True, save_to_config=False), 
+                timeout=20.0
+            )
+        except Exception as e:
+            print(f"시스템: 실전 유니버스 수집 중 오류 발생 (로컬 데이터로 폴백): {e}")
+            trading_universe = self.asset_vm.config_manager.get_symbols()
+
+        if not trading_universe:
+            print("시스템: 수집된 실전 유니버스가 비어 있어 로컬 데이터를 사용합니다.")
+            trading_universe = self.asset_vm.config_manager.get_symbols()
 
         try:
-            # 유니버스 로드가 완료될 때까지 잠시 대기
+            # 유니버스 로드 완료 대기
             await asyncio.wait_for(self.universe_ready_event.wait(), timeout=10.0)
-            universe_list = self.asset_vm.config_manager.get_symbols()
-            universe_len = len(universe_list)
-            print(f"시스템: [Step 2] 유니버스 로드 완료 (총 {universe_len}개 종목).")
+            
+            print(f"시스템: [Step 3] 실전 매매용 집중 감시 종목 세팅 완료 (총 {len(trading_universe)}개).")
 
-            # [Step 2.5] 확정된 유니버스를 바탕으로 매매 엔진(LiveTradingEngine) 초기화 실행
-            print("시스템: [Step 2.5] 확정된 유니버스에 대해 전용 매매 엔진 초기화 시작...")
-            await self.strategy_manager.init_engines(universe_list)
+            # [Step 3.5] 실전 매매용 유니버스로 대시보드 및 엔진 초기화
+            # 라이브 대시보드 VM에 실전 매매 종목 리스트 전달
+            if hasattr(self, 'live_vm'):
+                self.live_vm.update_universe_list(trading_universe)
+            
+            print("시스템: [Step 4] 실전 매매 엔진 초기화 시작...")
+            await self.strategy_manager.init_engines(trading_universe)
             
             # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
             try:

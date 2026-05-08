@@ -35,7 +35,6 @@ class MarketScheduler:
         self.current_state = MarketState.IDLE
         self._is_running = False
         self._loop_task: Optional[asyncio.Task] = None
-        self._intraday_scanner_task: Optional[asyncio.Task] = None
         self._universe_lock = asyncio.Lock()
 
         # Debug / Time travel
@@ -138,12 +137,6 @@ class MarketScheduler:
                 await self._loop_task
             except asyncio.CancelledError:
                 pass
-        if self._intraday_scanner_task:
-            self._intraday_scanner_task.cancel()
-            try:
-                await self._intraday_scanner_task
-            except asyncio.CancelledError:
-                pass
 
     async def _transition_state(self, old_state: str, new_state: str):
         if old_state == new_state:
@@ -178,13 +171,6 @@ class MarketScheduler:
 
         elif new_state == MarketState.TRADING:
             self.logger.info("Market Open: Activating trading agents.")
-            if self.data_collector and not self.data_collector.is_running:
-                # Assuming data collector starts listening
-                pass
-
-            # Start Intraday dynamic universe scanner
-            if not self._intraday_scanner_task or self._intraday_scanner_task.done():
-                self._intraday_scanner_task = asyncio.create_task(self._intraday_scanner_loop())
 
         elif new_state == MarketState.CUTOFF:
             self.logger.warning("Market Cutoff Time Reached. New AI buys are blocked. Only monitoring and liquidating active.")
@@ -274,70 +260,7 @@ class MarketScheduler:
                     await self.order_manager.send_order("SELL", symbol, price=0, qty=target_qty)
 
         elif new_state == MarketState.POST_MARKET:
-            self.logger.info("Post-Market: 장 종료 및 정산 시점입니다. (자동 수집은 사용자의 요청에 의해 생략됩니다.)")
-            # [기능 변경] 장후 자동 데이터 수집을 생략합니다. (사용자가 데이터 관리 탭에서 수동으로 수행)
-            # vm = getattr(self.universe_manager.config_manager, "_injected_asset_data_vm", None)
-            # if vm and hasattr(vm, 'auto_collect_after_market'):
-            #     asyncio.create_task(vm.auto_collect_after_market())
-
-    async def _intraday_scanner_loop(self):
-        """
-        장중 주기적 스캐너. TRADING 상태일 때만 동작합니다.
-        30분 주기(1800초)로 실행하여 동적 주도주 유니버스를 업데이트합니다.
-        """
-        try:
-            while self._is_running and self.current_state == MarketState.TRADING:
-                # 09:00에 시작 시 09:01까지 대기하여 당일 첫 1분 거래대금이 집계될 수 있도록 함.
-                await asyncio.sleep(60)
-
-                while self._is_running and self.current_state == MarketState.TRADING:
-                    async with self._universe_lock:
-                        # [추가] config_manager 참조 다시 확인
-                        config_mgr = None
-                        if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
-                            config_mgr = self.universe_manager.config_manager
-
-                        # [수정] 자동 갱신 설정 확인
-                        if config_mgr and not config_mgr.get("enable_universe_update", True):
-                            self.logger.info("Intraday Scanner: 유니버스 자동 갱신 설정이 꺼져 있어 스캔을 건너뜁니다.")
-                        else:
-                            self.logger.info("Intraday Scanner: 장중 주도주 재검색 시작...")
-                            if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
-                                token = self.universe_manager.config_manager.get("KIWOOM_ACCESS_TOKEN")
-                                if token:
-                                    from returns.io import IOFailure, IOSuccess
-                                    result = await self.universe_manager.build_top_n_universe(token, top_n=20)
-
-                                    if isinstance(result, IOFailure):
-                                        self.logger.error("Intraday Scanner: 유니버스 업데이트 실패")
-                                    else:
-                                        new_universe = result.unwrap()._inner_value
-                                        if new_universe:
-                                            # Safe Swap Logic Delegate
-                                            try:
-                                                await self._safe_swap_universe(new_universe)
-                                            except Exception as e:
-                                                self.logger.error(f"주도주 유니버스 교체 중 오류 발생 (무시하고 계속): {e}")
-
-                    # 30분 (1800초) 대기
-                    await asyncio.sleep(1800)
-        except asyncio.CancelledError:
-            self.logger.info("Intraday Scanner 태스크가 종료되었습니다.")
-
-    async def _safe_swap_universe(self, new_universe):
-        """
-        안전한 종목 교체 (Safe Swap Logic). StrategyManager에 위임하거나 직접 관리합니다.
-        """
-        self.logger.info(f"Intraday Scanner: {len(new_universe)}개의 새 유니버스가 발견되었습니다. (스왑 위임)")
-        # container를 통해 strategy_manager에 직접 호출을 전달하는 로직이 필요합니다.
-        # 이 메서드는 의존성 또는 Signal을 통해 StrategyManager의 update_universe()를 트리거합니다.
-
-        # 임시로 Signal을 만들거나 hasattr로 직접 호출
-        # GUI의 live_vm 등을 통해 signal_log에 이벤트를 띄웁니다.
-        # 실제 교체 로직은 StrategyManager 안에서 수행하는 것이 안전합니다.
-        strategy_manager = getattr(self.universe_manager.config_manager, "_injected_strategy_manager", None)
-        if strategy_manager and hasattr(strategy_manager, 'update_universe'):
-            await strategy_manager.update_universe(new_universe)
+            self.logger.info("Post-Market: 장 종료 및 정산 시점입니다. (자동 수집 생략)")
 
     async def _schedule_loop(self):
         while self._is_running:
