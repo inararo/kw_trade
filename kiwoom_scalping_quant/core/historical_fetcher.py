@@ -28,6 +28,7 @@ class HistoricalFetcher:
         self.app_key = os.getenv("KIWOOM_APP_KEY")
         self.app_secret = os.getenv("KIWOOM_APP_SECRET")
         self.logger = logging.getLogger("HistoricalFetcher")
+        self.broker_api = None # [신규] 토큰 재발급용 API 핸들
 
         # API 제약 회피용 세마포어 (초당 최대 N회, 시간당 최대 M회)
         self.throttle_limit_per_sec = 4 # 더욱 안전하게 초당 4회로 변경
@@ -161,9 +162,34 @@ class HistoricalFetcher:
                             if not data or "return_code" not in data:
                                 self.logger.debug(f"[HistoricalFetcher] {formatted_symbol} 응답 구조 이상: {str(data)[:200]}")
 
+                            # [토큰 만료 처리 및 재시도]
                             if str(data.get("return_code")) == "3" or "Token이 유효하지 않습니다" in data.get("return_msg", ""):
-                                self.logger.error(f"[HistoricalFetcher] 토큰 만료 에러 감지 (Return Code 3)")
-                                return Failure("TOKEN_EXPIRED")
+                                self.logger.warning(f"[HistoricalFetcher] 토큰 만료 에러 감지 (Return Code 3) - {formatted_symbol}")
+                                if self.broker_api and hasattr(self.broker_api, 'reissue_token'):
+                                    self.logger.info("🔄 [HistoricalFetcher] 토큰 재발급 시도 중...")
+                                    new_token = await self.broker_api.reissue_token()
+                                    if new_token:
+                                        self.logger.info("✅ [HistoricalFetcher] 토큰 갱신 성공. 현재 페이지 재시도합니다.")
+                                        access_token = new_token # 새로운 토큰으로 교체
+                                        
+                                        # 재시도를 위해 이 페이지 루프를 건너뛰지 않고 continue (current_page가 증가하지 않음)
+                                        if not hasattr(self, '_retry_cnt'): self._retry_cnt = 0
+                                        self._retry_cnt += 1
+                                        if self._retry_cnt <= 3:
+                                            continue 
+                                        else:
+                                            self.logger.error("❌ [HistoricalFetcher] 토큰 갱신 후에도 연속 3회 실패하여 중단합니다.")
+                                            self._retry_cnt = 0
+                                            break
+                                    else:
+                                        self.logger.error("❌ [HistoricalFetcher] 토큰 재발급 실패.")
+                                        return Failure("TOKEN_REFRESH_FAILED")
+                                else:
+                                    self.logger.error("[HistoricalFetcher] 토큰 만료되었으나 재발급 API가 연결되지 않았습니다.")
+                                    return Failure("TOKEN_EXPIRED")
+
+                            # 성공 시 재시도 카운트 초기화
+                            if hasattr(self, '_retry_cnt'): self._retry_cnt = 0
 
                             # 리스트 추출 (다양한 출력 필드 대응)
                             items = data.get("stk_min_pole_chart_qry") or data.get("output2") or data.get("grid") or data.get("output")

@@ -22,6 +22,7 @@ class StrategyManager:
         self.order_manager = order_manager
         self.risk_manager = risk_manager
         self.logger = logging.getLogger("StrategyManager")
+        self.broker_api = None # [신규] 토큰 재발급용 API 핸들
 
         self.symbols: List[str] = [s.get('code') for s in self.config_manager.get_symbols()]
         if not self.symbols:
@@ -46,6 +47,11 @@ class StrategyManager:
         # [동적 유니버스 필터링]
         self.MAX_CONCURRENT_STOCKS = 8
         self.pending_universe_queue: List[str] = [] # 조건검색 대기열
+        
+        # [신규] 순차 웜업 큐 및 워커
+        self._warmup_queue = asyncio.Queue()
+        self._warmup_worker_task = None
+        self._dashboard_task = None
 
     def set_ai_paused(self, paused: bool):
         self.is_ai_paused = paused
@@ -161,17 +167,19 @@ class StrategyManager:
         new_engines = []
         for sym in self.symbols:
             from core.live_trading_engine import LiveTradingEngine
-            # [수정] StrategyManager(self)를 엔진에 전달하여 글로벌 쿨타임 공유
-            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent, strategy_manager=self)
+            # [수정] StrategyManager(self)와 broker_api를 엔진에 전달
+            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent, 
+                                       strategy_manager=self, broker_api=self.broker_api)
             self.envs[sym] = engine
             new_engines.append(engine)
             self.last_action_times[sym] = 0.0
             self.logger.info(f"StrategyManager: [{sym}] 실시간 엔진 결합 완료.")
 
-        # [보강] 초기화 시 토큰이 있다면 즉시 웜업 시도 (start() 호출을 기다리지 않음)
+        # [보강] 초기화 시 토큰이 있다면 웜업 큐에 일괄 투입
         token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
         if token and new_engines:
-            asyncio.create_task(self._safe_sequential_warmup(new_engines, token))
+            for eng in new_engines:
+                self._warmup_queue.put_nowait(eng)
         
         print(f"시스템: [SUCCESS] 총 {len(self.symbols)}개의 매매 엔진 배치 완료.")
 
@@ -211,13 +219,16 @@ class StrategyManager:
 
         if current_state == MarketState.TRADING:
             self.logger.info("StrategyManager: 장중 부팅 - 종목별 순차 웜업(백그라운드)을 시작합니다.")
-            token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
-            if token:
-                engines_list = list(self.envs.values())
-                asyncio.create_task(self._safe_sequential_warmup(engines_list, token))
+            # 기존에 큐에 들어간 엔진들이 있다면 워커가 시작되면서 처리함
         else:
             self.logger.info(f"StrategyManager: 장외 시간({current_state}) - 웜업을 생략합니다.")
 
+        # 웜업 워커 루프 시작
+        self._warmup_worker_task = asyncio.create_task(self._warmup_worker_loop())
+        
+        # [신규] 실시간 감시 현황 대시보드 로그 루프 시작
+        self._dashboard_task = asyncio.create_task(self._status_dashboard_loop())
+        
         asyncio.create_task(self._empty_candle_watchdog())
         asyncio.create_task(self._balance_sync_loop()) 
 
@@ -298,7 +309,8 @@ class StrategyManager:
             if new_engines:
                 token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
                 if token:
-                    asyncio.create_task(self._safe_sequential_warmup(new_engines, token))
+                    for eng in new_engines:
+                        self._warmup_queue.put_nowait(eng)
 
             # 4. UI 쪽에 종목 리스트가 교체되었음을 알림 (보유 종목 합산 및 보호 종목 필터링)
             live_vm = getattr(self.config_manager, "_injected_live_vm", None)
@@ -363,12 +375,94 @@ class StrategyManager:
             
             await asyncio.sleep(60.0)
 
-    async def stop(self):
         self.is_running = False
+        if self._warmup_worker_task:
+            self._warmup_worker_task.cancel()
+        if self._dashboard_task:
+            self._dashboard_task.cancel()
         if hasattr(self.data_collector, 'on_state_updated_callbacks'):
             if self._on_tick_event in self.data_collector.on_state_updated_callbacks:
                 self.data_collector.on_state_updated_callbacks.remove(self._on_tick_event)
         self.logger.info("StrategyManager Stopped.")
+
+    async def _warmup_worker_loop(self):
+        """웜업 큐에서 엔진을 하나씩 꺼내어 순차적으로 웜업을 수행하는 워커 루프"""
+        self.logger.info("🚀 StrategyManager: 순차 웜업 워커 루프 가동 시작")
+        
+        while self.is_running:
+            try:
+                # 큐에서 엔진 대기
+                engine = await self._warmup_queue.get()
+                
+                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
+                if not token:
+                    self.logger.error("StrategyManager: 웜업 실패 - KIWOOM_ACCESS_TOKEN이 없습니다.")
+                    self._warmup_queue.task_done()
+                    continue
+                
+                sym = getattr(engine, 'symbol', 'UNKNOWN')
+                self.logger.info(f"⏳ [{sym}] 순차 웜업 시작 (남은 대기: {self._warmup_queue.qsize()})")
+                
+                try:
+                    # 개별 종목 웜업에 타임아웃 적용
+                    await asyncio.wait_for(engine.warmup(token), timeout=25.0) # 타임아웃 25초로 상향 (토큰 재발급 고려)
+                    
+                    if getattr(engine, 'is_warmed_up', False):
+                        # [검증] 최소 데이터(예: 30개) 확보 여부 확인
+                        if len(getattr(engine, 'minute_buffer', [])) < 30:
+                            self.logger.error(f"❌ [{sym}] 웜업 데이터 부족 ({len(engine.minute_buffer)}/30). 감시 대상에서 제외합니다.")
+                            await self._remove_dynamic_symbol(sym)
+                            await self._process_pending_queue()
+                        else:
+                            self.logger.info(f"✅ [{sym}] 웜업 완료 및 AI 감시 준비됨.")
+                    else:
+                        self.logger.error(f"⚠️ [{sym}] 웜업 실패. 감시 대상에서 제외합니다.")
+                        await self._remove_dynamic_symbol(sym)
+                        await self._process_pending_queue()
+                except asyncio.TimeoutError:
+                    self.logger.error(f"⏰ [{sym}] 웜업 타임아웃 발생. 감시 대상에서 제외합니다.")
+                    await self._remove_dynamic_symbol(sym)
+                    await self._process_pending_queue()
+                except Exception as e:
+                    self.logger.error(f"❌ [{sym}] 웜업 중 치명적 오류 발생: {e}")
+                    await self._remove_dynamic_symbol(sym)
+                    await self._process_pending_queue()
+                
+                # 큐 작업 완료 보고
+                self._warmup_queue.task_done()
+                
+                # API Rate Limit 방지를 위한 필수 지연 시간 (0.5초)
+                await asyncio.sleep(0.5)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"StrategyManager: 웜업 워커 루프 에러: {e}")
+                await asyncio.sleep(1.0)
+
+    async def _status_dashboard_loop(self):
+        """주기적으로 현재 감시 중인 종목 리스트와 상태를 통합 리포팅합니다."""
+        self.logger.info("📡 StrategyManager: 실시간 감시 현황 대시보드 루프 가동")
+        while self.is_running:
+            try:
+                await asyncio.sleep(30.0) # 30초 간격
+                
+                active_list = list(self.symbols)
+                curr_count = len(active_list)
+                max_count = self.MAX_CONCURRENT_STOCKS
+                queue_count = len(self.pending_universe_queue)
+                warmup_count = self._warmup_queue.qsize()
+                
+                # 가독성을 위해 리스트 출력
+                self.logger.info(
+                    f"[📡 시스템 현황] 현재 집중 감시 종목: {curr_count}/{max_count}개 ({active_list}) "
+                    f"| 대기열(Queue): {queue_count}개 | 웜업대기: {warmup_count}개"
+                )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.logger.error(f"StrategyManager: 대시보드 루프 에러: {e}")
+                await asyncio.sleep(5.0)
 
     async def _safe_sequential_warmup(self, engines_to_warmup: list, token: str):
         """API 조회 제한(Rate Limit)을 피하며 안정적으로 웜업 수행"""
@@ -462,7 +556,8 @@ class StrategyManager:
         if symbol not in self.symbols:
             self.symbols.append(symbol)
             from core.live_trading_engine import LiveTradingEngine
-            new_engine = LiveTradingEngine(symbol, self.config_manager, self.order_manager, self.shared_agent, strategy_manager=self)
+            new_engine = LiveTradingEngine(symbol, self.config_manager, self.order_manager, self.shared_agent, 
+                                           strategy_manager=self, broker_api=self.broker_api)
             self.envs[symbol] = new_engine
             self.last_action_times[symbol] = 0.0
             
@@ -470,10 +565,10 @@ class StrategyManager:
             if hasattr(self.data_collector, 'subscribe_symbol'):
                 await self.data_collector.subscribe_symbol(symbol)
                 
-            # 즉시 웜업
+            # 즉시 웜업 큐에 등록
             token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
             if token:
-                asyncio.create_task(self._safe_sequential_warmup([new_engine], token))
+                self._warmup_queue.put_nowait(new_engine)
 
     async def _remove_dynamic_symbol(self, symbol: str):
         """단일 종목 동적 제거 및 엔진 파괴"""

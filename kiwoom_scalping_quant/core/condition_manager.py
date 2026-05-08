@@ -43,6 +43,7 @@ class ConditionManager:
 
     async def handle_insert_event(self, symbol: str, event_data: Dict[str, Any] = None):
         """외부(또는 웹소켓 파서)에서 편입 이벤트를 수신했을 때 호출하는 핸들러"""
+        symbol = symbol.lstrip("A")
         event_data = event_data or {}
         self.logger.info(f"🔔 [조건검색 편입 이벤트 발생] 종목: {symbol}")
         for cb in self.on_insert_callbacks:
@@ -56,6 +57,7 @@ class ConditionManager:
 
     async def handle_delete_event(self, symbol: str, event_data: Dict[str, Any] = None):
         """외부(또는 웹소켓 파서)에서 이탈 이벤트를 수신했을 때 호출하는 핸들러"""
+        symbol = symbol.lstrip("A")
         event_data = event_data or {}
         self.logger.info(f"🔕 [조건검색 이탈 이벤트 발생] 종목: {symbol}")
         for cb in self.on_delete_callbacks:

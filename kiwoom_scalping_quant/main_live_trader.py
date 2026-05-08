@@ -72,6 +72,14 @@ class KiwoomBrokerWrapper:
             logger.error(f"❌ 로그인 통신 에러: {e}")
             return False
 
+    async def reissue_token(self):
+        """토큰 만료 시 재발급 처리 (기존 login 재활용)"""
+        logger.warning("🔄 토큰 만료 감지: 토큰 재발급(Login) 프로세스를 가동합니다.")
+        success = await self.login()
+        if success:
+            return self.access_token
+        return None
+
     async def get_condition_list(self) -> Dict[str, str]:
         """서버에 저장된 조건검색식 목록 조회 (키움 api-id: ka10050 등 가상 TR)"""
         endpoint = f"{self.base_url}/api/dostk/rkinfo" # 예시 엔드포인트
@@ -151,11 +159,11 @@ class KiwoomBrokerWrapper:
                     values = entry.get("values", {})
                     # 키움 실시간 조건검색 FID: 843(I/D 여부), 9001(종목코드), 20(발생시간)
                     status_str = values.get("843", "I")
-                    code_str = values.get("9001") or entry.get("item", "")
+                    code_str = self._clean_code(values.get("9001") or entry.get("item", ""))
                     
                     return {
                         "event": "condition",
-                        "code": str(code_str),
+                        "code": code_str,
                         "status": "I" if status_str in ["I", "INSERT", "편입", "1"] else "D",
                         "name": entry.get("cond_name", "AI스캘핑주도주")
                     }
@@ -172,7 +180,7 @@ class KiwoomBrokerWrapper:
                     
                     return {
                         "event": "tick",
-                        "symbol": str(symbol).strip(),
+                        "symbol": self._clean_code(symbol or entry.get("item")),
                         "price": abs(float(str(price_val).replace(',', ''))),
                         "volume": abs(float(str(vol_val).replace(',', ''))),
                         "change_rate": float(str(chg_val).replace(',', ''))
@@ -184,13 +192,22 @@ class KiwoomBrokerWrapper:
                     return {
                         "event": "execution",
                         "type": "체결",
-                        "symbol": str(symbol).strip()
+                        "symbol": self._clean_code(symbol)
                     }
             
             return {"event": "unknown"}
         except Exception as e:
             logger.error(f"메시지 파싱 에러: {e}")
             return {"event": "error"}
+
+    def _clean_code(self, code: Any) -> str:
+        """종목 코드에서 'A' 접두사를 제거하고 6자리 숫자로 정제"""
+        if not code:
+            return ""
+        code_str = str(code).strip()
+        if code_str.startswith('A') and len(code_str) >= 7:
+            return code_str[1:]
+        return code_str.lstrip("A")
 
     async def ws_listener_loop(self, target_condition_idx: str):
         """키움증권 WebSocket 인증 및 실시간 스트림 수신 루프 (공식 스펙 기반)"""
@@ -259,6 +276,19 @@ class KiwoomBrokerWrapper:
                         elif trnm == "CNSRREQ":
                             if str(response.get("return_code")) == "0":
                                 logger.info("✅ 조건검색 실시간 감시 등록 완료!")
+                                # [수정] 초기 조건 만족 종목 리스트(Snapshot) 추출 및 편입
+                                jm_list = response.get("data", [])
+                                if isinstance(jm_list, list) and jm_list:
+                                    logger.info(f"📋 초기 조건 만족 종목 {len(jm_list)}개 편입 시퀀스 시작...")
+                                    for item in jm_list:
+                                        # item이 딕셔너리인 경우와 문자열인 경우 모두 대응
+                                        raw_code = item.get("jmcode", "") if isinstance(item, dict) else str(item)
+                                        clean_code = self._clean_code(raw_code)
+                                        if clean_code and self.on_condition_event:
+                                            # 편입('I') 이벤트로 처리하여 엔진에 주입
+                                            await self.on_condition_event(clean_code, "I", "초기스냅샷")
+                                else:
+                                    logger.warning(f"⚠️ 초기 스냅샷 데이터가 비어있거나 올바르지 않습니다: {jm_list}")
                             else:
                                 logger.error(f"❌ 조건검색 실시간 등록 실패: {response.get('return_msg')}")
 
@@ -313,6 +343,8 @@ async def main():
             is_monitoring_active=True,
             is_ai_trading_active=True
         )
+        # [중요] OrderManager에 FirebaseManager 주입 (매매 로그 전송용)
+        order_manager.firebase_manager = firebase_manager
         
         # 기본 설정 업로드 (보안 항목 제외)
         _EXCLUDED = {
@@ -331,6 +363,12 @@ async def main():
 
     # [Firebase] 실시간 리스너 설정 (클로저를 활용해 현재 루프 및 매니저들과 연동)
     loop = asyncio.get_running_loop()
+    
+    # 상태 변경 여부 확인을 위한 캐시 변수
+    last_states = {
+        "is_monitoring_active": None,
+        "is_ai_trading_active": None
+    }
     
     def setup_firebase_listeners():
         if not getattr(firebase_manager, '_initialized', False):
@@ -352,16 +390,21 @@ async def main():
         # 리스너 2: 엔진 제어 (모니터링, AI 매매)
         def on_engine_status_changed(data: dict):
             def _apply():
+                # 1. 종목 감시 상태 변경 확인
                 if "is_monitoring_active" in data:
                     active = data["is_monitoring_active"]
-                    logger.info(f"[Firebase] 원격 제어: 종목 감시 {'재개' if active else '중지'}")
-                    # CLI 버전에서는 웹소켓 루프를 직접 끄기보다 strategy_manager나 condition_manager의 플래그로 제어하거나
-                    # 필요시 추가 로직 구현 가능. 여기선 로그로 우선 표시.
+                    if last_states["is_monitoring_active"] != active:
+                        last_states["is_monitoring_active"] = active
+                        logger.info(f"[Firebase] 원격 제어: 종목 감시 {'재개' if active else '중지'}")
+                        # 실제 감시 중지 로직은 필요시 여기에 추가 (예: 웹소켓 재연결 또는 구독 해제)
                 
+                # 2. AI 매매 상태 변경 확인
                 if "is_ai_trading_active" in data:
                     active = data["is_ai_trading_active"]
-                    strategy_manager.set_ai_paused(not active)
-                    logger.info(f"🤖 [Firebase] 원격 제어: AI 매매 {'재개' if active else '일시정지'}")
+                    if last_states["is_ai_trading_active"] != active:
+                        last_states["is_ai_trading_active"] = active
+                        strategy_manager.set_ai_paused(not active)
+                        logger.info(f"🤖 [Firebase] 원격 제어: AI 매매 {'재개' if active else '일시정지'}")
             loop.call_soon_threadsafe(_apply)
         firebase_manager.listen_to_engine_status(on_engine_status_changed)
 
@@ -396,6 +439,10 @@ async def main():
         base_url=config_manager.get_rest_url(),
         ws_url=config_manager.get_ws_url()
     )
+
+    # 3. 각 매니저 내부의 HistoricalFetcher가 토큰 재발급을 할 수 있도록 broker_api 주입
+    if hasattr(strategy_manager, 'broker_api'):
+        strategy_manager.broker_api = broker_api
 
     is_logged_in = await broker_api.login()
     if not is_logged_in:
@@ -480,12 +527,31 @@ async def main():
 
     try:
         await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        logger.info("🛑 강제 종료 감지. 안전 종료 절차 시작...")
+    except Exception as e:
+        logger.error(f"❌ 메인 루프 실행 중 에러 발생: {e}")
+    finally:
+        logger.info("🛑 안전 종료 절차 시작...")
+        
+        # 1. 엔진 및 백그라운드 태스크 정지
         await strategy_manager.stop()
+        
+        # 2. [Firebase] 종료 상태 전송 (main.py와 동일하게 gather로 안전하게 전송)
         if getattr(firebase_manager, '_initialized', False):
-            await firebase_manager.update_engine_status("OFFLINE")
-            logger.info("👋 [Firebase] 엔진 종료 상태(OFFLINE) 보고 완료.")
+            try:
+                logger.info("📡 [Firebase] 종료 상태(STOPPED/OFFLINE) 전송 중...")
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        firebase_manager.update_engine_status("OFFLINE"),
+                        firebase_manager.update_system_status("STOPPED"),
+                        return_exceptions=True
+                    ),
+                    timeout=3.0
+                )
+                logger.info("👋 [Firebase] 엔진 종료 상태 보고 완료.")
+            except Exception as e:
+                logger.warning(f"⚠️ [Firebase] 종료 상태 전송 중 오류 (무시): {e}")
+
+        # 3. 기타 리소스 정리
         if hasattr(data_collector, 'stop'):
             await data_collector.stop()
 

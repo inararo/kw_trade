@@ -17,12 +17,13 @@ class LiveTradingEngine:
     개별 종목에 대해 실시간 틱(Tick) 수신, 1분봉 병합(OHLCV), 웜업, 
     Feature Engineering 및 RL Agent 시그널 추론을 전담하는 엔진입니다.
     """
-    def __init__(self, symbol: str, config_manager, order_manager, shared_agent, strategy_manager=None):
+    def __init__(self, symbol: str, config_manager, order_manager, shared_agent, strategy_manager=None, broker_api=None):
         self.symbol = symbol
         self.config_manager = config_manager
         self.order_manager = order_manager
         self.agent = shared_agent
         self.strategy_manager = strategy_manager # [신규] 글로벌 쿨타임 확인용
+        self.broker_api = broker_api # [신규] 토큰 재발급용 API 핸들
         self.logger = logging.getLogger(f"LiveEngine[{self.symbol}]")
         
         # 1분봉 버퍼 (MA20 등을 계산하기 위해 최소 40개 이상 유지, 넉넉히 100개)
@@ -71,6 +72,7 @@ class LiveTradingEngine:
     async def warmup(self, access_token: str):
         """부팅 시 최근 약 1시간 정도의 데이터를 로드하여 지표 계산 기반을 마련합니다."""
         fetcher = HistoricalFetcher(self.config_manager)
+        fetcher.broker_api = self.broker_api # [중요] 토큰 재발급을 위해 API 주입
         today_str = datetime.now().strftime("%Y%m%d")
         
         self.logger.info(f"최소 웜업 시작... (Token 보유 여부: {bool(access_token)})")
@@ -309,6 +311,7 @@ class LiveTradingEngine:
 
         # 매수 가능 조건: 잔고 충분 & 주문 미진행
         can_buy = (balance >= current_price and not self._is_order_pending and not self.is_condition_deleted)
+        filter_reasons = []
         
         # [하드 필터] 자체 2중 안전장치 검사 (매수 시그널 허용 전)
         if can_buy:
@@ -342,13 +345,26 @@ class LiveTradingEngine:
                 # 필터 1: SMA20 상향 돌파 (정배열 혹은 반등 확인)
                 if current_price < sma20:
                     can_buy = False
+                    filter_reasons.append("주가 20일선 이탈")
                     # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: 현재가({current_price})가 SMA_20({sma20:.2f}) 아래에 있습니다.")
                 
                 # 필터 2: ATR 14가 임계값 (예: 최소 호가단위 2배 이상)
                 min_atr = current_price * 0.005 # 0.5% 변동성
                 if atr14 < min_atr:
                     can_buy = False
+                    filter_reasons.append(f"변동성 부족(ATR {atr14:.1f} < {min_atr:.1f})")
                     # self.logger.debug(f"[{self.symbol}] 🚫 하드 필터 차단: ATR({atr14:.2f})이 최소 기준치({min_atr:.2f}) 미만입니다.")
+
+                # 필터 3: 당일 급등 종목 매수 제한 (추격 매수 방지)
+                max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
+                if self.last_change_rate >= max_rise:
+                    can_buy = False
+                    filter_reasons.append(f"당일 급등({self.last_change_rate:.1f}%)")
+
+                # 필터 4: 글로벌 매수 쿨타임 (전략적 분산)
+                if self.strategy_manager and not self.strategy_manager.can_execute_buy():
+                    can_buy = False
+                    filter_reasons.append("글로벌 쿨타임")
                     
             except Exception as e:
                 self.logger.warning(f"[{self.symbol}] ⚠️ 하드 필터 계산 에러: {e}")
@@ -392,37 +408,53 @@ class LiveTradingEngine:
         sell_conf = int(max(probs[3], probs[4]) * 100) if len(probs) >= 4 else 0
         hold_conf = int(probs[0] * 100) if len(probs) >= 1 else 0
 
+        # 현재 감시 현황 태그 (감시 n/m)
+        status_tag = ""
+        if self.strategy_manager:
+            curr = len(self.strategy_manager.symbols)
+            total = self.strategy_manager.MAX_CONCURRENT_STOCKS
+            status_tag = f" (감시 {curr}/{total})"
+        else:
+            status_tag = ""
+
         if action in (1, 2):  # 매수 계열
             confidence = probs[action]
             if float(confidence) >= buy_threshold:
                 self.logger.warning(
-                    f"[🔥 매수 포착] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
-                    f" | (매수확신도: {buy_conf}%) | ➡️ API 주문 전송!"
+                    f"[🔥 매수 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
+                    f" | (매수확신: {buy_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
                 self.logger.warning(
-                    f"[🧠 AI 판단] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]}(임계값 미달)"
-                    f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
+                    f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
+                    f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
                 action = 0
         elif action in (3, 4):  # 매도 계열
             confidence = probs[action]
             if float(confidence) >= sell_threshold:
                 self.logger.warning(
-                    f"[📉 매도 포착] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
-                    f" | (매도확신도: {sell_conf}%) | ➡️ API 주문 전송!"
+                    f"[📉 매도 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
+                    f" | (매도확신: {sell_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
                 self.logger.warning(
-                    f"[🧠 AI 판단] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]}(임계값 미달)"
-                    f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
+                    f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
+                    f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
                 action = 0
         else:  # Hold
-            self.logger.info(
-                f"[🧠 AI 판단] 종목: {self.symbol} | 결과: Hold"
-                f" | (매수확신도: {buy_conf}%, 매도확신도: {sell_conf}%) | 🎯 타점 대기 중..."
-            )
+            # [필터 차단 로깅] AI는 매수하고 싶어했으나(확신도 충족), 하드 필터가 막은 경우
+            if buy_conf >= int(buy_threshold * 100) and filter_reasons:
+                reason_str = ", ".join(filter_reasons)
+                msg = f"[🚫 필터 차단{status_tag}] {self.symbol} | 매수확신 {buy_conf}% ➡️ Hold 변환 (사유: {reason_str})"
+                self.logger.warning(msg)
+                self._ui_log(msg)
+            else:
+                self.logger.info(
+                    f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: Hold"
+                    f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
+                )
 
         self._update_ui_signals(action, ACTION_LABELS.get(action, "Hold"), probs)
 
@@ -442,17 +474,6 @@ class LiveTradingEngine:
             max_invest = self.config_manager.get("max_invest_per_symbol", 1000000)
 
         if action in (1, 2):  # 매수 계열 (Buy40% / Buy60%)
-            # [안전장치] 글로벌 매수 쿨타임(Circuit Breaker) 체크
-            if self.strategy_manager and not self.strategy_manager.can_execute_buy():
-                self.logger.warning(f"[{self.symbol}] 🛡️ 글로벌 매수 쿨타임 가동 중 - 주문을 차단합니다.")
-                return
-
-            # [신규] 당일 급등 종목 매수 제한 (추격 매수 방지)
-            max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
-            if self.last_change_rate >= max_rise:
-                self.logger.warning(f"[{self.symbol}] 🚫 매수 차단: 당일 상승률({self.last_change_rate:.2f}%)이 설정값({max_rise}%)을 초과했습니다.")
-                return
-
             # 매수 비율: action=1 → 40%, action=2 → 60%
             buy_ratio = 0.40 if action == 1 else 0.60
             

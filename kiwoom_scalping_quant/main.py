@@ -529,12 +529,22 @@ class QuantSystem:
                     is_ai_trading_active=not self.strategy_manager.is_ai_paused
                 ))
 
-    async def stop(self):
-        """비동기 파이프라인 안전 종료 로직 (Graceful Shutdown)"""
-        print("시스템: 종료 파이프라인 가동...")
-
-        # 1. 뷰모델 갱신 즉시 중지
+        # 1. 뷰모델 및 하트비트 갱신 즉시 중지
         self.live_vm.stop()
+        if hasattr(self, '_heartbeat_task') and self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            print("시스템: [Firebase] 하트비트 태스크를 중단했습니다.")
+
+        # [추가] 실전 매매 스레드가 실행 중이면 정지 요청
+        if hasattr(self, 'live_trading_thread') and self.live_trading_thread.isRunning():
+            print("시스템: [Step 1.5] 실전 매매 스레드 종료 요청...")
+            self.live_trading_thread.request_stop()
+            # 비동기 루프를 방해하지 않기 위해 thread.wait() 대신 wait_for_finished 패턴 사용 권장하나, 
+            # 여기서는 안전 종료를 위해 잠시 대기
+            wait_cnt = 0
+            while self.live_trading_thread.isRunning() and wait_cnt < 6:
+                await asyncio.sleep(0.5)
+                wait_cnt += 1
 
         # 2. 미체결 주문 일괄 취소 (최대 3초 대기)
         try:
@@ -601,11 +611,15 @@ class QuantSystem:
         # [Firebase] 종료 상태 전송 (await로 동기 처리하여 루프 종료 전 확실히 전송)
         if hasattr(self, 'firebase_manager') and self.firebase_manager:
             try:
-                await asyncio.wait_for(
+                # 시스템 및 엔진 상태를 오프라인으로 변경
+                await asyncio.gather(
                     self.firebase_manager.update_system_status("STOPPED"),
-                    timeout=3.0
+                    self.firebase_manager.update_engine_status("OFFLINE"),
+                    return_exceptions=True
                 )
-                print("시스템: [Firebase] 종료 상태(STOPPED)를 Firestore에 전송했습니다.")
+                print("시스템: [Firebase] 종료 상태(STOPPED/OFFLINE)를 Firestore에 전송했습니다.")
+            except Exception:
+                pass
             except Exception:
                 pass
 
