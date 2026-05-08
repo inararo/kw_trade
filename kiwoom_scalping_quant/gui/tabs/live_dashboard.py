@@ -104,26 +104,6 @@ class LiveDashboardTab(QWidget):
         sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
         sys_ctrl_layout = QVBoxLayout()
 
-        # ── [실전매매 엔진] 시작/종료 버튼 ──────────────────
-        engine_row = QHBoxLayout()
-        self.btn_engine_start = QPushButton("▶ 실전매매 시작")
-        self.btn_engine_start.setStyleSheet(
-            "background-color: #1b5e20; color: white; font-weight: bold; height: 38px; border-radius: 4px;"
-        )
-        self.btn_engine_start.clicked.connect(self._on_engine_start_clicked)
-
-        self.btn_engine_stop = QPushButton("■ 매매 종료")
-        self.btn_engine_stop.setStyleSheet(
-            "background-color: #b71c1c; color: white; font-weight: bold; height: 38px; border-radius: 4px;"
-        )
-        self.btn_engine_stop.setEnabled(False)
-        self.btn_engine_stop.clicked.connect(self._on_engine_stop_clicked)
-
-        engine_row.addWidget(self.btn_engine_start)
-        engine_row.addWidget(self.btn_engine_stop)
-        sys_ctrl_layout.addLayout(engine_row)
-        # ─────────────────────────────────────────────────────
-
         self.btn_monitor_toggle = QPushButton("🛰️ 종목 감시 중지")
         self.btn_monitor_toggle.setCheckable(True)
         self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
@@ -203,7 +183,6 @@ class LiveDashboardTab(QWidget):
             self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
             self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
             self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
-            self.live_thread.signal_engine_status.connect(self._on_engine_status_changed)
 
     def inject_live_thread(self, live_thread):
         """
@@ -215,7 +194,6 @@ class LiveDashboardTab(QWidget):
         self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
         self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
         self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
-        self.live_thread.signal_engine_status.connect(self._on_engine_status_changed)
 
     @pyqtSlot(bool)
     def on_monitoring_toggled(self, stopped: bool):
@@ -239,40 +217,8 @@ class LiveDashboardTab(QWidget):
             self.btn_ai_toggle.setEnabled(True)
 
     # ──────────────────────────────────────────
-    # 엔진 시작/종료 버튼 슬롯
+    # LiveTradingThread 이벤트 슬롯
     # ──────────────────────────────────────────
-    def _on_engine_start_clicked(self):
-        if self.live_thread is None:
-            self.on_log_appended("⚠️ LiveTradingThread가 주입되지 않았습니다. main.py를 확인하세요.")
-            return
-        if self.live_thread.isRunning():
-            self.on_log_appended("⚠️ 이미 매매 엔진이 실행 중입니다.")
-            return
-        self.live_thread.start()
-        self.on_log_appended("▶ 실전매매 엔진 시작 요청됨...")
-
-    def _on_engine_stop_clicked(self):
-        if self.live_thread and self.live_thread.isRunning():
-            self.live_thread.request_stop()
-            self.on_log_appended("■ 매매 엔진 종료 요청됨... (안전 종료 대기 중)")
-
-    @pyqtSlot(bool)
-    def _on_engine_status_changed(self, is_running: bool):
-        """엔진 상태 변화에 따라 버튼 활성/비활성 전환"""
-        self.btn_engine_start.setEnabled(not is_running)
-        self.btn_engine_stop.setEnabled(is_running)
-        if is_running:
-            self.btn_engine_start.setText("▶ 실전매매 실행 중")
-            self.status_bar.setText("🟢 실전매매 엔진 가동 중")
-            self.status_bar.setStyleSheet(
-                "background-color: #1b5e20; color: white; padding: 10px; font-weight: bold;"
-            )
-        else:
-            self.btn_engine_start.setText("▶ 실전매매 시작")
-            self.status_bar.setText("🔴 매매 엔진 종료됨")
-            self.status_bar.setStyleSheet(
-                "background-color: #2b5b84; color: white; padding: 10px; font-weight: bold;"
-            )
 
     # ──────────────────────────────────────────
     # LiveTradingThread 이벤트 슬롯

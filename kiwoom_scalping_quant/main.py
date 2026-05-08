@@ -196,7 +196,7 @@ class QuantSystem:
         self.token_manager.signals.token_updated.connect(self._on_token_updated)
         self.token_manager.signals.token_error.connect(self._on_token_error)
         self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
-        self.market_scheduler.signals.state_changed.connect(self._on_market_state_changed)
+        # [안정화] state_changed 연결은 부팅 완료 후(Step 4)로 이동함
 
         # Step 0: DB 연결 확인
         self.main_window.show()
@@ -264,8 +264,8 @@ class QuantSystem:
         notifier = self.container.telegram_notifier()
         await notifier.notify_app_start()
 
-        # [Firebase] 원격 설정/명령 리스너 활성화 (백그라운드 스레드 기반)
-        self._setup_firebase_listeners()
+        # [Firebase] 원격 설정/명령 리스너 활성화 (부팅 완료 후 Step 4로 이동)
+        # self._setup_firebase_listeners() 
 
         # [Firebase] 부팅 시 제어 플래그 초기 상태 동기화 ─────────────────────
         # 리스너 연결 전 앱이 설정해 둔 is_monitoring_active / is_ai_trading_active 값을
@@ -353,7 +353,9 @@ class QuantSystem:
 
         # Step 3: 데이터 수집 및 매매 엔진 가동 (병목 차단)
         self.influx_task = asyncio.create_task(self.influx_client.start())
-        # [스마트 소켓 관리] 장시간 상태에 따라서만 웹소켓 가동
+        
+        # [안정화] 부팅 시점의 상태를 다시 한 번 정밀하게 확인
+        final_boot_state = self.market_scheduler.determine_state(datetime.now())
         active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
 
         # [원격 제어 반영] 부팅 시 is_monitoring_active=False 였다면 장시간이라도 연결을 건너뜁니다.
@@ -362,12 +364,15 @@ class QuantSystem:
         if _remote_monitoring_off:
             print("[Firebase] 원격 제어: 종목 감시 OFF 상태로 부팅합니다. 웹소켓 연결을 보류합니다.")
             self.collector_task = None
-        elif current_state in active_ws_states:
-            print(f"시스템: [Step 3] 장시간({current_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
+        elif final_boot_state in active_ws_states:
+            print(f"시스템: [Step 3] 장시간({final_boot_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
             self.collector_task = asyncio.create_task(self.data_collector.start())
         else:
-            print(f"시스템: [Step 3] 장외 시간({current_state})입니다. 불필요한 웹소켓 연결을 생략하고 수면 모드로 대기합니다.")
+            print(f"시스템: [Step 3] 장외 시간({final_boot_state})입니다. 웹소켓 연결을 차단하고 수면 모드로 전환합니다.")
             self.collector_task = None
+            # [추가] 만약 이미 실행 중이라면 즉시 중지 (레이스 컨디션 방지)
+            if self.data_collector.is_running:
+                asyncio.create_task(self.data_collector.stop())
 
         # =====================================================================
         # 🚀 [MASTER BRIDGE] DI 컨테이너 다 무시하고 여기서 직접 혈관을 뚫습니다.
@@ -380,20 +385,38 @@ class QuantSystem:
         self.strategy_task = asyncio.create_task(self.strategy_manager.start())
         self.view_model_task = asyncio.create_task(self.live_vm.start_polling())
 
+        # [안정화] 모든 부팅 단계가 완료된 후 장 상태 변경 리스너를 연결합니다.
+        # 이제부터 시장 상태가 변할 때만 웹소켓이 자동으로 토글됩니다.
+        self.market_scheduler.signals.state_changed.connect(self._on_market_state_changed)
+        self._setup_firebase_listeners()
+        print("시스템: [Step 4] 장 상태 모니터링 및 Firebase 원격 제어 가동 시작.")
+
         try:
             # 종료 시그널이 올 때까지 이벤트 루프 유지
             await self.shutdown_event.wait()
         finally:
             # [Firebase] 종료 상태 보고 및 하트비트 정지
             if hasattr(self, 'firebase_manager'):
-                # 동기적으로 실행되는 것이 아니므로 create_task 후 잠시 대기하거나 direct 호출 고려
-                # 여기서는 루프 종료 직전이므로 마지막 인사를 건넵니다.
-                await self.firebase_manager.update_engine_status("OFFLINE")
+                print("시스템: [Firebase] 종료 상태 보고 중 (OFFLINE / STOPPED)...")
+                try:
+                    # [안정화] 루프 종료의 영향을 받지 않도록 shield로 감싸서 실행
+                    async def _report_shutdown():
+                        await self.firebase_manager.update_engine_status("OFFLINE")
+                        await self.firebase_manager.update_system_status("STOPPED")
+                    
+                    # 최대 3초간 전송을 기다림
+                    await asyncio.wait_for(asyncio.shield(_report_shutdown()), timeout=3.0)
+                    print("시스템: [Firebase] 종료 보고 완료 ✅")
+                except Exception as e:
+                    print(f"시스템: [Firebase] 종료 보고 실패 (무시): {e}")
+
                 if hasattr(self, '_heartbeat_task'):
                     self._heartbeat_task.cancel()
             
             # 루프를 빠져나올 때 수행될 정리
-            print("시스템: 메인 루프 종료됨. (Firebase: OFFLINE 보고 완료)")
+            print("시스템: 메인 루프 종료됨. (Firebase: OFFLINE/STOPPED 보고 완료)")
+            # [최종] 소켓 및 I/O가 물리적으로 닫힐 수 있도록 아주 짧게 대기
+            await asyncio.sleep(0.1)
 
     def _setup_firebase_listeners(self):
         """
@@ -531,77 +554,78 @@ class QuantSystem:
                     is_ai_trading_active=not self.strategy_manager.is_ai_paused
                 ))
 
-        # 1. 뷰모델 및 하트비트 갱신 즉시 중지
-        self.live_vm.stop()
-        if hasattr(self, '_heartbeat_task') and self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            print("시스템: [Firebase] 하트비트 태스크를 중단했습니다.")
-
-        # [추가] 실전 매매 스레드가 실행 중이면 정지 요청
-        if hasattr(self, 'live_trading_thread') and self.live_trading_thread.isRunning():
-            print("시스템: [Step 1.5] 실전 매매 스레드 종료 요청...")
-            self.live_trading_thread.request_stop()
-            # 비동기 루프를 방해하지 않기 위해 thread.wait() 대신 wait_for_finished 패턴 사용 권장하나, 
-            # 여기서는 안전 종료를 위해 잠시 대기
-            wait_cnt = 0
-            while self.live_trading_thread.isRunning() and wait_cnt < 6:
-                await asyncio.sleep(0.5)
-                wait_cnt += 1
-
-        # 2. 미체결 주문 일괄 취소 (최대 3초 대기)
+    async def stop(self):
+        """시스템 안전 종료 파이프라인 (비동기)"""
+        print("시스템: 종료 시퀀스를 시작합니다...")
+        
         try:
+            # 1. 뷰모델 및 하트비트 갱신 즉시 중지
+            if hasattr(self, 'live_vm'):
+                self.live_vm.stop()
+            
+            if hasattr(self, '_heartbeat_task'):
+                self._heartbeat_task.cancel()
+                print("시스템: [Firebase] 하트비트 태스크를 중단했습니다.")
+
+            # 2. 실전 매매 스레드가 실행 중이면 정지 요청
+            if hasattr(self, 'live_trading_thread') and self.live_trading_thread.isRunning():
+                print("시스템: [Step 1.5] 실전 매매 스레드 종료 요청...")
+                self.live_trading_thread.request_stop()
+                wait_cnt = 0
+                while self.live_trading_thread.isRunning() and wait_cnt < 6:
+                    await asyncio.sleep(0.5)
+                    wait_cnt += 1
+
+            # 3. 미체결 주문 전체 취소 (최대 3초 대기)
             print("시스템: 미체결 주문 전체 취소 중...")
-            await asyncio.wait_for(self.order_manager.cancel_all_orders(), timeout=3.0)
-        except Exception as e:
-            print(f"시스템: 주문 취소 중 오류 또는 타임아웃 발생: {e}")
+            try:
+                await asyncio.wait_for(self.order_manager.cancel_all_orders(), timeout=3.0)
+            except Exception as e:
+                print(f"시스템: 주문 취소 중 오류 발생: {e}")
 
-        # 3 & 4. 매매 및 수집 정지
-        try:
+            # 4. 코어 모듈(전략/수집기) 정지
             print("시스템: Strategy 및 DataCollector 정지 중...")
-            # 동시에 정지 프로세스 가동 (시간 절약)
-            await asyncio.wait_for(
-                asyncio.gather(
-                    self.strategy_manager.stop(),
-                    self.data_collector.stop(),
-                    return_exceptions=True
-                ),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            print("시스템: 정지 프로세스 타임아웃 - 강제 다음 단계 진행")
+            stop_tasks = []
+            if hasattr(self, 'strategy_manager'):
+                stop_tasks.append(self.strategy_manager.stop())
+            if hasattr(self, 'data_collector'):
+                stop_tasks.append(self.data_collector.stop())
+            if hasattr(self, 'token_manager'):
+                stop_tasks.append(self.token_manager.stop())
+            if hasattr(self, 'market_scheduler'):
+                stop_tasks.append(self.market_scheduler.stop())
+            
+            if stop_tasks:
+                await asyncio.gather(*stop_tasks, return_exceptions=True)
 
-        # 5. 백그라운드 태스크 Cancel 및 정리
-        tasks = [
-            ('view_model', getattr(self, 'view_model_task', None)),
-            ('collector', getattr(self, 'collector_task', None)),
-            ('strategy', getattr(self, 'strategy_task', None)),
-            ('scheduler', getattr(self, 'scheduler_task', None)),
-            ('token_manager', getattr(self, 'token_task', None))
-        ]
+            # 5. 백그라운드 태스크 Cancel 및 정리
+            tasks = [
+                ('view_model', getattr(self, 'view_model_task', None)),
+                ('collector', getattr(self, 'collector_task', None)),
+                ('strategy', getattr(self, 'strategy_task', None)),
+                ('scheduler', getattr(self, 'scheduler_task', None)),
+                ('token_manager', getattr(self, 'token_task', None))
+            ]
+            for name, task in tasks:
+                if task and not task.done():
+                    task.cancel()
 
-        # Stop background helpers gracefully first if they have stop methods
-        if hasattr(self, 'token_manager'):
-            await self.token_manager.stop()
-        if hasattr(self, 'market_scheduler'):
-            await self.market_scheduler.stop()
-
-        for name, task in tasks:
-            if task and not task.done():
-                print(f"시스템: {name} 태스크 취소 중...")
-                task.cancel()
+            # 6. DB 연결 닫기 (가장 마지막에 수행)
+            print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
+            if hasattr(self, 'influx_client'):
                 try:
-                    # 짧게 대기하며 정리 기회 부여
-                    await asyncio.wait_for(task, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    await asyncio.wait_for(self.influx_client.close(), timeout=3.0)
+                except:
                     pass
 
-        # 6. DB 연결 닫기 (가장 마지막에 수행)
-        print("시스템: InfluxDB 연결 닫기 및 데이터 Flush...")
-        if hasattr(self, 'influx_client'):
-            try:
-                await asyncio.wait_for(self.influx_client.close(), timeout=3.0)
-            except:
-                pass
+        except Exception as e:
+            print(f"시스템: 종료 처리 중 예외 발생 (강제 진행): {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # [핵심] 어떤 에러가 나더라도 이벤트를 세팅하여 메인 루프를 탈출시킴
+            self.shutdown_event.set()
+            print("시스템: 종료 시그널(shutdown_event)이 설정되었습니다.")
 
         # [안정화] 7. Windows IOCP 잔여 처리 유예
         # 소켓이 닫힌 후 프로액터가 완료 이벤트를 인지할 수 있는 최소 1틱의 시간을 제공

@@ -375,15 +375,27 @@ class StrategyManager:
             
             await asyncio.sleep(60.0)
 
+    async def stop(self):
+        """전략 매니저 및 하위 엔진 정지"""
         self.is_running = False
+        self.logger.info("StrategyManager: 정지 시퀀스 시작...")
+        
         if self._warmup_worker_task:
             self._warmup_worker_task.cancel()
         if self._dashboard_task:
             self._dashboard_task.cancel()
+            
+        # 하위 엔진들 정지
+        for sym, engine in self.envs.items():
+            if hasattr(engine, 'destroy'):
+                await engine.destroy()
+        
+        # 콜백 제거
         if hasattr(self.data_collector, 'on_state_updated_callbacks'):
             if self._on_tick_event in self.data_collector.on_state_updated_callbacks:
                 self.data_collector.on_state_updated_callbacks.remove(self._on_tick_event)
-        self.logger.info("StrategyManager Stopped.")
+                
+        self.logger.info("StrategyManager: 모든 서비스가 정지되었습니다.")
 
     async def _warmup_worker_loop(self):
         """웜업 큐에서 엔진을 하나씩 꺼내어 순차적으로 웜업을 수행하는 워커 루프"""
