@@ -602,9 +602,9 @@ class AssetDataViewModel(QObject):
         self.condition_ws_thread.stop()
         self.logger.info("🛑 실시간 조건검색 모니터링 중단")
 
-    def build_universe(self, top_n: int = 20):
+    def build_universe(self, top_n: int = 20, sort_by: str = "volume"):
         """UniverseManager를 통해 거래대금 상위 종목을 추출하여 Config에 저장"""
-        asyncio.create_task(self._build_universe_task(top_n=top_n, is_auto=False))
+        asyncio.create_task(self._build_universe_task(top_n=top_n, is_auto=False, sort_by=sort_by))
 
     def fetch_db_symbols(self):
         """InfluxDB에 저장된 모든 고유 종목 리스트를 가져와서 유니버스로 설정"""
@@ -666,7 +666,7 @@ class AssetDataViewModel(QObject):
         else:
             self.sig_status_updated.emit("[POST-MARKET COLLECTION] 유니버스 갱신 실패로 수집을 중단합니다.")
 
-    async def _build_universe_task(self, top_n: int = 20, is_auto=False, save_to_config: bool = True):
+    async def _build_universe_task(self, top_n: int = 20, is_auto=False, save_to_config: bool = True, sort_by: str = "volume"):
         """
         유니버스를 생성합니다.
         - save_to_config=True: config.yaml의 symbols를 덮어씁니다. (데이터 관리용)
@@ -683,8 +683,8 @@ class AssetDataViewModel(QObject):
 
         # @future_safe에 의해 감싸진 async 함수는 await하면 반환값이 Result 타입 객체입니다.
         if save_to_config:
-            # 데이터 관리용: 기존 거래대금 상위 방식 유지
-            result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n)
+            # 데이터 관리용: 선택된 기준(거래량/거래대금/등락률) 상위 방식 사용
+            result = await self.universe_manager.build_top_n_universe(access_token, top_n=top_n, sort_by=sort_by)
         else:
             # 실전 매매용: 서버 조건 검색(AI스캘핑주도주) 방식 사용
             self.sig_status_updated.emit("서버 실시간 조건 검색 종목(주도주) 수집 중...")
@@ -728,36 +728,37 @@ class AssetDataViewModel(QObject):
         if excluded_count > 0:
             self.logger.info(f"[유니버스 분리] 데이터 관리용 종목 {excluded_count}개를 실전 매매 감시 대상에서 제외했습니다.")
 
-        # 보유 종목 우선 편입 로직 (실전 매매 시 잔고 누락 방지)
-        try:
-            strategy_manager = getattr(self.config_manager, '_injected_strategy_manager', None)
-            if strategy_manager and hasattr(strategy_manager, 'order_manager'):
-                holdings = strategy_manager.order_manager.holdings
-                new_codes = set([s["code"] for s in new_symbols])
-                
-                old_symbols = self.config_manager.get_symbols()
-                old_sym_map = {s.get("code"): s for s in old_symbols}
+        # 보유 종목 우선 편입 로직 (실전 매매 시 잔고 누락 방지 - 데이터 관리 모드에서는 제외)
+        if not save_to_config:
+            try:
+                strategy_manager = getattr(self.config_manager, '_injected_strategy_manager', None)
+                if strategy_manager and hasattr(strategy_manager, 'order_manager'):
+                    holdings = strategy_manager.order_manager.holdings
+                    new_codes = set([s["code"] for s in new_symbols])
+                    
+                    old_symbols = self.config_manager.get_symbols()
+                    old_sym_map = {s.get("code"): s for s in old_symbols}
 
-                for code, qty in holdings.items():
-                    has_unexecuted = False
-                    if hasattr(strategy_manager.order_manager, 'has_unexecuted_orders'):
-                        has_unexecuted = strategy_manager.order_manager.has_unexecuted_orders(code)
+                    for code, qty in holdings.items():
+                        has_unexecuted = False
+                        if hasattr(strategy_manager.order_manager, 'has_unexecuted_orders'):
+                            has_unexecuted = strategy_manager.order_manager.has_unexecuted_orders(code)
 
-                    if (qty > 0 or has_unexecuted) and code not in new_codes:
-                        old_s = old_sym_map.get(code, {})
-                        name = old_s.get("name", self.universe_manager.get_stock_name_from_cache(code) if hasattr(self, 'universe_manager') else f"Held_{code}")
-                        if not name: name = f"Held_{code}"
+                        if (qty > 0 or has_unexecuted) and code not in new_codes:
+                            old_s = old_sym_map.get(code, {})
+                            name = old_s.get("name", self.universe_manager.get_stock_name_from_cache(code) if hasattr(self, 'universe_manager') else f"Held_{code}")
+                            if not name: name = f"Held_{code}"
 
-                        self.logger.warning(f"[보유 종목 유지] {name}({code}) 종목이 조건에서 탈락했으나 잔고/미체결로 인해 감시 리스트에 유지됩니다.")
-                        
-                        new_symbols.append({
-                            "code": code, "name": name,
-                            "price": old_s.get("price", 0.0),
-                            "flu_rt": old_s.get("flu_rt", 0.0),
-                            "volume": old_s.get("volume", 0.0)
-                        })
-        except Exception as e:
-            self.logger.error(f"보유 종목 강제 유지 로직 에러: {e}")
+                            self.logger.warning(f"[보유 종목 유지] {name}({code}) 종목이 조건에서 탈락했으나 잔고/미체결로 인해 감시 리스트에 유지됩니다.")
+                            
+                            new_symbols.append({
+                                "code": code, "name": name,
+                                "price": old_s.get("price", 0.0),
+                                "flu_rt": old_s.get("flu_rt", 0.0),
+                                "volume": old_s.get("volume", 0.0)
+                            })
+            except Exception as e:
+                self.logger.error(f"보유 종목 강제 유지 로직 에러: {e}")
 
         # 결과 처리
         if not new_symbols:

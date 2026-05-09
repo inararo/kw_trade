@@ -198,7 +198,7 @@ class UniverseManager:
         정규식과 문자열 패턴을 이용하여 순수 주식이 아닌 종목을 엄격히 걸러냅니다.
         """
         # 1. 키워드 기반 필터링 (ETF, ETN, 스팩 등)
-        invalid_keywords = r"(스팩|SPAC|ETF|ETN|KODEX|TIGER|KBSTAR|ARIRANG|KINDEX|KOSEF)"
+        invalid_keywords = r"(스팩|SPAC|ETF|ETN|KODEX|TIGER|KBSTAR|ARIRANG|KINDEX|KOSEF|RISE|SOL|HANARO)"
         if re.search(invalid_keywords, name, re.IGNORECASE):
             self.logger.debug(f"필터링 제외: {name}({code}) - 키워드 매칭")
             return False
@@ -215,175 +215,149 @@ class UniverseManager:
             self.logger.debug(f"필터링 제외: {name}({code}) - 우선주/파생상품 코드({clean_code})")
             return False
 
-        # 4. 사용자 요청 기반 특정 종목 제외 (삼성전자, SK하이닉스 등 대형주)
-        blacklisted_codes = {"005930", "000660"}
-        if clean_code in blacklisted_codes:
-            self.logger.info(f"필터링 제외: {name}({code}) - 사용자 요청 블랙리스트 종목")
-            return False
-
         return True
 
     @future_safe
-    async def build_top_n_universe(self, access_token: str, top_n: int = 40) -> List[Dict[str, Any]]:
+    async def build_top_n_universe(self, access_token: str, top_n: int = 40, sort_by: str = "volume") -> List[Dict[str, Any]]:
         """
-        거래소에서 전체 종목 리스트와 거래대금을 가져와 필터링 후 Top N 종목을 선정합니다.
-        09:00 이전에는 거래대금이 집계되지 않으므로 우회(Bypass)합니다.
+        거래소에서 전체 종목 리스트를 가져와 필터링 후 Top N 종목을 선정합니다. (연속 조회 지원)
+        - sort_by: 'volume' (거래량), 'value' (거래대금), 'flu_rt' (등락률)
         """
         import datetime
         now = datetime.datetime.now()
-        # 09:00 이전 시간 방어 로직
         if now.hour < 9:
-            self.logger.info(f"현재 시간 {now.strftime('%H:%M')} (09:00 이전). 당일 거래대금이 없으므로 유니버스 스캔을 생략합니다.")
+            self.logger.info(f"현재 시간 {now.strftime('%H:%M')} (09:00 이전). 유니버스 스캔을 생략합니다.")
             return []
 
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
-        self.logger.info(f"거래대금 상위 종목 리스트 수집 및 필터링 시작... (Target URL: {endpoint})")
+        
+        # 정렬 기준명 매핑
+        sort_nm = {"volume": "거래량", "value": "거래대금", "flu_rt": "등락률"}.get(sort_by, "거래량")
+        self.logger.info(f"🚀 [{sort_nm}] 상위 유니버스 수집 시작 (Target: {top_n}개)...")
 
-        # 2. header 데이터
-        headers = {
-            'Content-Type': 'application/json;charset=UTF-8',  # 컨텐츠타입
-            "authorization": f"Bearer {access_token}",
-            'cont-yn': 'N',  # 연속조회여부
-            'next-key': '',  # 연속조회키
-            "api-id": "ka10030" # 당일거래량상위요청 (Volume Top)
-        }
-
-        # 2. 요청 데이터
-        params = {
-            'mrkt_tp': '000',  # 시장구분 000:전체, 001:코스피, 101:코스닥
-            'sort_tp': '1',  # 정렬구분 1:거래량, 2:거래회전율, 3:거래대금
-            'mang_stk_incls': '0',
-            # 관리종목포함 0:관리종목 포함, 1:관리종목 미포함, 3:우선주제외, 11:정리매매종목제외, 4:관리종목, 우선주제외, 5:증100제외, 6:증100마나보기, 13:증60만보기, 12:증50만보기, 7:증40만보기, 8:증30만보기, 9:증20만보기, 14:ETF제외, 15:스팩제외, 16:ETF+ETN제외
-            'crd_tp': '0',  # 신용구분 0:전체조회, 9:신용융자전체, 1:신용융자A군, 2:신용융자B군, 3:신용융자C군, 4:신용융자D군, 8:신용대주
-            'trde_qty_tp': '0',
-            # 거래량구분 0:전체조회, 5:5천주이상, 10:1만주이상, 50:5만주이상, 100:10만주이상, 200:20만주이상, 300:30만주이상, 500:500만주이상, 1000:백만주이상
-            'pric_tp': '0',
-            # 가격구분 0:전체조회, 1:1천원미만, 2:1천원이상, 3:1천원~2천원, 4:2천원~5천원, 5:5천원이상, 6:5천원~1만원, 10:1만원미만, 7:1만원이상, 8:5만원이상, 9:10만원이상
-            'trde_prica_tp': '0',
-            # 거래대금구분 0:전체조회, 1:1천만원이상, 3:3천만원이상, 4:5천만원이상, 10:1억원이상, 30:3억원이상, 50:5억원이상, 100:10억원이상, 300:30억원이상, 500:50억원이상, 1000:100억원이상, 3000:300억원이상, 5000:500억원이상
-            'mrkt_open_tp': '0',  # 장운영구분 0:전체조회, 1:장중, 2:장전시간외, 3:장후시간외
-            'stex_tp': '3',  # 거래소구분 1:KRX, 2:NXT 3.통합
-        }
-
-        # 실제 환경에서는 Kiwoom REST API를 호출하여 시장(KOSPI/KOSDAQ)의
-        # 당일 또는 최근 5일 평균 거래대금 상위 리스트를 가져옵니다.
+        # TR 및 파라미터 설정
+        api_id = "ka10030" # 기본: 거래량
+        sort_tp = "1"      # 1:거래량, 2:거래회전율, 3:거래대금
+        
+        if sort_by == "value":
+            api_id = "ka10032" # 거래대금 상위 TR
+            sort_tp = ""
+        elif sort_by == "flu_rt":
+            api_id = "ka10027" # [변경] 전일대비등락률상위 TR
+            sort_tp = "1"      # 1:상승률
 
         raw_market = []
+        
+        # [혁신] 100개 이상의 종목을 받기 위해 코스피(001)와 코스닥(101)을 각각 호출하여 병합
+        markets = ["001", "101"] if top_n > 100 else ["000"]
+        
         try:
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
             async with aiohttp.ClientSession(connector=connector) as session:
-                # 공식 샘플 가이드에 따라 조회성 TR인 ka10030도 POST 방식을 사용합니다.
-                async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
-                    if response.status != 200:
-                        err_text = await response.text()
-                        self.logger.error(f"API Error ({response.status}): {err_text}")
-                        # Return empty list or we could raise an Exception to be caught by @future_safe
-                        raise RuntimeError(f"Kiwoom API 연동 실패: {response.status} - {err_text}")
-
-                    data = await response.json()
-
-                    # Kiwoom API는 TR ID, "output", "output1" 등 다양한 키로 데이터가 올 수 있음
-                    items = data.get("ka10030", []) or data.get("ka10032", [])
-                    if not items and "output" in data:
-                        items = data["output"]
-                    if not items and "output1" in data:
-                        items = data["output1"]
-                    if not items and "tdy_trde_qty_upper" in data: # 기존 폴백
-                        items = data["tdy_trde_qty_upper"]
+                
+                for mrkt_tp in markets:
+                    next_key = ""
+                    page_cnt = 0
+                    m_name = "코스피" if mrkt_tp == "001" else ("코스닥" if mrkt_tp == "101" else "전체")
                     
-                    # 만약 여전히 비어있다면 전체 키 중 리스트인 것을 찾아보는 최후의 수단
-                    if not items:
-                        for key, val in data.items():
-                            if isinstance(val, list) and len(val) > 0:
-                                items = val
+                    while page_cnt < 2: # 각 시장당 최대 2페이지(200개) 시도
+                        page_cnt += 1
+                        headers = {
+                            'Content-Type': 'application/json;charset=UTF-8',
+                            "authorization": f"Bearer {access_token}",
+                            'cont-yn': 'Y' if next_key else 'N',
+                            'next-key': next_key,
+                            "api-id": api_id
+                        }
+
+                        params = {
+                            'mrkt_tp': mrkt_tp,
+                            'mang_stk_incls': '0',
+                            'stex_tp': '3',
+                        }
+                        if sort_tp:
+                            params['sort_tp'] = sort_tp
+                            # ka10030 전용 파라미터들
+                            if api_id == "ka10030":
+                                params.update({
+                                    'crd_tp': '0',
+                                    'trde_qty_tp': '0',
+                                    'pric_tp': '0',
+                                    'trde_prica_tp': '0',
+                                    'mrkt_open_tp': '0',
+                                })
+                            # ka10027 전용 파라미터들
+                            elif api_id == "ka10027":
+                                params.update({
+                                    'trde_qty_cnd': '0000',
+                                    'stk_cnd': '0',
+                                    'crd_cnd': '0',
+                                    'updown_incls': '1',
+                                    'pric_cnd': '0',
+                                    'trde_prica_cnd': '0',
+                                })
+
+                        async with session.post(endpoint, headers=headers, json=params, timeout=10) as response:
+                            if response.status != 200:
                                 break
 
-                    self.logger.error(f"API 수신 데이터 확인: 총 {len(items)}개의 종목 수신됨.")
-                    if items:
-                        self.logger.debug(f"ITEM KEYS: {list(items[0].keys())}")
-
-                    for item in items:
-                        # 제공된 명세(stk_cd, stk_nm, trde_amt)를 최우선으로 적용합니다.
-                        raw_code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
-                        # [수정] 접미사(_AL 등) 제거하여 순수 종목 코드만 사용
-                        code = raw_code.split('_')[0].strip()
-                        name = item.get("stk_nm") or item.get("hts_kor_isnm") or item.get("name") or f"Unknown_{code}"
-
-                        # [혁신] 발견된 종목명 정보를 로컬 캐시에 즉시 업데이트 (DB 로드 시 한글 이름 복원용)
-                        if code and name and "Unknown" not in name:
-                            clean_code = code.split('_')[0].strip()
-                            self._name_cache[clean_code] = name
-
-                        # Handle string representation of numerical values
-                        try:
-                            # 현재가 파싱 후보군 자동 탐색 (사용자 로그에서 cur_prc 확인됨)
-                            price_candidates = ["cur_prc", "stck_prpr", "stk_prpr", "prpr", "curr_pric", "stk_prc", "stck_prc", "curr"]
-                            price_val = "0"
-                            for cand in price_candidates:
-                                if item.get(cand):
-                                    price_val = item.get(cand)
-                                    break
+                            data = await response.json()
+                            header = data.get("header", {})
+                            next_key = data.get("next_key") or header.get("next_key") or header.get("next")
                             
-                            current_price = abs(float(str(price_val).replace(',', '')))
+                            # 데이터 추출 (각 TR 전용 키 및 폴백 대응)
+                            items = data.get(api_id, []) or \
+                                    data.get("trde_prica_upper", []) or \
+                                    data.get("pred_pre_flu_rt_upper", []) or \
+                                    data.get("output", []) or \
+                                    data.get("output1", [])
+                            if not items:
+                                lists = [v for v in data.values() if isinstance(v, list)]
+                                if lists: items = max(lists, key=len)
+                            
+                            if not items: break
 
-                            # 거래금액 후보군 (trde_amt, acml_tr_pbmn 등)
-                            tval_candidates = ["trde_amt", "acml_tr_pbmn", "trading_value", "trde_amt_val"]
-                            tval_str = "0"
-                            for cand in tval_candidates:
-                                if item.get(cand):
-                                    tval_str = item.get(cand)
-                                    break
-                            trading_value = float(str(tval_str).replace(',', ''))
+                            self.logger.info(f"[{m_name}] {page_cnt}페이지: {len(items)}개 종목 수신 (누적: {len(raw_market) + len(items)})")
 
-                            # 추가 필터링용 데이터 추출
-                            sign = item.get("pred_pre_sig") or item.get("prdy_vrss_sign") or "3"
+                            for item in items:
+                                raw_code = item.get("stk_cd") or item.get("stck_shrn_iscd") or item.get("code") or ""
+                                code = raw_code.split('_')[0].strip()
+                                name = item.get("stk_nm") or item.get("hts_kor_isnm") or f"Unknown_{code}"
 
-                            # 등락률
-                            flu_rt_str = item.get("flu_rt") or item.get("prdy_ctrt") or "0"
-                            flu_rt = float(flu_rt_str)
+                                if code and name and "Unknown" not in name:
+                                    self._name_cache[code] = name
 
-                            # 거래량 후보군 (trde_qty, acml_tr_qty 등)
-                            vol_candidates = ["trde_qty", "acml_tr_qty", "stck_vol", "vol"]
-                            vol_val = "0"
-                            for cand in vol_candidates:
-                                if item.get(cand):
-                                    vol_val = item.get(cand)
-                                    break
-                            current_volume = float(str(vol_val).replace(',', ''))
+                                try:
+                                    price_val = item.get("cur_prc") or item.get("stck_prpr") or item.get("prpr") or "0"
+                                    current_price = abs(float(str(price_val).replace(',', '')))
+                                    tval_val = item.get("trde_amt") or item.get("acml_tr_pbmn") or "0"
+                                    trading_value = float(str(tval_val).replace(',', ''))
+                                    vol_val = item.get("trde_qty") or item.get("acml_tr_qty") or "0"
+                                    current_volume = float(str(vol_val).replace(',', ''))
+                                    flu_rt_val = item.get("flu_rt") or item.get("prdy_ctrt") or "0"
+                                    flu_rt = float(flu_rt_val)
+                                    sign = item.get("pred_pre_sig") or item.get("prdy_vrss_sign") or "3"
+                                except:
+                                    current_price = trading_value = current_volume = flu_rt = 0.0
+                                    sign = "3"
 
-                        except (ValueError, TypeError):
-                            current_price = 0.0
-                            trading_value = 0.0
-                            sign = "3"
-                            flu_rt = 0.0
-                            current_volume = 0.0
+                                parsed_stock = {
+                                    "code": code, "name": name, "price": current_price,
+                                    "trading_value": trading_value, "sign": str(sign),
+                                    "flu_rt": flu_rt, "volume": current_volume
+                                }
+                                if not any(x["code"] == code for x in raw_market):
+                                    raw_market.append(parsed_stock)
 
-                        parsed_stock = {
-                            "code": code,
-                            "name": name,
-                            "price": current_price,
-                            "trading_value": trading_value,
-                            "sign": str(sign),
-                            "flu_rt": flu_rt,
-                            "volume": current_volume
-                        }
-                        raw_market.append(parsed_stock)
+                            if not next_key or len(raw_market) >= (top_n * 1.5): # 여유있게 수집 후 필터링
+                                break
+                
+                if raw_market:
+                    self._save_name_cache()
 
-                    # [혁신] 루프 종료 후 한글 종목명 캐시를 파일로 한번에 저장
-                    if items:
-                        self._save_name_cache()
-
-        except asyncio.TimeoutError:
-            self.logger.error("API 요청 시간 초과 (Timeout).")
-            raise RuntimeError("API 연동 시간 초과")
         except Exception as e:
             self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
             raise e
-
-        # 투자 한도 설정 가져오기 (RiskManager와 동일한 설정 키 사용)
-        max_invest_limit = 5000000.0
-        if self.config_manager:
-            max_invest_limit = float(self.config_manager.get("max_invest_per_symbol", 5000000))
 
         # 1. 노이즈 및 현재 강세 기준(상태, 등락률, 가격 한도) 필터링
         filtered_universe = []
@@ -405,11 +379,10 @@ class UniverseManager:
                 # 가격 정보를 읽어오지 못했을 경우, 유니버스 소멸을 막기 위해 제외하지 않음
                 self.logger.debug(f"필터링 통과: {name}({code}) - 가격 데이터 부재(0원)로 필터 스킵")
 
-            # 등락률 필터링: 1(상한가)나 4,5(하한가, 하락) 등 극단적 호가잠김 방지 (스캘핑 불가)
-            sign = stock.get("sign", "3")
-            if sign in ["1", "4"]:
-                self.logger.debug(f"필터링 제외: {name}({code}) - 상/하한가(호가 잠김)")
-                continue
+            # [삭제] 등락률 필터링 (사용자 요청으로 상/하한가 포함 허용)
+            # sign = stock.get("sign", "3")
+            # if sign in ["1", "4"]:
+            #     continue
 
             # 당일 시가 갭상승 필터링 (예: 2% 이상 상승 출발)
             opn_prc = stock.get("opn_prc", 0.0)
@@ -420,8 +393,6 @@ class UniverseManager:
                 gap_ratio = ((opn_prc - prdy_clprc) / prdy_clprc) * 100
                 if gap_ratio < 2.0:
                     self.logger.debug(f"필터링 제외: {name}({code}) - 갭상승 미달 ({gap_ratio:.2f}%)")
-                    # Note: 장 초반에 데이터가 0개로 나오는 것을 방지하기 위해 필터링을 한시적으로 완화하거나 스킵할 수 있음
-                    # 현재는 유규한 필터링 정책을 유지하되, 데이터가 아예 없을 때만 통과시킴
                     continue
             elif prdy_clprc == 0 or opn_prc == 0:
                 # 데이터가 아직 안 들어온 경우(09:00 직후)에는 일단 필터를 통과시켜 유니버스 0개를 방지함
@@ -429,17 +400,22 @@ class UniverseManager:
 
             filtered_universe.append(stock)
 
-        # 2. 거래량(Volume) 기준 내림차순 정렬
-        sorted_universe = sorted(filtered_universe, key=lambda x: x["volume"], reverse=True)
+        # 2. 정렬 (사용자 선택 기준)
+        sort_key_map = {
+            "volume": "volume",
+            "value": "trading_value",
+            "flu_rt": "flu_rt"
+        }
+        key = sort_key_map.get(sort_by, "volume")
+        sorted_universe = sorted(filtered_universe, key=lambda x: x.get(key, 0), reverse=True)
 
         # 3. Top N 선정
         top_universe = sorted_universe[:top_n]
 
         # 최종 선정된 유니버스 종목들 로그 출력
         top_symbols = [f"{s.get('name')}({s.get('code')})" for s in top_universe]
-        self.logger.error(f"최종 선정된 유니버스 Top {len(top_universe)}: {', '.join(top_symbols)}")
-
-        self.logger.info(f"유니버스 필터링 완료: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 Top {len(top_universe)}개")
+        self.logger.info(f"✅ 최종 유니버스 선정 완료 (Top {len(top_universe)}): {', '.join(top_symbols[:10])}...")
+        self.logger.info(f"결과 요약: 원본 {len(raw_market)}개 -> 필터링 {len(filtered_universe)}개 -> 최종 {len(top_universe)}개")
 
         return top_universe
 

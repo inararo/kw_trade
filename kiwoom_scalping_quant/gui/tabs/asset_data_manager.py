@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox, QSplitter, QSizePolicy
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, QPushButton, QDateEdit, QProgressBar, QLabel, QGroupBox, QMessageBox, QInputDialog, QSpinBox, QSplitter, QSizePolicy, QRadioButton, QButtonGroup
 from PyQt6.QtCore import QDate, pyqtSlot, Qt
 
 class AssetDataManagerTab(QWidget):
@@ -78,6 +78,26 @@ class AssetDataManagerTab(QWidget):
             }
         """)
         univ_ctrl_layout.addWidget(self.spin_top_n)
+        
+        # [신규] 정렬 기준 라디오 버튼 추가
+        self.sort_group = QButtonGroup(self)
+        
+        self.radio_vol = QRadioButton("거래량")
+        self.radio_val = QRadioButton("거래대금")
+        self.radio_flu = QRadioButton("등락률")
+        
+        # 거래량 기본 선택
+        self.radio_vol.setChecked(True)
+        
+        self.sort_group.addButton(self.radio_vol)
+        self.sort_group.addButton(self.radio_val)
+        self.sort_group.addButton(self.radio_flu)
+        
+        univ_ctrl_layout.addSpacing(20)
+        univ_ctrl_layout.addWidget(self.radio_vol)
+        univ_ctrl_layout.addWidget(self.radio_val)
+        univ_ctrl_layout.addWidget(self.radio_flu)
+        
         univ_ctrl_layout.addStretch()
         asset_layout.addLayout(univ_ctrl_layout)
 
@@ -215,9 +235,19 @@ class AssetDataManagerTab(QWidget):
 
     def _on_btn_auto_universe_clicked(self):
         top_n = self.spin_top_n.value()
-        reply = QMessageBox.question(self, "확인", f"기존 종목 리스트가 삭제되고 주도주 Top {top_n}으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        # [신규] 선택된 정렬 기준 확인
+        sort_by = "volume"
+        if self.radio_val.isChecked():
+            sort_by = "value"
+        elif self.radio_flu.isChecked():
+            sort_by = "flu_rt"
+            
+        sort_nm = {"volume": "거래량", "value": "거래대금", "flu_rt": "등락률"}.get(sort_by)
+        
+        reply = QMessageBox.question(self, "확인", f"기존 종목 리스트가 삭제되고 {sort_nm} Top {top_n}으로 교체됩니다. 진행하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            self.view_model.build_universe(top_n=top_n)
+            self.view_model.build_universe(top_n=top_n, sort_by=sort_by)
 
     def _on_btn_fetch_db_clicked(self):
         reply = QMessageBox.question(self, "확인", "DB에 저장된 모든 종목을 가져와 현재 유니버스를 교체하시겠습니까?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
