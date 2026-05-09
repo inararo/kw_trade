@@ -74,6 +74,7 @@ class QuantSystem:
         self.shutdown_event = asyncio.Event()
         self.token_ready_event = asyncio.Event()
         self.universe_ready_event = asyncio.Event()
+        self.logger = logging.getLogger("QuantSystem")
 
     def _on_token_updated(self, msg: str):
         self.token_ready_event.set()
@@ -133,6 +134,15 @@ class QuantSystem:
         self.asset_vm = self.container.asset_data_view_model()
         self.account_service = self.container.account_service()
 
+        # [🚨 최우선 패치] 모든 API 요청 전에 토큰 발급을 가장 먼저 완료합니다.
+        print("시스템: [Step 0] Kiwoom API Access Token 발급 시작...")
+        self.token_task = asyncio.create_task(self.token_manager.start())
+        try:
+            await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
+            print("시스템: [Step 0] Kiwoom API Access Token 발급 완료.")
+        except asyncio.TimeoutError:
+            print("시스템: [WARNING] 토큰 발급 타임아웃! (네트워크 상태를 확인하세요)")
+
         # Risk Manager injection loop closing
         self.order_manager.risk_manager = self.risk_manager
         
@@ -166,6 +176,8 @@ class QuantSystem:
         _ws_url     = _cfg.get_ws_url()
 
         self._broker_api = KiwoomBrokerWrapper(_app_key, _app_secret, _base_url, _ws_url)
+        # [🚨 추가 패치] 생성 즉시 현재 토큰을 주입합니다.
+        self._broker_api.access_token = self.token_manager.get_token()
         
         # [Shared Core] 서비스 및 UI 브릿지 초기화 (Broker 생성 후로 이동)
         from gui.condition_worker import ConditionWorkerThread
@@ -174,29 +186,29 @@ class QuantSystem:
         # [🚨 중요] AccountService에 필요한 의존성 수동 연결 (주입 시점에 data_collector가 아직 없었을 수 있음)
         self.account_service.data_collector = self.data_collector
         
-        asyncio.create_task(self.account_service.sync_all()) # 초기 잔고 동기화 태스크 가동
+        # [수정] 백그라운드 태스크 대신 직접 await 하여 보유 종목 정보를 확정한 후 다음 단계로 진행
+        await self.account_service.sync_all() 
+        self.logger.info("시스템: 초기 계좌 잔고 및 보유 종목 동기화 완료.")
         
         # 2. 조건검색 서비스 및 워커 스레드 가동
         self.condition_service = self.container.condition_service()
-        # [안정화] 웹소켓 메시지 핸들러를 서비스로 라우팅
-        self._broker_api.on_condition_ws_message = self.condition_service.handle_websocket_message
+        # [🚨 통합 패치] DataCollector 웹소켓 하나로 모든 메시지를 처리합니다.
+        self.data_collector.on_condition_message_callback = self.condition_service.handle_websocket_message
         
         self.condition_worker = ConditionWorkerThread(self.condition_service, ws_client=None) # 메인 루프에서 이미 수신 중이므로 모니터링용
-        self.condition_worker.sig_symbol_inserted.connect(self.live_vm.update_universe_list)
+        self.condition_worker.sig_symbol_inserted.connect(self.live_vm.add_to_universe)
+        self.condition_worker.sig_symbol_deleted.connect(self.live_vm.remove_from_universe)
         self.condition_worker.sig_snapshot_received.connect(self.live_vm.update_universe_list)
         self.condition_worker.start()
 
         # [신규] 부팅 시 실시간 조건검색 모니터링 즉시 가동
         async def start_monitoring():
             try:
-                # 1. 조건식 목록 조회
-                condition_dict = await self._broker_api.get_condition_list()
-                target_idx = next((idx for idx, name in condition_dict.items() if name == "AI스캘핑주도주"), "0")
-                self.logger.info(f"🚀 부팅 시 모니터링 가동: AI스캘핑주도주 (Index: {target_idx})")
-                
-                # 2. 웹소켓 리스너 가동 (백그라운드 태스크)
-                # 이미 실행 중인지 여부는 KiwoomBrokerWrapper 내부에서 관리되도록 추후 보강 가능
-                asyncio.create_task(self._broker_api.ws_listener_loop(target_idx))
+                # 1. 조건식 목록 조회 및 실시간 감시 시작 (통합 웹소켓 활용)
+                self.logger.info("🚀 통합 웹소켓을 통한 실시간 감시 가동: AI스캘핑주도주")
+                # [🚨 중요] 이제 DataCollector의 웹소켓 하나로 틱 데이터와 조건검색을 동시에 처리합니다.
+                target_idx = "0" # DataCollector 내부에서 이름으로 매칭 시도함
+                await self.data_collector.start_condition_monitoring(target_idx)
             except Exception as e:
                 self.logger.error(f"❌ 부팅 시 모니터링 가동 실패: {e}")
 
@@ -329,20 +341,12 @@ class QuantSystem:
         print("시스템: [Step 1] Config 기반 에이전트 모델 로드 시작...")
         self.strategy_manager.load_model_from_config()
 
-        # Step 2: Token 발급 및 유니버스 준비
-        print("시스템: [Step 2] 토큰 발급 및 스케줄러 가동 준비...")
-        self.token_task = asyncio.create_task(self.token_manager.start())
+        # Step 2: 유니버스 및 실시간 상태 동기화
+        print("시스템: [Step 2] 스케줄러 및 실전 계좌 상태 최종 확인...")
         
         try:
-            # 토큰 발급 대기 (최대 10초)
-            await asyncio.wait_for(self.token_ready_event.wait(), timeout=10.0)
-            print("시스템: [Step 2] 토큰 발급 완료.")
-        
             # [Step 2.5] 초기 계좌 잔고 동기화 (REST API 활용)
-            print("시스템: [Step 2.5] 초기 계좌 잔고 동기화 시도...")
-            await self.account_service.sync_all()
-            
-            # [기존] 실시간 잔고 동기화 (WebSocket/TR 병행)
+            # 이미 Step 0에서 토큰을 받았으므로 안전하게 재동기화 가능
             await self.order_manager.sync_balance(force=True)
         except asyncio.TimeoutError:
             print("시스템: [Step 2] 토큰 발급 타임아웃! (인터넷 연결 확인 필요)")
@@ -388,9 +392,9 @@ class QuantSystem:
             print("시스템: [Step 4] 실전 매매 엔진 초기화 시작...")
             await self.strategy_manager.init_engines(trading_universe)
 
-            # [신규] 실시간 조건 검색 웹소켓 감시 시작
-            print("시스템: [Step 5] 실시간 조건 검색(편입/이탈) 웹소켓 모니터링 가동...")
-            self.asset_vm.start_condition_ws()
+            # [🚨 중복 제거] 실시간 조건 검색 웹소켓은 이제 DataCollector에서 통합 관리합니다.
+            # print("시스템: [Step 5] 실시간 조건 검색(편입/이탈) 웹소켓 모니터링 가동...")
+            # self.asset_vm.start_condition_ws()
             
             # [안정화] 텔레그램 준비 완료 알림 전송 (네트워크 에러 시 무시하고 진행)
             try:

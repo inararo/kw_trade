@@ -135,7 +135,8 @@ class Container(containers.DeclarativeContainer):
         data_collector=data_collector,
         order_manager=order_manager,
         config_manager=config_manager,
-        account_service=account_service
+        account_service=account_service,
+        strategy_manager=strategy_manager
     )
 
     asset_data_view_model = providers.Singleton(

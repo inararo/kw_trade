@@ -78,7 +78,7 @@ class AccountService:
         return await self.broker.get_orderable_cash(symbol=target_symbol, price=target_price)
 
     def _parse_profit(self, data: dict):
-        self.logger.info(f"🔍 [ID:{id(self)}] [ka10077] RAW Response: {data}")
+        self.logger.debug(f"🔍 [ID:{id(self)}] [ka10077] RAW Response: {data}")
         if str(data.get("return_code")) == "0" or "tdy_rlzt_pl" in data:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.today_realized_profit = float(data.get("tdy_rlzt_pl") or output.get("tdy_rlzt_pl", 0))
@@ -88,7 +88,7 @@ class AccountService:
             self.logger.error(f"❌ [ID:{id(self)}] [ka10077] 실현손익 조회 실패: {data.get('return_msg')}")
 
     def _parse_orderable(self, data: dict):
-        self.logger.info(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
+        self.logger.debug(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
         if str(data.get("return_code")) == "0" or "ord_alowa" in data:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.orderable_cash = float(data.get("ord_alowa") or output.get("ord_alowa", output.get("ord_psbl_amt", 0)))

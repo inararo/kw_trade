@@ -6,7 +6,7 @@ cb_timeout_sec: 3
 cutoff_time: '14:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
-enable_cutoff: false
+enable_cutoff: true
 enable_universe_update: false
 global_max_exposure: 30000000.0
 global_max_loss: -500000
@@ -29,6 +29,7 @@ max_open_positions: 7
 max_position_pct: 100.0
 protected_symbols:
 - '323410'
+- '001510'
 seq_len: 10
 signal_only_mode: false
 slippage: 0.0005

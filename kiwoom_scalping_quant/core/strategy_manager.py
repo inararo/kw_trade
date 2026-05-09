@@ -24,9 +24,9 @@ class StrategyManager:
         self.logger = logging.getLogger("StrategyManager")
         self.broker_api = None # [신규] 토큰 재발급용 API 핸들
 
-        self.symbols: List[str] = [s.get('code') for s in self.config_manager.get_symbols()]
-        if not self.symbols:
-            self.symbols = ['005930']
+        # [수정] 부팅 시 전체 유니버스를 미리 로드하지 않고 빈 상태로 시작합니다.
+        # 실제 감시 종목은 init_engines() 또는 handle_condition_insert()를 통해 동적으로 추가됩니다.
+        self.symbols: List[str] = []
 
         self.envs: Dict[str, Any] = {}
         self.shared_agent: TradingAgentWrapper = None
@@ -121,81 +121,86 @@ class StrategyManager:
         self.last_global_buy_time = time.time()
 
     async def init_engines(self, universe_list: List[Dict[str, Any]]):
-        """유니버스 확정 후 실시간 매매 엔진 초기화 (Lazy Initialization)"""
-        # [NEW] 유니버스 전체 스냅샷 로깅
-        try:
-            log_universe_snapshot(universe_list, reason="초기 유니버스 설정")
-        except Exception as e:
-            self.logger.error(f"주도주 스냅샷 로깅 에러 (init): {e}")
-
-        if not self.shared_agent:
-            self.logger.error("StrategyManager: 엔진 초기화 실패 - 로드된 에이전트가 없습니다.")
-            return
-
-        # [완전 해결] 모든 식별자를 순수 숫자 코드로 통일하여 중복 방지
-        unique_symbols = set()
+        """
+        초기 유니버스 확정 시 호출됩니다. (스냅샷 대응)
+        이제 기존 엔진을 clear() 하지 않고, 새 리스트와의 차이점만 찾아 업데이트합니다.
+        """
+        new_codes = set()
         protected_list = self.config_manager.get("protected_symbols", [])
         protected_symbols = set(str(s).split('_')[0] for s in protected_list)
 
-        # 1. 주도주 리스트 정제 및 추가
         for s in universe_list:
             orig = s.get("code")
             if not orig: continue
             clean = orig.split('_')[0]
             if clean not in protected_symbols:
-                unique_symbols.add(clean)
+                new_codes.add(clean)
 
-        # 2. 보유 종목 정제 및 추가
-        for orig in self.order_manager.bot_holdings.keys():
-            clean = orig.split('_')[0]
-            if clean not in protected_symbols:
-                unique_symbols.add(clean)
-
-        # 최종 심볼 리스트 (순수 숫자로 통일)
-        self.symbols = list(unique_symbols)
-        self.envs.clear()
+        # 보유 종목 추가 (선택 사항: 사용자가 조건검색만 원하더라도 보유 종목 관리는 필요할 수 있음)
+        # 하지만 사용자 요청이 '조건검색에 포착된 종목만'이므로 보유 종목은 제외하거나 
+        # 필요 시 LiveDashboardViewModel에서 처리하도록 위임합니다.
         
-        self.logger.info(f"StrategyManager: 확정된 유니버스 {len(self.symbols)}개에 대해 엔진 초기화 시작.")
-        
-        # [핵심 수정] 보유 종목을 포함한 전체 종목에 대해 실시간 데이터 구독 신청
-        if hasattr(self.data_collector, 'update_subscriptions'):
-            await self.data_collector.update_subscriptions(to_add=self.symbols, to_remove=[])
-        else:
-            for sym in self.symbols:
-                await self.data_collector.subscribe_symbol(sym)
+        current_codes = set(self.symbols)
+        to_add = list(new_codes - current_codes)
+        to_remove = list(current_codes - new_codes)
 
-        new_engines = []
-        for sym in self.symbols:
-            from core.live_trading_engine import LiveTradingEngine
-            # [수정] StrategyManager(self)와 broker_api를 엔진에 전달
-            engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent, 
-                                       strategy_manager=self, broker_api=self.broker_api)
-            self.envs[sym] = engine
-            new_engines.append(engine)
-            self.last_action_times[sym] = 0.0
-            self.logger.info(f"StrategyManager: [{sym}] 실시간 엔진 결합 완료.")
+        # [🚨 중요] 이제 직접 update_engines를 호출하여 슬롯 관리를 수행합니다.
+        await self.update_engines(to_add, to_remove)
 
-        # [보강] 초기화 시 토큰이 있다면 웜업 큐에 일괄 투입
-        token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
-        if token and new_engines:
-            for eng in new_engines:
-                self._warmup_queue.put_nowait(eng)
-        
-        print(f"시스템: [SUCCESS] 총 {len(self.symbols)}개의 매매 엔진 배치 완료.")
+    async def update_engines(self, to_add: List[str], to_remove: List[str]):
+        """매매 엔진 동기화 (추가/삭제)"""
+        if not self.shared_agent:
+            self.logger.error("StrategyManager: 모델이 로드되지 않아 엔진을 업데이트할 수 없습니다.")
+            return
 
-        # [추가] UI 쪽에 초기 유니버스 리스트 전달 (보유 종목 합산 및 보호 종목 필터링 적용)
-        live_vm = getattr(self.config_manager, "_injected_live_vm", None)
-        if live_vm:
-            # 1. 주도주 리스트 필터링
-            display_universe = [s for s in universe_list if str(s.get("code")).split('_')[0] not in protected_symbols]
-            display_codes = set(str(s.get("code")).split('_')[0] for s in display_universe)
-            
-            # 2. 주도주에 없는 보유 종목 추가
-            for sym, qty in self.order_manager.bot_holdings.items():
-                if sym not in display_codes and sym not in protected_symbols:
-                    display_universe.append({"code": sym, "name": f"{sym} (보유)", "is_holding": True})
-            
-            live_vm.update_universe_list(display_universe)
+        # 1. 제거 처리
+        for sym in to_remove:
+            # [Edge Case] 대기열에 있는 경우 리스트에서만 제거
+            if sym in self.pending_universe_queue:
+                self.pending_universe_queue.remove(sym)
+                self.logger.info(f"StrategyManager: [{sym}] 대기열에서 조용히 삭제되었습니다.")
+                continue
+
+            if sym in self.envs:
+                engine = self.envs.pop(sym)
+                if hasattr(engine, 'destroy'):
+                    await engine.destroy()
+                if sym in self.symbols: self.symbols.remove(sym)
+                if sym in self.last_action_times: del self.last_action_times[sym]
+                
+                # 실시간 구독 해제
+                if hasattr(self.data_collector, 'unsubscribe_symbol'):
+                    asyncio.create_task(self.data_collector.unsubscribe_symbol(sym))
+                
+                self.logger.info(f"StrategyManager: [{sym}] 활성 엔진 파괴 및 구독 해제 완료.")
+
+        # 2. 추가 처리 (슬롯 제한 확인)
+        from core.live_trading_engine import LiveTradingEngine
+        for sym in to_add:
+            if sym in self.symbols or sym in self.pending_universe_queue:
+                continue
+
+            if len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
+                self.logger.info(f"StrategyManager: [{sym}] 활성 슬롯 진입 ({len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
+                self.symbols.append(sym)
+                engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent, 
+                                           strategy_manager=self, broker_api=self.broker_api)
+                self.envs[sym] = engine
+                self.last_action_times[sym] = 0.0
+                
+                # [🚨 중요] 활성 슬롯일 때만 시세 구독 요청
+                if hasattr(self.data_collector, 'subscribe_symbol'):
+                    asyncio.create_task(self.data_collector.subscribe_symbol(sym))
+                
+                # 웜업 큐 투입
+                self._warmup_queue.put_nowait(engine)
+            else:
+                self.logger.info(f"StrategyManager: [{sym}] 슬롯 초과로 대기열(Queue)에 추가됩니다.")
+                self.pending_universe_queue.append(sym)
+
+        # 3. 빈 슬롯이 생겼다면 대기열에서 보충
+        if len(self.symbols) < self.MAX_CONCURRENT_STOCKS and self.pending_universe_queue:
+            await self._process_pending_queue()
 
     def _fallback_empty_model(self):
         config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
@@ -278,39 +283,18 @@ class StrategyManager:
                          self.order_manager.holdings.get(sym, 0) > 0 or \
                          self.order_manager.has_unexecuted_orders(sym):
                         continue
-                    
                     to_remove.append(sym)
-                    self.symbols.remove(sym)
-                    if sym in self.envs: del self.envs[sym]
 
-            # 2. 새로운 종목 추가 및 엔진 생성
-            new_engines = []
             for sym in new_symbols_list:
-                if sym not in self.symbols:
-                    if sym in protected_symbols: continue
-                    
-                    self.symbols.append(sym)
-                    from core.live_trading_engine import LiveTradingEngine
-                    new_engine = LiveTradingEngine(sym, self.config_manager, self.order_manager, self.shared_agent)
-                    self.envs[sym] = new_engine
-                    new_engines.append(new_engine)
+                if sym not in current_symbols and sym not in self.pending_universe_queue:
                     to_add.append(sym)
 
-            # 3. DataCollector에 일괄 업데이트 요청
-            if to_add or to_remove:
-                if hasattr(self.data_collector, 'update_subscriptions'):
-                    await self.data_collector.update_subscriptions(to_add, to_remove)
-                else:
-                    # 폴백: 일괄 메서드 없을 경우 (구버전 대응)
-                    for s in to_remove: await self.data_collector.unsubscribe_symbol(s)
-                    for s in to_add: await self.data_collector.subscribe_symbol(s)
+            # [🚨 최적화 통합] update_engines를 통해 모든 로직(슬롯, 구독, 엔진관리)을 일원화합니다.
+            await self.update_engines(to_add, to_remove)
 
-            # 4. 새로 추가된 엔진들만 모아서 순차 웜업 큐로 넘김
-            if new_engines:
-                token = self.config_manager.get("KIWOOM_ACCESS_TOKEN")
-                if token:
-                    for eng in new_engines:
-                        self._warmup_queue.put_nowait(eng)
+            # DataCollector 구독 업데이트 및 웜업 큐 투입은 이제 update_engines 내부에서 처리됨
+
+            # 웜업은 update_engines 내부에서 수행됨
 
             # 4. UI 쪽에 종목 리스트가 교체되었음을 알림 (보유 종목 합산 및 보호 종목 필터링)
             live_vm = getattr(self.config_manager, "_injected_live_vm", None)
@@ -532,7 +516,7 @@ class StrategyManager:
             
             if len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
                 self.logger.info(f"🌟 [조건검색 편입] {clean_symbol} 즉시 감시 시작 (현재 {len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
-                await self._add_dynamic_symbol(clean_symbol)
+                await self.update_engines([clean_symbol], [])
             else:
                 self.logger.info(f"⏳ [조건검색 대기] {clean_symbol} 감시 슬롯 초과. 대기열 추가 (현재 큐: {len(self.pending_universe_queue)}개)")
                 self.pending_universe_queue.append(clean_symbol)
@@ -560,8 +544,7 @@ class StrategyManager:
                         engine.is_condition_deleted = True
                 else:
                     self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 감시 중단 및 엔진 파괴")
-                    await self._remove_dynamic_symbol(clean_symbol)
-                    await self._process_pending_queue()
+                    await self.update_engines([], [clean_symbol])
 
     async def _add_dynamic_symbol(self, symbol: str):
         """단일 종목 동적 추가 및 엔진 구동"""

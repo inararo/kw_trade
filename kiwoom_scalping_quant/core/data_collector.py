@@ -42,6 +42,7 @@ class DataCollector:
         self.logger = logging.getLogger("DataCollector")
         self._ui_callback = None
         self._watchdog_task = None
+        self.on_condition_message_callback = None # [신규] 조건검색 서비스 라우팅용
 
         # Connection and state events
         self.ws_connected_event = asyncio.Event()
@@ -237,12 +238,9 @@ class DataCollector:
         self.login_success_event.clear()
         self.first_data_received_event.clear()
         
-        # [동기화 수정] 부팅 시 Step 2에서 갱신된 최신 유니버스와 기존 등록된 종목(보유 종목 등)을 병합합니다.
+        # [동기화 수정] 부팅 시 이미 등록된 종목(보유 종목 등)만 초기 구독 리스트로 확정합니다.
+        # [🚨 중요] 더 이상 config.get_symbols()를 통해 수백 개의 유니버스를 일괄 구독하지 않습니다.
         all_subs = set(self.subscription_manager.get_symbols())
-        if hasattr(self.config, 'get_symbols'):
-            for s in self.config.get_symbols():
-                code = s.get('code')
-                if code: all_subs.add(code)
         
         if all_subs:
             self._initial_symbols = list(all_subs)
@@ -427,12 +425,50 @@ class DataCollector:
             self.ws_connection = None
             self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
 
+    async def start_condition_monitoring(self, target_idx: str):
+        """실시간 조건검색 모니터링을 위한 초기 요청을 전송합니다."""
+        if self.is_running and self.ws_connection and self.ws_connection.open:
+            try:
+                await asyncio.wait_for(self.login_success_event.wait(), timeout=10.0)
+                # 1. 조건검색식 목록 요청 (CNSRLST)
+                await self.ws_connection.send(json.dumps({"trnm": "CNSRLST"}))
+                self.logger.info("DataCollector: [WS SEND] CNSRLST 전송 완료")
+                self._target_condition_idx = target_idx # 저장을 해두어 리스트 수신 후 자동 요청에 사용
+            except Exception as e:
+                self.logger.error(f"DataCollector: 조건검색 모니터링 시작 실패: {e}")
+
     async def _process_tick(self, message_data):
         """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
         
-        # 1. 결과 응답(REG, LOGIN 등) 처리
-        if message_data.get("return_code") is not None:
-            self.logger.info(f"WS API RESPONSE: {message_data.get('return_msg')} (Code: {message_data.get('return_code')})")
+        # 1. 결과 응답(REG, LOGIN, CNSRLST, CNSRREQ 등) 처리
+        trnm = message_data.get("trnm")
+        if trnm in ["LOGIN", "REG", "UNREG", "CNSRLST", "CNSRREQ"]:
+            # [Handshake] 조건검색 관련 응답은 전용 콜백으로 라우팅
+            if trnm in ["CNSRLST", "CNSRREQ"] and self.on_condition_message_callback:
+                self.on_condition_message_callback(json.dumps(message_data))
+                
+                # CNSRLST 수신 시 자동으로 대상 조건식에 대해 CNSRREQ 요청
+                if trnm == "CNSRLST" and hasattr(self, "_target_condition_idx"):
+                    data_list = message_data.get("data", [])
+                    target_seq = self._target_condition_idx
+                    for item in data_list:
+                        # 이름 매칭 시도 (AI스캘핑주도주)
+                        name = item[1] if isinstance(item, list) and len(item) >= 2 else item.get("name", "")
+                        if name == "AI스캘핑주도주":
+                            target_seq = str(item[0] if isinstance(item, list) else item.get("seq"))
+                            break
+                    
+                    req_payload = {
+                        "trnm": "CNSRREQ",
+                        "seq": target_seq,
+                        "search_type": "1", # 1: 조건검색 + 실시간조건검색
+                        "stex_tp": "K"      # KRX 거래소
+                    }
+                    await self.ws_connection.send(json.dumps(req_payload))
+                    self.logger.info(f"DataCollector: [WS SEND] CNSRREQ 전송 (seq={target_seq})")
+            
+            if message_data.get("return_code") is not None:
+                self.logger.info(f"WS API RESPONSE: {message_data.get('return_msg')} (Code: {message_data.get('return_code')})")
             return
 
         # 2. 실시간 데이터 프레임('data' 리스트) 처리
@@ -448,6 +484,26 @@ class DataCollector:
             # [디버그] 시장가 데이터가 아닌 모든 메시지 로깅
             if msg_type not in ["0B", "0D"]:
                 self.logger.error(f"🔍 [WS Message] Type: {msg_type} | Content: {str(entry)[:200]}")
+            
+            # [신규] 조건검색 실시간 이벤트 처리 (trnm="REAL" 및 type="02" 또는 name="조건검색")
+            if msg_type == "02" or entry.get("name") == "조건검색":
+                if self.on_condition_message_callback:
+                    # ConditionService 규격에 맞춰 메시지 재구성 및 전달
+                    values = entry.get("values", {})
+                    status_val = values.get("843", "I")
+                    clean_code = (values.get("9001") or entry.get("item", "")).lstrip("A")
+                    
+                    # I: 편입, D: 이탈
+                    mapped_status = "I" if status_val in ["I", "INSERT", "편입", "1"] else "D"
+                    
+                    routing_data = {
+                        "type": mapped_status,
+                        "symbol": clean_code,
+                        "event": "condition",
+                        "status": mapped_status
+                    }
+                    self.on_condition_message_callback(json.dumps(routing_data))
+                continue
             
             # [신규] 주문/체결(Chejan) 데이터 처리
             # Kiwoom REST/WS API에서 주문/체결은 보통 trnm이 'ORDR' 또는 'CNTG'로 오거나, ord_no 필드가 포함됩니다.

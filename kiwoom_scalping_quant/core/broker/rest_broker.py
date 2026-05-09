@@ -55,7 +55,7 @@ class RESTBrokerWrapper:
                 async with session.post(url, json=body, headers=headers, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
-                        self.logger.info(f"🔍 [{api_id}] RAW Response: {data}")
+                        self.logger.debug(f"🔍 [{api_id}] RAW Response: {data}")
                         return data
                     else:
                         err_text = await resp.text()

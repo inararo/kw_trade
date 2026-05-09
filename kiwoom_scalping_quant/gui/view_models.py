@@ -37,12 +37,13 @@ class LiveDashboardViewModel(QObject):
     sig_trading_paused = pyqtSignal(bool)    # True: 일시정지, False: 재개
     sig_monitoring_stopped = pyqtSignal(bool) # True: 중지, False: 감시중
 
-    def __init__(self, data_collector, order_manager, config_manager, account_service=None):
+    def __init__(self, data_collector, order_manager, config_manager, account_service=None, strategy_manager=None):
         super().__init__()
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.config_manager = config_manager
         self.account_service = account_service
+        self.strategy_manager = strategy_manager
 
         # [핵심 패치 1] 엔진이 나를 찾을 수 있도록 config_manager에 스스로를 주입!
         self.config_manager._injected_live_vm = self
@@ -104,91 +105,147 @@ class LiveDashboardViewModel(QObject):
                     self.symbols_summary[code]["name"] = name
         self._ui_dirty = True
 
-    def update_universe_list(self, new_symbols: list):
+    def update_universe_list(self, new_symbols: list, is_append: bool = False):
         """
-        [긴급 패치] 장중 유니버스 교체 시 호출되어 기존 데이터를 초기화하고 
-        새로운 종목 리스트를 UI에 반영하도록 준비합니다.
+        [최적화 패치] 장중 유니버스 교체 또는 추가 시 호출됩니다. (Set 기반 증분 업데이트)
         """
-        self.logger.info(f"ViewModel: 유니버스 교체 감지 ({len(new_symbols)} 종목)")
-        
-        # [보정] 문자열 리스트(종목코드만 온 경우)를 딕셔너리 리스트로 변환
-        formatted_symbols = []
+        protected_list = self.config_manager.get("protected_symbols", [])
+        protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+
+        # 1. 새로운 종목들의 코드 집합 구성 (보호 종목 제외)
+        new_codes = set()
+        new_symbol_map = {} # 코드 -> 원본 객체/이름 매핑
+
         for s in new_symbols:
             if isinstance(s, str):
                 code = s.lstrip("A").strip()
-                name = self._symbol_names.get(code) or "-"
-                # DataCollector 마스터 데이터에서 이름 찾기 시도
-                if name == "-" and hasattr(self.data_collector, 'master_data'):
-                    master = self.data_collector.master_data.get(code)
-                    if master: name = master.get("name", "-")
-                formatted_symbols.append({"code": code, "name": name})
             else:
-                formatted_symbols.append(s)
+                code = s.get("code", "").split('_')[0].strip()
+            
+            if code and code not in protected_symbols:
+                new_codes.add(code)
+                new_symbol_map[code] = s
 
-        # 1. 기존 요약 데이터 완전 초기화
-        self.symbols_summary.clear()
-        
-        # 2. 종목명 캐시 및 요약 뼈대 재구축
-        for s in formatted_symbols:
-            code = s.get("code", "").split('_')[0].strip()
-            name = s.get("name", "-")
-            if code:
-                self._symbol_names[code] = name
-                # [수정] DataCollector의 실시간 가격 정보를 최우선 참조하여 0 초기화 방지
-                current_p = self.data_collector.last_prices.get(code) or self.order_manager.last_known_prices.get(code) or s.get("price", 0)
-                current_chg = self.data_collector.last_change_rates.get(code, 0.0)
+        # 2. 현재 감시 중인 종목 집합
+        current_codes = set(self.symbols_summary.keys())
 
-                self.symbols_summary[code] = {
-                    "name": name, 
-                    "price": current_p,
-                    "change_rate": current_chg,
-                    "volume": 0,
-                    "ai_signal": "-", 
-                    "holdings": self.order_manager.bot_holdings.get(code, 0),
-                    "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
-                }
-        
-        # 3. 상세 뷰 대상 초기화 (첫 번째 종목으로 다시 잡히도록)
-        self.selected_symbol = None
-        
-        # 4. UI 갱신 플래그 및 시그널 발생
+        # 3. 추가/삭제 대상 식별
+        if is_append:
+            # 개별 편입 모드: 기존 것 유지 + 새로운 것만 추가
+            to_add = new_codes - current_codes
+            to_remove = set()
+        else:
+            # 전체 스냅샷 모드: 증분 비교 수행
+            to_add = new_codes - current_codes
+            # [주의] 현재 보유 중인 종목은 리스트에서 강제로 유지해야 함
+            to_remove = (current_codes - new_codes)
+            to_remove = {c for c in to_remove if self.order_manager.bot_holdings.get(c, 0) <= 0 and \
+                         not self.order_manager.has_unexecuted_orders(c)}
+
+        self.logger.info(f"ViewModel: 유니버스 증분 업데이트 (추가: {len(to_add)}, 삭제: {len(to_remove)})")
+
+        # 4. 삭제 처리 (UI 데이터 제거)
+        for code in to_remove:
+            if code in self.symbols_summary:
+                del self.symbols_summary[code]
+
+        # 5. 추가 처리 (UI 데이터 초기화)
+        for code in to_add:
+            s = new_symbol_map[code]
+            name = "-"
+            if isinstance(s, str):
+                name = self._symbol_names.get(code) or "-"
+            else:
+                name = s.get("name", "-")
+
+            price = self.data_collector.last_prices.get(code) or self.order_manager.last_known_prices.get(code) or 0
+            chg = self.data_collector.last_change_rates.get(code, 0.0)
+            
+            self.symbols_summary[code] = {
+                "name": name,
+                "price": price,
+                "change_rate": chg,
+                "volume": 0,
+                "ai_signal": "-", 
+                "holdings": self.order_manager.bot_holdings.get(code, 0),
+                "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
+            }
+
+        # 6. 실시간 데이터 구독 및 매매 엔진 동기화 (전체 갱신이 아닌 변경분만 전달)
+        if to_add or to_remove:
+            # 실시간 시세 구독 업데이트 (DataCollector)
+            if hasattr(self.data_collector, 'update_subscriptions'):
+                asyncio.create_task(self.data_collector.update_subscriptions(to_add=list(to_add), to_remove=list(to_remove)))
+            
+            # 매매 엔진 동기화 (StrategyManager)
+            if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
+                asyncio.create_task(self.strategy_manager.update_engines(to_add=list(to_add), to_remove=list(to_remove)))
+
+        # 7. UI 시그널 발생 (테이블 데이터가 변했음을 알림)
         self._ui_dirty = True
-        self.sig_universe_changed.emit(formatted_symbols)
-        self.sig_log_appended.emit(f"[시스템] 장중 유니버스가 {len(formatted_symbols)}개 종목으로 교체되었습니다. 화면을 갱신합니다.")
+        if to_add or to_remove:
+            # 전체 리스트(formatted_symbols)를 요구하는 위젯들을 위해 최신 상태 재구성
+            full_list = [{"code": c, "name": self.symbols_summary[c]["name"]} for c in self.symbols_summary]
+            self.sig_universe_changed.emit(full_list)
+            
+            if to_add and is_append:
+                self.sig_log_appended.emit(f"[시스템] 새로운 종목 {list(to_add)}가 감시 리스트에 추가되었습니다.")
+
+    def add_to_universe(self, symbol: str, data: dict = None):
+        """개별 종목 편입 이벤트 처리 (ConditionWorker 연결용)"""
+        self.update_universe_list([symbol], is_append=True)
+
+    def remove_from_universe(self, symbol: str, data: dict = None):
+        """개별 종목 이탈 이벤트 처리 (ConditionWorker 연결용)"""
+        code = symbol.lstrip("A").strip()
+        if code in self.symbols_summary:
+            if self.symbols_summary[code].get("holdings", 0) <= 0:
+                del self.symbols_summary[code]
+                # 실시간 구독 및 매매 엔진 해제
+                if hasattr(self.data_collector, 'update_subscriptions'):
+                    asyncio.create_task(self.data_collector.update_subscriptions(to_add=[], to_remove=[code]))
+                if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
+                    asyncio.create_task(self.strategy_manager.update_engines(to_add=[], to_remove=[code]))
+                self.logger.info(f"ViewModel: [{code}] 감시 리스트 및 엔진 제거 완료")
+            else:
+                self.logger.info(f"ViewModel: [{code}] 이탈 감지되었으나 보유 중이므로 리스트 유지")
+            self._ui_dirty = True
 
     def _init_summary_data(self):
-        """부팅 시 유니버스 리스트 및 보유 종목을 바탕으로 요약 테이블 초기 뼈대 구성"""
-        # 1. 유니버스 종목 추가
-        for s in self.config_manager.get_symbols():
-            code = s.get("code", "").split('_')[0].strip()
-            name = s.get("name", "-")
-            if code and code not in self.symbols_summary:
-                # [수정] 초기화 시에도 실시간 데이터가 있다면 보존
-                price = self.data_collector.last_prices.get(code) or self.order_manager.last_known_prices.get(code) or 0
-                chg = self.data_collector.last_change_rates.get(code, 0.0)
-                self.symbols_summary[code] = {
-                    "name": name, 
-                    "price": price, 
-                    "change_rate": chg, 
-                    "volume": 0, 
-                    "ai_signal": "-", 
-                    "holdings": 0, 
-                    "avg_price": 0.0
-                }
+        """부팅 시 보유 종목을 바탕으로 요약 테이블 초기 뼈대 구성 및 가동"""
+        self.logger.info("ViewModel: 초기 보유 종목 기반 엔진 및 구독 동기화 시작")
         
-        # 2. 유니버스에 없는 보유 종목 추가
+        to_add_codes = []
+        
+        # 보유 종목 추가
+        protected_list = self.config_manager.get("protected_symbols", [])
+        protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+
         for code, qty in self.order_manager.bot_holdings.items():
             if code and code not in self.symbols_summary:
+                if code in protected_symbols:
+                    self.logger.warning(f"ViewModel: 보유 종목 {code}는 보호 종목이므로 감시 리스트에서 제외합니다.")
+                    continue
+                    
                 name = self._symbol_names.get(code) or f"{code} (보유)"
                 self.symbols_summary[code] = {
                     "name": name, 
-                    "price": 0, 
+                    "price": self.data_collector.last_prices.get(code, 0), 
                     "change_rate": 0.0, 
                     "volume": 0, 
                     "ai_signal": "-", 
                     "holdings": qty, 
                     "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
                 }
+                to_add_codes.append(code)
+        
+        # 초기 보유 종목 구독 및 엔진 가동
+        if to_add_codes:
+            if hasattr(self.data_collector, 'update_subscriptions'):
+                asyncio.create_task(self.data_collector.update_subscriptions(to_add=to_add_codes, to_remove=[]))
+            if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
+                asyncio.create_task(self.strategy_manager.update_engines(to_add=to_add_codes, to_remove=[]))
+
         self._ui_dirty = True
 
     def append_log(self, msg: str):
@@ -503,11 +560,8 @@ class AssetDataViewModel(QObject):
         self.firebase_manager = firebase_manager
         self.logger = logging.getLogger("AssetDataViewModel")
 
-        # [신규] 실시간 조건검색 웹소켓 스레드 초기화
-        from core.condition_ws_thread import ConditionWebSocketThread
-        self.condition_ws_thread = ConditionWebSocketThread(self.config_manager)
-        self.condition_ws_thread.signal_condition_event.connect(self._on_condition_event)
-        self.condition_ws_thread.signal_error.connect(lambda msg: self.fetch_failed.emit(f"WS Error: {msg}"))
+        # [🚨 통합 패치] 이제 별도의 ConditionWebSocketThread를 사용하지 않고 DataCollector를 통해 통합 관리합니다.
+        self.condition_ws_thread = None
 
         # 메모리 상의 현재 실전 매매 유니버스 (동적 관리용)
         self._current_trading_universe = []
@@ -525,7 +579,14 @@ class AssetDataViewModel(QObject):
             self.logger.warning("StrategyManager 또는 LiveVM이 초기화되지 않아 실시간 이벤트를 무시합니다.")
             return
 
+        protected_list = self.config_manager.get("protected_symbols", [])
+        protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+
         if event_type == 'I': # 편입
+            if symbol in protected_symbols:
+                self.logger.info(f"🚫 [편입 제외] {symbol}은 보호 종목이므로 무시합니다.")
+                return
+
             # 이미 존재하는지 확인
             if any(s['code'] == symbol for s in self._current_trading_universe):
                 return
@@ -537,10 +598,7 @@ class AssetDataViewModel(QObject):
             self._current_trading_universe.append(new_item)
             self.logger.info(f"✅ [편입] {name}({symbol}) 종목이 유니버스에 추가되었습니다.")
             
-            # 매매 엔진에 추가 알림 및 구독 시작
-            asyncio.create_task(sm.add_to_universe(symbol))
-            
-            # UI 갱신
+            # [중요] SM 직접 호출을 제거하고 LiveVM을 통해서만 동기화합니다. (무한 루프 방지)
             live_vm.update_universe_list(self._current_trading_universe)
             
         elif event_type == 'D': # 이탈
@@ -551,10 +609,7 @@ class AssetDataViewModel(QObject):
             if len(self._current_trading_universe) < original_len:
                 self.logger.info(f"❌ [이탈] {symbol} 종목이 유니버스에서 제거되었습니다.")
                 
-                # 매매 엔진에서 감시 중단 요청
-                asyncio.create_task(sm.remove_from_universe(symbol))
-                
-                # UI 갱신
+                # [중요] SM 직접 호출을 제거하고 LiveVM을 통해서만 동기화합니다.
                 live_vm.update_universe_list(self._current_trading_universe)
 
     def start_condition_ws(self):
