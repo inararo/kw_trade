@@ -45,9 +45,9 @@ class StrategyManager:
         self._order_lock = asyncio.Lock() # [신규] 비동기 레이스 컨디션 방지용 락
         self._pending_buy_symbols: set = set() # [신규] 동기적 중복 진입 차단용 집합
         
-        # [동적 유니버스 필터링]
+        # [동적 유니버스 필터링] 8슬롯 로직 명시적 설정
         self.MAX_CONCURRENT_STOCKS = 8
-        self.pending_universe_queue: List[str] = [] # 조건검색 대기열
+        self.pending_universe_queue: List[str] = [] # 조건검색 대기열 (초과분 저장)
         
         # [신규] 순차 웜업 큐 및 워커
         self._warmup_queue = asyncio.Queue()
@@ -502,8 +502,42 @@ class StrategyManager:
         self.logger.info(f"🏁 StrategyManager: 유니버스 웜업 종료. (성공: {success_count}/{len(engines_to_warmup)})")
 
     # ==========================================
-    # [동적 유니버스 필터링] 조건검색 이벤트 핸들러
+    # [동적 유니버스 필터링] 조건검색 이벤트 핸들러 (8슬롯 & Queue)
     # ==========================================
+    async def handle_condition_snapshot(self, symbols: List[str]):
+        """초기 조건검색 스냅샷(예: 31개) 수신 처리"""
+        self.logger.info(f"📋 [조건검색 스냅샷] 전체 {len(symbols)} 종목 수신 (8슬롯 & Queue 로직 적용)")
+        
+        async with self._swap_lock:
+            # 1. 현재 관리 중인 종목(보유 종목 등)은 유지하고, 
+            #    새로 들어온 스냅샷 중 빈 자리에 들어갈 수 있는 것과 대기열로 갈 것을 구분합니다.
+            
+            # 현재 활성 슬롯에 있는 종목들
+            current_active = set(self.symbols)
+            
+            to_add_active = []
+            to_add_queue = []
+            
+            for sym in symbols:
+                clean_sym = sym.split('_')[0]
+                if clean_sym in current_active or clean_sym in self.pending_universe_queue:
+                    continue
+                
+                if len(current_active) + len(to_add_active) < self.MAX_CONCURRENT_STOCKS:
+                    to_add_active.append(clean_sym)
+                else:
+                    to_add_queue.append(clean_sym)
+            
+            # 대기열 갱신 (기존 대기열은 스냅샷으로 교체하되, 현재 활성 중인 것은 제외)
+            self.pending_universe_queue = to_add_queue
+            
+            if to_add_active:
+                self.logger.info(f"🚀 활성 슬롯 추가 할당: {to_add_active}")
+                await self.update_engines(to_add_active, [])
+            
+            if self.pending_universe_queue:
+                self.logger.info(f"⏳ 대기열(Queue) 구성 완료: {len(self.pending_universe_queue)} 종목")
+
     async def handle_condition_insert(self, symbol: str, event_data: dict = None):
         """조건검색 편입 이벤트 수신"""
         clean_symbol = symbol.split('_')[0]
@@ -519,11 +553,12 @@ class StrategyManager:
             # 편의상 len(self.symbols)를 기준으로 하되 MAX_CONCURRENT_STOCKS를 초과하면 대기열로 넣음
             
             if len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
-                self.logger.info(f"🌟 [조건검색 편입] {clean_symbol} 즉시 감시 시작 (현재 {len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
+                self.logger.info(f"🌟 [조건검색 편입] {clean_symbol} 활성 슬롯 즉시 배정 (현재 {len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
                 await self.update_engines([clean_symbol], [])
             else:
-                self.logger.info(f"⏳ [조건검색 대기] {clean_symbol} 감시 슬롯 초과. 대기열 추가 (현재 큐: {len(self.pending_universe_queue)}개)")
-                self.pending_universe_queue.append(clean_symbol)
+                if clean_symbol not in self.pending_universe_queue:
+                    self.pending_universe_queue.append(clean_symbol)
+                    self.logger.info(f"⏳ [조건검색 대기] {clean_symbol} 슬롯 포화. 대기열 추가 (Queue: {len(self.pending_universe_queue)}개)")
 
     async def handle_condition_delete(self, symbol: str, event_data: dict = None):
         """조건검색 이탈 이벤트 수신"""
@@ -541,14 +576,28 @@ class StrategyManager:
                 has_unex = self.order_manager.has_unexecuted_orders(clean_symbol)
                 
                 if has_holdings or has_unex:
-                    self.logger.warning(f"⚠️ [조건검색 이탈 보류] {clean_symbol} 잔고 또는 미체결 존재. 청산 시까지 감시 유지")
-                    # 엔진 내부 플래그에 '이탈 대상'임을 표시하여 신규 진입을 막을 수 있도록 함
+                    self.logger.warning(f"⚠️ [조건검색 이탈 보류] {clean_symbol} 잔고/미체결 존재. 슬롯 유지 (이탈 표시)")
                     engine = self.envs.get(clean_symbol)
                     if engine:
                         engine.is_condition_deleted = True
                 else:
-                    self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 감시 중단 및 엔진 파괴")
+                    self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 활성 슬롯 비움 및 엔진 제거")
                     await self.update_engines([], [clean_symbol])
+                    
+                    # [핵심] 빈 자리가 생겼으므로 대기열에서 보충
+                    await self._process_pending_queue()
+
+    async def _process_pending_queue(self):
+        """대기열(Queue)에서 다음 종목을 꺼내어 활성 슬롯으로 배치"""
+        next_sym = None
+        async with self._swap_lock:
+            if self.pending_universe_queue and len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
+                next_sym = self.pending_universe_queue.pop(0)
+                self.logger.info(f"🔄 [슬롯 교체] 대기열에서 '{next_sym}'를 꺼내어 활성 슬롯으로 이동합니다.")
+        
+        if next_sym:
+            # update_engines를 사용하면 내부적으로 symbols 체크와 웜업까지 수행함
+            await self.update_engines([next_sym], [])
 
     async def _add_dynamic_symbol(self, symbol: str):
         """단일 종목 동적 추가 및 엔진 구동"""
@@ -580,18 +629,3 @@ class StrategyManager:
             
             if hasattr(self.data_collector, 'unsubscribe_symbol'):
                 await self.data_collector.unsubscribe_symbol(symbol)
-
-    async def _process_pending_queue(self):
-        """빈 슬롯이 생겼을 때 대기열에서 종목을 꺼내어 편입"""
-        while len(self.symbols) < self.MAX_CONCURRENT_STOCKS and self.pending_universe_queue:
-            next_symbol = self.pending_universe_queue.pop(0)
-            self.logger.info(f"🔄 [큐 진입] 빈 슬롯 발생. 대기열에서 {next_symbol} 편입")
-            await self._add_dynamic_symbol(next_symbol)
-
-    async def add_to_universe(self, symbol: str):
-        """실시간 편입 이벤트 대응 공개 메서드"""
-        await self._add_dynamic_symbol(symbol)
-
-    async def remove_from_universe(self, symbol: str):
-        """실시간 이탈 이벤트 대응 공개 메서드"""
-        await self._remove_dynamic_symbol(symbol)

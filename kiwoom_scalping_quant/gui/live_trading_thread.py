@@ -43,6 +43,7 @@ class LiveTradingThread(QThread):
     # ──────────────────────────────────────────────
     signal_condition_inserted = pyqtSignal(str, str)   # 조건검색 편입 (종목코드, 조건식명)
     signal_condition_deleted  = pyqtSignal(str)         # 조건검색 이탈 (종목코드)
+    signal_snapshot_received  = pyqtSignal(list)        # 조건검색 스냅샷 (전체 종목 리스트)
     signal_order_executed     = pyqtSignal(str, str, float, int)  # 체결 (종목, 방향, 가격, 수량)
     signal_log_message        = pyqtSignal(str)         # 로그 메시지
     signal_engine_status      = pyqtSignal(bool)        # 엔진 상태 (True=실행, False=중단)
@@ -141,10 +142,10 @@ class LiveTradingThread(QThread):
         # 6. [Shared Core] 조건검색 서비스 연동 (스냅샷 및 실시간 이벤트)
         if self.condition_service:
             def _handle_snapshot(symbols):
-                self.signal_log_message.emit(f"📋 초기 조건 만족 종목 {len(symbols)}개 편입 시퀀스 시작...")
-                for sym in symbols:
-                    self._loop.create_task(self.strategy_manager.handle_condition_insert(sym))
-                    self.signal_condition_inserted.emit(sym, "AI스캘핑주도주")
+                self.signal_log_message.emit(f"📋 초기 조건 만족 종목 {len(symbols)}개 수신 (엔진 라우팅 시작)")
+                self._loop.create_task(self.strategy_manager.handle_condition_snapshot(symbols))
+                # UI 업데이트를 위해 시그널 발생
+                self.signal_snapshot_received.emit(symbols)
 
             def _handle_insert(sym, data):
                 self.signal_log_message.emit(f"🌟 [편입] {sym}")
@@ -234,8 +235,7 @@ class LiveTradingThread(QThread):
                 "symbols", "universe", "protected_symbols", "global_max_loss",
                 "slippage", "seq_len", "initial_balance", "live_trading_model_type",
                 "is_monitoring_active", "is_ai_trading_active", "last_updated_by_engine",
-                "live_trading_model_type", "max_buffer_size", "db_batch_size",
-                "global_max_loss", "slippage", "seq_len", "initial_balance"
+                "BYPASS_MARKET_HOURS"
             }
             config_cache = getattr(self.config_manager, '_config_cache', {})
             default_settings = {

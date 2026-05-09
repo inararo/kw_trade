@@ -50,10 +50,8 @@ class DataCollector:
         self.login_success_event = asyncio.Event()
         self.first_data_received_event = asyncio.Event()
 
-        # Config에서 초기 심볼 등록 (start 시점에 구독하기 위해 저장만 함)
-        self._initial_symbols = [s.get('code') for s in config.get('universe', [{'code': '005930'}])]
-        if not self._initial_symbols:
-            self._initial_symbols = ['005930']
+        # 초기 심볼 리스트 (빈 상태로 시작, StrategyManager가 주입)
+        self._initial_symbols = []
 
         # 마지막 유효 현재가 및 등락률 저장용 (호가 패킷 등에 정보가 없을 때 사용)
         self.last_prices = {}
@@ -247,12 +245,8 @@ class DataCollector:
             self._initial_symbols = list(all_subs)
             self.logger.info(f"동기화: 총 {len(all_subs)}개 종목(유니버스+보유)으로 구독 리스트를 확정했습니다.")
 
-        # [안정화/복구] 초기 종목 구독 및 버퍼 초기화 (필수)
-        # subscribe_symbol은 버퍼를 생성하고 관리자에 등록합니다.
-        # 실제 웹소켓 전송은 내부의 if self.ws_connection 조건에 의해 연결 시점에만 수행됩니다.
-        self.logger.info(f"초기 종목 {len(self._initial_symbols)}개에 대해 수집 준비 및 구독을 시도합니다.")
-        for sym in self._initial_symbols:
-            await self.subscribe_symbol(sym)
+        # [🚨 중요] 더 이상 하드코딩된 종목을 구독하지 않습니다.
+        # StrategyManager가 보유 종목이나 조건검색 결과를 바탕으로 subscribe_symbol을 호출합니다.
 
         # Watchdog 태스크 시작
         self._watchdog_task = asyncio.create_task(self._watchdog())
@@ -337,46 +331,17 @@ class DataCollector:
                     self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
                     return
 
-                # LOGIN 성공 시에만 구독 진행
-                if not login_success:
+                # LOGIN 성공 시 즉시 조건검색식 목록 요청 (CNSRLST)
+                if login_success:
+                    await websocket.send(json.dumps({"trnm": "CNSRLST"}))
+                    self.logger.info("DataCollector: [WS SEND] CNSRLST 전송 (LOGIN 성공 연쇄)")
+                else:
                     return
 
-                symbols = self.subscription_manager.get_symbols()
-                if symbols:
-                    self.logger.info(f"초기 종목 {len(symbols)}개에 대해 일괄 구독(Batch)을 시작합니다.")
-                    try:
-                        clean_symbols = []
-                        # 1. 내부 버퍼 먼저 일괄 생성
-                        for sym in symbols:
-                            clean = sym.split('_')[0].strip()
-                            clean_symbols.append(clean)
-
-                            if sym not in self.feature_engineers:
-                                from core.feature_engineer import FeatureEngineer
-                                from env.normalizer import OnlineRollingNormalizer
-                                self.feature_engineers[sym] = FeatureEngineer(max_ticks=100)
-                                self.normalizers[sym] = OnlineRollingNormalizer(window_size=1000, bypass_indices=[2])
-                                self.state_buffers[sym] = deque(maxlen=self.max_buffer_size)
-                                self.tick_buffers[sym] = deque(maxlen=self.max_buffer_size)
-                                self.min1_buffers[sym] = deque(maxlen=self.max_buffer_size // 10)
-
-                        # 2. 단 한 번의 웹소켓 요청으로 20개 종목 통째로 구독!
-                        if self.is_running and self.ws_connection:
-                            msg = json.dumps({
-                                "trnm": "REG",
-                                "grp_no": "1",
-                                "refresh": "0",
-                                "data": [
-                                    {"type": ["0B"], "item": clean_symbols},  # 배열 형태로 20개 한방에 전송
-                                    {"type": ["0D"], "item": clean_symbols}
-                                ]
-                            })
-                            await self.ws_connection.send(msg)
-                            await asyncio.sleep(0.5)
-
-                        self.logger.info(f"일괄 구독 요청 완료: {clean_symbols[:5]} 등 {len(clean_symbols)}개 종목")
-                    except Exception as e:
-                        self.logger.error(f"일괄 구독 프로세스 중 오류 발생: {e}")
+                # [🚨 수정] 하드코딩된 초기 종목 일괄 구독 제거
+                # 이제 실시간 조건검색(CNSRREQ) 결과에 따라 StrategyManager가 동적으로 구독을 요청합니다.
+                # symbols = self.subscription_manager.get_symbols()
+                # if symbols: ... (삭제)
 
                 try:
                     async for message in websocket:
@@ -449,15 +414,29 @@ class DataCollector:
                 self.on_condition_message_callback(json.dumps(message_data))
                 
                 # CNSRLST 수신 시 자동으로 대상 조건식에 대해 CNSRREQ 요청
-                if trnm == "CNSRLST" and hasattr(self, "_target_condition_idx"):
+                if trnm == "CNSRLST":
                     data_list = message_data.get("data", [])
-                    target_seq = self._target_condition_idx
+                    target_seq = "0" # Default
+                    found = False
+                    
                     for item in data_list:
                         # 이름 매칭 시도 (AI스캘핑주도주)
-                        name = item[1] if isinstance(item, list) and len(item) >= 2 else item.get("name", "")
+                        name = ""
+                        seq = ""
+                        if isinstance(item, list) and len(item) >= 2:
+                            seq = str(item[0])
+                            name = str(item[1])
+                        elif isinstance(item, dict):
+                            seq = str(item.get("seq", ""))
+                            name = str(item.get("name", ""))
+                            
                         if name == "AI스캘핑주도주":
-                            target_seq = str(item[0] if isinstance(item, list) else item.get("seq"))
+                            target_seq = seq
+                            found = True
                             break
+                    
+                    if not found and hasattr(self, "_target_condition_idx"):
+                        target_seq = self._target_condition_idx
                     
                     req_payload = {
                         "trnm": "CNSRREQ",
@@ -466,7 +445,7 @@ class DataCollector:
                         "stex_tp": "K"      # KRX 거래소
                     }
                     await self.ws_connection.send(json.dumps(req_payload))
-                    self.logger.info(f"DataCollector: [WS SEND] CNSRREQ 전송 (seq={target_seq})")
+                    self.logger.info(f"DataCollector: [WS SEND] CNSRREQ 연쇄 전송 (seq={target_seq}, name=AI스캘핑주도주)")
             
             if message_data.get("return_code") is not None:
                 self.logger.info(f"WS API RESPONSE: {message_data.get('return_msg')} (Code: {message_data.get('return_code')})")

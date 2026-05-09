@@ -171,16 +171,6 @@ class LiveDashboardViewModel(QObject):
                 "avg_price": self.order_manager.avg_entry_prices.get(code, 0.0)
             }
 
-        # 6. 실시간 데이터 구독 및 매매 엔진 동기화 (전체 갱신이 아닌 변경분만 전달)
-        if to_add or to_remove:
-            # 실시간 시세 구독 업데이트 (DataCollector)
-            if hasattr(self.data_collector, 'update_subscriptions'):
-                asyncio.create_task(self.data_collector.update_subscriptions(to_add=list(to_add), to_remove=list(to_remove)))
-            
-            # 매매 엔진 동기화 (StrategyManager)
-            if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
-                asyncio.create_task(self.strategy_manager.update_engines(to_add=list(to_add), to_remove=list(to_remove)))
-
         # 7. UI 시그널 발생 (테이블 데이터가 변했음을 알림)
         self._ui_dirty = True
         if to_add or to_remove:
@@ -201,12 +191,7 @@ class LiveDashboardViewModel(QObject):
         if code in self.symbols_summary:
             if self.symbols_summary[code].get("holdings", 0) <= 0:
                 del self.symbols_summary[code]
-                # 실시간 구독 및 매매 엔진 해제
-                if hasattr(self.data_collector, 'update_subscriptions'):
-                    asyncio.create_task(self.data_collector.update_subscriptions(to_add=[], to_remove=[code]))
-                if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
-                    asyncio.create_task(self.strategy_manager.update_engines(to_add=[], to_remove=[code]))
-                self.logger.info(f"ViewModel: [{code}] 감시 리스트 및 엔진 제거 완료")
+                self.logger.info(f"ViewModel: [{code}] 감시 리스트 제거 완료 (엔진 제거는 StrategyManager 담당)")
             else:
                 self.logger.info(f"ViewModel: [{code}] 이탈 감지되었으나 보유 중이므로 리스트 유지")
             self._ui_dirty = True
@@ -239,13 +224,7 @@ class LiveDashboardViewModel(QObject):
                 }
                 to_add_codes.append(code)
         
-        # 초기 보유 종목 구독 및 엔진 가동
-        if to_add_codes:
-            if hasattr(self.data_collector, 'update_subscriptions'):
-                asyncio.create_task(self.data_collector.update_subscriptions(to_add=to_add_codes, to_remove=[]))
-            if self.strategy_manager and hasattr(self.strategy_manager, 'update_engines'):
-                asyncio.create_task(self.strategy_manager.update_engines(to_add=to_add_codes, to_remove=[]))
-
+        # 초기 보유 종목 UI 반영
         self._ui_dirty = True
 
     def append_log(self, msg: str):

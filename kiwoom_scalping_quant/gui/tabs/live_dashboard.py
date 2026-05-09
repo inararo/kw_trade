@@ -194,6 +194,7 @@ class LiveDashboardTab(QWidget):
         self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
         self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
         self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
+        self.live_thread.signal_snapshot_received.connect(self.view_model.update_universe_list)
 
     @pyqtSlot(bool)
     def on_monitoring_toggled(self, stopped: bool):

@@ -199,6 +199,19 @@ class QuantSystem:
         self.condition_worker.sig_symbol_inserted.connect(self.live_vm.add_to_universe)
         self.condition_worker.sig_symbol_deleted.connect(self.live_vm.remove_from_universe)
         self.condition_worker.sig_snapshot_received.connect(self.live_vm.update_universe_list)
+        
+        # [🚨 중요] 엔진(StrategyManager)과 UI(LiveDashboard)의 책임을 분리하여 연결
+        # UI는 모든 종목(31개+)을 보여주고, 엔진은 8슬롯 로직을 내부적으로 처리합니다.
+        self.condition_worker.sig_snapshot_received.connect(
+            lambda syms: asyncio.create_task(self.strategy_manager.handle_condition_snapshot(syms))
+        )
+        self.condition_worker.sig_symbol_inserted.connect(
+            lambda sym, data: asyncio.create_task(self.strategy_manager.handle_condition_insert(sym, data))
+        )
+        self.condition_worker.sig_symbol_deleted.connect(
+            lambda sym, data: asyncio.create_task(self.strategy_manager.handle_condition_delete(sym, data))
+        )
+        
         self.condition_worker.start()
 
         # [신규] 부팅 시 실시간 조건검색 모니터링 즉시 가동
@@ -294,8 +307,7 @@ class QuantSystem:
             "slippage", "seq_len", "initial_balance", "live_trading_model_type",
             "is_monitoring_active", "is_ai_trading_active", # [이동] system_status/engine으로 이동됨
             "last_updated_by_engine", # 시스템 관리용 타임스탬프 (yaml 저장 제외)
-            "live_trading_model_type", "max_buffer_size", "db_batch_size",
-            "global_max_loss", "slippage", "seq_len", "initial_balance"
+            "BYPASS_MARKET_HOURS"
         }
         # config_mgr에서 스칼라(int/float/str/bool) 값만 추려 업로드
         _default_settings = {
@@ -414,12 +426,14 @@ class QuantSystem:
 
         # [원격 제어 반영] 부팅 시 is_monitoring_active=False 였다면 장시간이라도 연결을 건너뜁니다.
         _remote_monitoring_off = getattr(self, "_remote_monitoring_off_at_boot", False)
+        system_config = self.container.system_config()
+        bypass = system_config.BYPASS_MARKET_HOURS
 
         if _remote_monitoring_off:
             print("[Firebase] 원격 제어: 종목 감시 OFF 상태로 부팅합니다. 웹소켓 연결을 보류합니다.")
             self.collector_task = None
-        elif final_boot_state in active_ws_states:
-            print(f"시스템: [Step 3] 장시간({final_boot_state}) 확인 - DataCollector 가동 및 웹소켓 연결 시작...")
+        elif final_boot_state in active_ws_states or bypass:
+            print(f"시스템: [Step 3] 장시간 확인(State={final_boot_state}, Bypass={bypass}) - DataCollector 가동 및 웹소켓 연결 시작...")
             self.collector_task = asyncio.create_task(self.data_collector.start())
         else:
             print(f"시스템: [Step 3] 장외 시간({final_boot_state})입니다. 웹소켓 연결을 차단하고 수면 모드로 전환합니다.")
