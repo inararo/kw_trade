@@ -320,17 +320,13 @@ class KiwoomBrokerWrapper:
                             elif trnm == "CNSRREQ":
                                 if str(response.get("return_code")) == "0":
                                     logger.info("✅ 조건검색 실시간 감시 등록 완료!")
-                                    # [수정] 초기 조건 만족 종목 리스트(Snapshot) 추출 및 편입
+                                    # [수정] 초기 조건 만족 종목 리스트(Snapshot) 추출
                                     jm_list = response.get("data", [])
                                     if isinstance(jm_list, list) and jm_list:
-                                        logger.info(f"📋 초기 조건 만족 종목 {len(jm_list)}개 편입 시퀀스 시작...")
-                                        for item in jm_list:
-                                            # item이 딕셔너리인 경우와 문자열인 경우 모두 대응
-                                            raw_code = item.get("jmcode", "") if isinstance(item, dict) else str(item)
-                                            clean_code = self._clean_code(raw_code)
-                                            if clean_code and self.on_condition_event:
-                                                # 편입('I') 이벤트로 처리하여 엔진에 주입
-                                                await self.on_condition_event(clean_code, "I", "초기스냅샷")
+                                        # [🚨 중요] 개별 편입 처리가 아닌 스냅샷 처리 호출 (8슬롯 제한 적용)
+                                        clean_codes = [self._clean_code(item.get("jmcode", "") if isinstance(item, dict) else str(item)) for item in jm_list]
+                                        if hasattr(self, 'on_snapshot_event') and self.on_snapshot_event:
+                                            await self.on_snapshot_event(clean_codes)
                                     else:
                                         logger.warning(f"⚠️ 초기 스냅샷 데이터가 비어있거나 올바르지 않습니다: {jm_list}")
                                 else:
@@ -354,6 +350,9 @@ class KiwoomBrokerWrapper:
                 except websockets.exceptions.ConnectionClosed as e:
                     logger.error(f"❌ 웹소켓 연결이 끊어졌습니다. ({e}) 5초 후 재접속을 시도합니다.")
                     await asyncio.sleep(5.0)
+                except asyncio.CancelledError:
+                    logger.info("🛑 [WS] 웹소켓 리스너가 취소되었습니다. (중지 요청)")
+                    break
                 except Exception as e:
                     logger.error(f"❌ 웹소켓 통신 중 오류 발생: {e}")
                     await asyncio.sleep(5.0)
@@ -471,7 +470,20 @@ async def main():
                     if last_states["is_monitoring_active"] != active:
                         last_states["is_monitoring_active"] = active
                         logger.info(f"[Firebase] 원격 제어: 종목 감시 {'재개' if active else '중지'}")
-                        # 실제 감시 중지 로직은 필요시 여기에 추가 (예: 웹소켓 재연결 또는 구독 해제)
+                        
+                        if active:
+                            if not broker_api.ws_running:
+                                # 웹소켓 루프 재가동
+                                global ws_task
+                                ws_task = asyncio.create_task(broker_api.ws_listener_loop(target_idx))
+                                logger.info("[Firebase] 📡 실시간 웹소켓 리스너를 재시작합니다.")
+                        else:
+                            if broker_api.ws_running:
+                                # 웹소켓 루프 중단 (사실상 종료 플래그 설정 및 태스크 취소)
+                                broker_api.ws_running = False
+                                if 'ws_task' in globals() and not ws_task.done():
+                                    ws_task.cancel()
+                                logger.warning("[Firebase] 📡 실시간 웹소켓 리스너가 중단되었습니다.")
                 
                 # 2. AI 매매 상태 변경 확인
                 if "is_ai_trading_active" in data:
@@ -497,6 +509,46 @@ async def main():
                         await firebase_manager.update_command_status(doc_id, "FAILED")
                         logger.error(f"❌ [Firebase] 긴급 청산 실패: {e}")
                 asyncio.run_coroutine_threadsafe(_execute(), loop)
+            
+            elif action == "PROGRAM_EXIT":
+                safety_token = data.get("safety_token", "")
+                liquidate_all = data.get("liquidate_all", False)
+                
+                # [🚨 보안] safety_token 검증 (기본값: EXIT_NOW)
+                if safety_token != "EXIT_NOW":
+                    logger.warning(f"⚠️ [Firebase] PROGRAM_EXIT 거부: 잘못된 safety_token ({safety_token})")
+                    asyncio.run_coroutine_threadsafe(firebase_manager.update_command_status(doc_id, "REJECTED_BAD_TOKEN"), loop)
+                    return
+
+                logger.critical(f"🛑 [Firebase] 프로그램 종료 명령 수신! (ID: {doc_id}, Liquidate: {liquidate_all})")
+                
+                async def _shutdown():
+                    try:
+                        # 1단계: AI 매매 진입 플래그 차단
+                        strategy_manager.set_ai_paused(True)
+                        logger.info("1. [Shutdown] AI 매매 진입이 차단되었습니다.")
+                        
+                        # 2단계: 미체결 주문 취소 및 선택적 전량 청산
+                        if liquidate_all:
+                            logger.warning("2. [Shutdown] 전량 시장가 매도(Liquidate All)를 시작합니다.")
+                            await order_manager.emergency_liquidate()
+                        else:
+                            logger.warning("2. [Shutdown] 모든 미체결 주문을 취소합니다.")
+                            await order_manager.cancel_all_orders()
+                        
+                        # 3단계: 상태 보고 및 종료
+                        await firebase_manager.update_command_status(doc_id, "COMPLETED")
+                        await firebase_manager.update_engine_status("OFFLINE")
+                        await firebase_manager.update_system_status("STOPPED")
+                        logger.info("✅ [Shutdown] 모든 종료 시퀀스가 완료되었습니다. 시스템을 종료합니다.")
+                        
+                        # 4단계: 프로세스 강제 종료
+                        os._exit(0) 
+                    except Exception as e:
+                        logger.error(f"❌ [Shutdown] 종료 시퀀스 중 오류: {e}")
+                        os._exit(1)
+                
+                asyncio.run_coroutine_threadsafe(_shutdown(), loop)
         firebase_manager.listen_to_commands(on_command_received)
 
     setup_firebase_listeners()
@@ -542,11 +594,14 @@ async def main():
     # 4-1. 조건검색 서비스 연동 및 콜백 바인딩
     condition_service.register_callbacks(
         on_insert=strategy_manager.handle_condition_insert,
-        on_delete=strategy_manager.handle_condition_delete
+        on_delete=strategy_manager.handle_condition_delete,
+        on_snapshot=strategy_manager.handle_condition_snapshot
     )
     
     # 웹소켓 리스너에서 메시지를 ConditionService로 전달하도록 설정
     broker_api.on_condition_ws_message = condition_service.handle_websocket_message
+    # [추가] 브로커 래퍼에 스냅샷 직접 콜백 연결 (ConditionService 거치지 않고 직접 호출도 가능하게)
+    broker_api.on_snapshot_event = strategy_manager.handle_condition_snapshot
 
     # 4-2. 틱 데이터 라우팅 (기존 유지)
     async def on_tick_ws_event(tick_data: dict):
@@ -581,17 +636,23 @@ async def main():
     # ConditionManager 내부 상태 업데이트
     await condition_manager.start_condition_monitoring(target_condition_name, target_idx)
 
-    tasks = [
-        asyncio.create_task(broker_api.ws_listener_loop(target_idx)),  # 웹소켓 펌프 루프
+    global ws_task
+    ws_task = asyncio.create_task(broker_api.ws_listener_loop(target_idx))
+    
+    # 5. 영구 실행 태스크 (이 태스크들이 종료되면 프로그램 종료)
+    main_tasks = [
         asyncio.create_task(strategy_manager.start())                  # 매매 엔진 워치독 및 웜업 루프
     ]
     
     # [Firebase] 하트비트 태스크 추가
     if getattr(firebase_manager, '_initialized', False):
-        tasks.append(asyncio.create_task(firebase_manager.start_heartbeat()))
+        main_tasks.append(asyncio.create_task(firebase_manager.start_heartbeat()))
 
     try:
-        await asyncio.gather(*tasks)
+        # 영구 태스크들만 감시 (ws_task는 Firebase 리스너에 의해 동적으로 가동/중단됨)
+        await asyncio.gather(*main_tasks)
+    except asyncio.CancelledError:
+        logger.info("메인 루프가 취소되었습니다.")
     except Exception as e:
         logger.error(f"❌ 메인 루프 실행 중 에러 발생: {e}")
     finally:
@@ -611,7 +672,10 @@ async def main():
         if 'strategy_manager' in locals():
             await strategy_manager.stop()
 
-        # 3. 기타 리소스 정리
+        # 3. 기타 리소스 정리 (웹소켓 포함)
+        if 'ws_task' in globals() and not ws_task.done():
+            ws_task.cancel()
+        
         if hasattr(data_collector, 'stop'):
             await data_collector.stop()
 

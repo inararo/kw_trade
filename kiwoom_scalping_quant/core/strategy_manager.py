@@ -520,7 +520,14 @@ class StrategyManager:
             
             for sym in symbols:
                 clean_sym = sym.split('_')[0]
-                if clean_sym in current_active or clean_sym in self.pending_universe_queue:
+                
+                # [🚨 중요] 이미 활성 슬롯에 있는 종목이라도, 데이터 수집기 재시작 시점일 수 있으므로 구독을 재확인합니다.
+                if clean_sym in current_active:
+                    if hasattr(self.data_collector, 'subscribe_symbol'):
+                        asyncio.create_task(self.data_collector.subscribe_symbol(clean_sym))
+                    continue
+                
+                if clean_sym in self.pending_universe_queue:
                     continue
                 
                 if len(current_active) + len(to_add_active) < self.MAX_CONCURRENT_STOCKS:
