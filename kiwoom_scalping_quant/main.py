@@ -530,30 +530,39 @@ class QuantSystem:
         self.firebase_manager.listen_to_settings(on_settings_changed)
 
         # ── 2. 엔진 제어 리스너 (is_monitoring_active, is_ai_trading_active) ────
+        last_engine_states = {
+            "is_monitoring_active": None,
+            "is_ai_trading_active": None
+        }
+
         def on_engine_status_changed(data: dict):
             def _apply():
                 # 종목 감시 원격 제어
                 if "is_monitoring_active" in data:
                     monitoring_active = data["is_monitoring_active"]
-                    if monitoring_active:
-                        if not self.data_collector.is_running:
-                            asyncio.create_task(self.data_collector.start())
-                            logging.info("[Firebase] 📡 원격 명령: 실시간 종목 감시를 재개합니다.")
-                    else:
-                        if self.data_collector.is_running:
-                            asyncio.create_task(self.data_collector.stop())
-                            logging.warning("[Firebase] 📡 원격 명령: 실시간 종목 감시가 중단되었습니다.")
-                    self.live_vm.sig_monitoring_stopped.emit(not monitoring_active)
+                    if last_engine_states["is_monitoring_active"] != monitoring_active:
+                        last_engine_states["is_monitoring_active"] = monitoring_active
+                        if monitoring_active:
+                            if not self.data_collector.is_running:
+                                asyncio.create_task(self.data_collector.start())
+                                logging.info("[Firebase] 📡 원격 명령: 실시간 종목 감시를 재개합니다.")
+                        else:
+                            if self.data_collector.is_running:
+                                asyncio.create_task(self.data_collector.stop())
+                                logging.warning("[Firebase] 📡 원격 명령: 실시간 종목 감시가 중단되었습니다.")
+                        self.live_vm.sig_monitoring_stopped.emit(not monitoring_active)
 
                 # AI 매매 원격 제어
                 if "is_ai_trading_active" in data:
                     ai_active = data["is_ai_trading_active"]
-                    sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
-                    if sm:
-                        sm.set_ai_paused(not ai_active)
-                        status = "재개" if ai_active else "일시정지"
-                        logging.info(f"[Firebase] 🤖 원격 명령: AI 매매 의사결정이 {status}되었습니다.")
-                    self.live_vm.sig_trading_paused.emit(not ai_active)
+                    if last_engine_states["is_ai_trading_active"] != ai_active:
+                        last_engine_states["is_ai_trading_active"] = ai_active
+                        sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
+                        if sm:
+                            sm.set_ai_paused(not ai_active)
+                            status = "재개" if ai_active else "일시정지"
+                            logging.info(f"[Firebase] 🤖 원격 명령: AI 매매 의사결정이 {status}되었습니다.")
+                        self.live_vm.sig_trading_paused.emit(not ai_active)
             loop.call_soon_threadsafe(_apply)
 
         self.firebase_manager.listen_to_engine_status(on_engine_status_changed)
@@ -584,6 +593,12 @@ class QuantSystem:
     def _on_market_state_changed(self, old_state: str, new_state: str):
         """스케줄러 상태 변경에 따른 웹소켓 자동 토글 (Event-Driven)"""
         active_ws_states = [MarketState.PREPARE, MarketState.TRADING, MarketState.CUTOFF, MarketState.LIQUIDATING]
+        
+        # [추가] 장외 시간 테스트 모드 활성화 시 자동 토글 비활성화
+        system_config = self.container.system_config()
+        if system_config.BYPASS_MARKET_HOURS:
+            logging.info(f"시스템: [알림] 장외 시간 테스트 모드(BYPASS) 활성화 중 - 상태 변경({new_state})에 의한 자동 토글을 무시합니다.")
+            return
         
         # 장 개시 (Inactive -> Active)
         if old_state not in active_ws_states and new_state in active_ws_states:

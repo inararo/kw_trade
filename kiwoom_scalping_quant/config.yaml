@@ -1,3 +1,4 @@
+BYPASS_MARKET_HOURS: false
 account_number: ''
 active_model_path: ./saved_models/bob/best_model_random_fine1.zip
 ai_buy_threshold: 0.63

@@ -1200,17 +1200,21 @@ class SettingsViewModel(QObject):
     connection_test_completed = pyqtSignal(bool, str) # (Success bool, Message)
     sig_menu_action_result = pyqtSignal(str, str) # title, message
 
-    def __init__(self, config_manager, influx_client):
+    def __init__(self, config_manager, influx_client, system_config=None):
         super().__init__()
         self.config_manager = config_manager
         self.influx_client = influx_client
+        self.system_config = system_config
         self.logger = logging.getLogger("SettingsViewModel")
 
     def load_settings(self):
         """ConfigManager를 통해 통합 설정을 로드하고 UI로 Emit합니다."""
         result = self.config_manager.load_config()
         if isinstance(result, Success):
-            self.settings_loaded.emit(result.unwrap())
+            data = result.unwrap()
+            if self.system_config:
+                data["BYPASS_MARKET_HOURS"] = self.system_config.BYPASS_MARKET_HOURS
+            self.settings_loaded.emit(data)
         else:
             self.save_failed.emit(f"설정 로드 실패: {result.failure()}")
 
@@ -1221,7 +1225,15 @@ class SettingsViewModel(QObject):
         """
         # ConfigManager의 최신 캐시 데이터를 UI로 전달
         full_config = self.config_manager.get_dict()
+        if self.system_config:
+            full_config["BYPASS_MARKET_HOURS"] = self.system_config.BYPASS_MARKET_HOURS
         self.settings_loaded.emit(full_config)
+
+    def toggle_bypass_market_hours(self, enabled: bool):
+        """장외 시간 테스트 모드 토글 및 즉시 저장"""
+        if self.system_config:
+            self.system_config.set_bypass_market_hours(enabled)
+            self.logger.info(f"SettingsViewModel: 장외 시간 테스트 모드 변경 -> {enabled}")
 
     def save_settings(self, updates: dict):
         """수정된 설정값들을 ConfigManager에 전달하여 저장합니다."""

@@ -17,8 +17,9 @@ class DataCollector:
     on_state_updated_callbacks = []
     on_execution_callbacks = [] # [신규] 체결/주문 상태 업데이트 콜백
 
-    def __init__(self, config):
+    def __init__(self, config, system_config=None):
         self.config = config
+        self.system_config = system_config
 
         self.ws_url = config.get_ws_url() if hasattr(config, 'get_ws_url') else config.get('ws_url', 'wss://mockapi.kiwoom.com:10000/api/dostk/websocket')
         self.max_buffer_size = config.get('max_buffer_size', 10000)
@@ -703,12 +704,14 @@ class DataCollector:
 
                 # 방어 로직 2: Market Scheduler 상태 확인 (장이 열려있을 때만)
                 scheduler = getattr(self.config, "_injected_scheduler", None)
+                bypass = getattr(self.system_config, "BYPASS_MARKET_HOURS", False)
+                
                 if scheduler:
                     from core.scheduler import MarketState
-                    if scheduler.current_state not in [MarketState.TRADING, MarketState.LIQUIDATING]:
+                    if scheduler.current_state not in [MarketState.TRADING, MarketState.LIQUIDATING] and not bypass:
                         # Log debug info periodically (every ~30s to avoid spam)
                         if int(time.time()) % 30 == 0:
-                            self.logger.info("장외 시간: Watchdog 대기 중")
+                            self.logger.info(f"장외 시간(테스트 모드={bypass}): Watchdog 대기 중")
 
                         # Reset last receive time to prevent immediate breaker when market opens
                         self.last_receive_time = time.time()

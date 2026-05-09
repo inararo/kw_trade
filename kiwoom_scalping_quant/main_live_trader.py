@@ -20,6 +20,7 @@ from core.risk_manager import RiskManager
 from core.strategy_manager import StrategyManager
 from core.condition_manager import ConditionManager
 from infrastructure.firebase_manager import FirebaseManager
+from core.config_service import SystemConfig
 
 # =====================================================================
 # 1. 키움증권 Open API (REST / WebSocket) 통신 래퍼
@@ -372,13 +373,14 @@ async def main():
 
     # 1. 코어 모듈 초기화
     config_manager = ConfigManager(config_path="config.yaml")
+    system_config = SystemConfig(config_path="config.yaml")
 
     # [추가] 로그 레벨 동적 적용
     log_level_str = config_manager.get("log_level", "INFO").upper()
     logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
     logger.info(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
 
-    data_collector = DataCollector(config_manager)
+    data_collector = DataCollector(config_manager, system_config=system_config)
     # [Shared Core] 서비스 초기화
     # 3. 비동기 통신 래퍼 초기화
     broker_api = KiwoomBrokerWrapper(
@@ -395,7 +397,7 @@ async def main():
     risk_manager = RiskManager(config_manager, order_manager)
     order_manager.risk_manager = risk_manager
     
-    strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager)
+    strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager, system_config=system_config)
     condition_manager = ConditionManager(config_manager, data_collector)
 
     # 1-1. Firebase 초기화 및 리스너 설정

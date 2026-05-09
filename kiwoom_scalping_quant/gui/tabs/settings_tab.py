@@ -202,6 +202,9 @@ class SettingsTab(QWidget):
         self.combo_log_level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         sys_form.addRow("로그 레벨:", self.combo_log_level)
 
+        self.chk_bypass_market = QCheckBox("장외 시간 테스트 모드 허용 (주말/야간용)")
+        sys_form.addRow("테스트 설정:", self.chk_bypass_market)
+
         system_group.setLayout(sys_form)
         left_column.addWidget(system_group) # [이동] 우측 -> 좌측
         
@@ -240,6 +243,9 @@ class SettingsTab(QWidget):
         self.view_model.save_completed.connect(self.on_save_completed, Qt.ConnectionType.QueuedConnection)
         self.view_model.save_failed.connect(self.on_error, Qt.ConnectionType.QueuedConnection)
         self.view_model.connection_test_completed.connect(self.on_connection_test_completed, Qt.ConnectionType.QueuedConnection)
+        
+        # [추가] 장외 시간 테스트 모드 토글 즉시 반영
+        self.chk_bypass_market.toggled.connect(self.view_model.toggle_bypass_market_hours)
 
     def _get_current_data(self):
         """UI에 입력된 값을 통합된 딕셔너리로 반환"""
@@ -334,6 +340,9 @@ class SettingsTab(QWidget):
         self.spin_sell_threshold.setValue(float(config.get("ai_sell_threshold", 0.60)))
         self.chk_strict_filter.setChecked(config.get("strict_filter_mode", False))
         self.spin_max_daily_rise.setValue(float(config.get("max_daily_rise_pct", 20.0)))
+        
+        # [추가] 장외 시간 테스트 모드 초기 상태
+        self.chk_bypass_market.setChecked(config.get("BYPASS_MARKET_HOURS", False))
 
     @pyqtSlot(str)
     def on_save_completed(self, msg: str):

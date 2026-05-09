@@ -16,8 +16,9 @@ class StrategyManager:
     여러 종목(Multi-Symbol)의 트레이딩을 동시에 오케스트레이션하는 관리자 클래스.
     이벤트 드리븐 구조로 설계되어 새로운 틱 데이터 수신 시에만 추론을 수행합니다.
     """
-    def __init__(self, config_manager, data_collector, order_manager, risk_manager):
+    def __init__(self, config_manager, data_collector, order_manager, risk_manager, system_config=None):
         self.config_manager = config_manager
+        self.system_config = system_config
         self.data_collector = data_collector
         self.order_manager = order_manager
         self.risk_manager = risk_manager
@@ -54,8 +55,9 @@ class StrategyManager:
         self._dashboard_task = None
 
     def set_ai_paused(self, paused: bool):
-        self.is_ai_paused = paused
-        self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
+        if self.is_ai_paused != paused:
+            self.is_ai_paused = paused
+            self.logger.info(f"StrategyManager: AI Trading is {'PAUSED' if paused else 'RESUMED'}")
 
     def _load_model_by_path(self, model_path: str) -> TradingAgentWrapper:
         """지정된 경로의 모델 파이을 다이렉트로 로드합니다."""
@@ -222,8 +224,10 @@ class StrategyManager:
         scheduler = getattr(self.config_manager, "_injected_scheduler", None)
         current_state = getattr(scheduler, "current_state", MarketState.IDLE)
 
-        if current_state == MarketState.TRADING:
-            self.logger.info("StrategyManager: 장중 부팅 - 종목별 순차 웜업(백그라운드)을 시작합니다.")
+        bypass = getattr(self.system_config, "BYPASS_MARKET_HOURS", False)
+
+        if current_state == MarketState.TRADING or bypass:
+            self.logger.info(f"StrategyManager: 장중 부팅(또는 테스트 모드={bypass}) - 종목별 순차 웜업(백그라운드)을 시작합니다.")
             # 기존에 큐에 들어간 엔진들이 있다면 워커가 시작되면서 처리함
         else:
             self.logger.info(f"StrategyManager: 장외 시간({current_state}) - 웜업을 생략합니다.")

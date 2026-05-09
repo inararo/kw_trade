@@ -18,6 +18,7 @@ from core.broker.rest_broker import RESTBrokerWrapper
 from core.account_service import AccountService
 from core.condition_service import ConditionService
 from infrastructure.firebase_manager import FirebaseManager
+from core.config_service import SystemConfig
 
 class Container(containers.DeclarativeContainer):
     """
@@ -27,6 +28,11 @@ class Container(containers.DeclarativeContainer):
 
     # Configuration provider
     config = providers.Configuration()
+
+    system_config = providers.Singleton(
+        SystemConfig,
+        config_path="config.yaml"
+    )
 
     config_manager = providers.Singleton(
         ConfigManager,
@@ -69,7 +75,8 @@ class Container(containers.DeclarativeContainer):
 
     data_collector = providers.Singleton(
         DataCollector,
-        config=config_manager
+        config=config_manager,
+        system_config=system_config
     )
 
     rest_broker_wrapper = providers.Singleton(
@@ -110,7 +117,8 @@ class Container(containers.DeclarativeContainer):
         config_manager=config_manager,
         data_collector=data_collector,
         order_manager=order_manager,
-        risk_manager=risk_manager
+        risk_manager=risk_manager,
+        system_config=system_config
     )
 
     condition_manager = providers.Singleton(
@@ -152,7 +160,8 @@ class Container(containers.DeclarativeContainer):
     settings_view_model = providers.Singleton(
         SettingsViewModel,
         config_manager=config_manager,
-        influx_client=influx_client
+        influx_client=influx_client,
+        system_config=system_config
     )
 
     ai_training_view_model = providers.Singleton(
