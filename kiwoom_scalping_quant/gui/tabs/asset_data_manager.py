@@ -66,7 +66,7 @@ class AssetDataManagerTab(QWidget):
         univ_ctrl_layout = QHBoxLayout()
         univ_ctrl_layout.addWidget(QLabel("수집 종목 수 (Top N):"))
         self.spin_top_n = QSpinBox()
-        self.spin_top_n.setRange(1, 100)
+        self.spin_top_n.setRange(1, 200)
         self.spin_top_n.setValue(20)
         self.spin_top_n.setMinimumSize(90, 30) # 너비와 높이를 충분히 확보
         self.spin_top_n.setStyleSheet("""

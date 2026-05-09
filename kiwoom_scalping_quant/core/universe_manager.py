@@ -398,11 +398,8 @@ class UniverseManager:
             if not self._is_valid_scalping_symbol(name, code):
                 continue
 
-            # 투자 한도 초과 종목 제외 필터링 (1주 가격이 한도보다 비싸면 매수 불가하므로 제외)
+            # [삭제] 투자 한도 초과 종목 제외 필터링 (사용자 요청으로 제거)
             price = stock.get("price", 0.0)
-            if price > 0 and price > max_invest_limit:
-                self.logger.info(f"필터링 제외: {name}({code}) - 투자 한도 초과 (현재가: {price:,.0f} / 한도: {max_invest_limit:,.0f})")
-                continue
             
             if price == 0:
                 # 가격 정보를 읽어오지 못했을 경우, 유니버스 소멸을 막기 위해 제외하지 않음
@@ -432,8 +429,8 @@ class UniverseManager:
 
             filtered_universe.append(stock)
 
-        # 2. 거래대금(Trading Value) 기준 내림차순 정렬
-        sorted_universe = sorted(filtered_universe, key=lambda x: x["trading_value"], reverse=True)
+        # 2. 거래량(Volume) 기준 내림차순 정렬
+        sorted_universe = sorted(filtered_universe, key=lambda x: x["volume"], reverse=True)
 
         # 3. Top N 선정
         top_universe = sorted_universe[:top_n]
