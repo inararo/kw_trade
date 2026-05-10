@@ -214,11 +214,35 @@ class QuantSystem:
         
         self.condition_worker.start()
 
+        # [신규] 부팅 시 시간에 따른 초기 조건식 결정
+        now_time = datetime.now().time()
+        switch_time_str = _cfg.get("SWITCH_TIME", "09:30:00")
+        try:
+            from datetime import time as dt_time
+            h, m, s = map(int, switch_time_str.split(':'))
+            t_switch = dt_time(h, m, s)
+        except:
+            from datetime import time as dt_time
+            t_switch = dt_time(9, 30, 0)
+
+        morning_cond = _cfg.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+        normal_cond = _cfg.get("COND_NAME_NORMAL", "AI스캘핑주도주")
+
+        if now_time >= t_switch:
+            initial_cond = normal_cond
+            self.logger.info(f"⏰ [GUI 부팅] 현재 시간({now_time})이 전환 시간({t_switch}) 이후입니다. '{initial_cond}'로 시작합니다.")
+        else:
+            initial_cond = morning_cond
+            self.logger.info(f"⏰ [GUI 부팅] 현재 시간({now_time})이 전환 시간({t_switch}) 이전입니다. '{initial_cond}'로 시작합니다.")
+
+        self.data_collector.target_condition_name = initial_cond
+        self._broker_api.target_condition_name = initial_cond
+
         # [신규] 부팅 시 실시간 조건검색 모니터링 즉시 가동
         async def start_monitoring():
             try:
                 # 1. 조건식 목록 조회 및 실시간 감시 시작 (통합 웹소켓 활용)
-                self.logger.info("🚀 통합 웹소켓을 통한 실시간 감시 가동: AI스캘핑주도주")
+                self.logger.info(f"🚀 통합 웹소켓을 통한 실시간 감시 가동: {initial_cond}")
                 # [🚨 중요] 이제 DataCollector의 웹소켓 하나로 틱 데이터와 조건검색을 동시에 처리합니다.
                 await self.data_collector.request_condition_list()
             except Exception as e:

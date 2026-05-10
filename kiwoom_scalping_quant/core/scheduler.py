@@ -270,6 +270,7 @@ class MarketScheduler:
     async def _schedule_loop(self):
         # [신규] 조건식 스위칭 관리 플래그
         switched_today = False
+        morning_reset_done = False
         last_date = None
 
         while self._is_running:
@@ -279,6 +280,7 @@ class MarketScheduler:
             # 날짜가 바뀌면 플래그 초기화
             if last_date != current_date:
                 switched_today = False
+                morning_reset_done = False
                 last_date = current_date
 
             new_state = self.determine_state(dt)
@@ -286,8 +288,8 @@ class MarketScheduler:
             if new_state != self.current_state:
                 await self._transition_state(self.current_state, new_state)
 
-            # [신규] 09:30 조건식 스위칭 로직
-            if new_state == MarketState.TRADING and not switched_today:
+            # [신규] 조건식 스위칭 로직 (09:00 장 시작 / 09:30 전환)
+            if new_state == MarketState.TRADING:
                 config_mgr = self.config_manager
                 if not config_mgr:
                     if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
@@ -300,13 +302,23 @@ class MarketScheduler:
                     try:
                         h, m, s = map(int, switch_time_str.split(':'))
                         t_switch = time(h, m, s)
-                        if dt.time() >= t_switch:
+                        
+                        # 1. 장 시작 시 초기화 (09:00 ~ 09:30 사이인 경우 장 시작 조건식으로)
+                        if not morning_reset_done:
+                            if dt.time() < t_switch:
+                                morning_cond = config_mgr.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+                                self.logger.warning(f"⏰ [시스템] 장 시작 - 초기 조건식 설정 ({morning_cond})")
+                                self.signals.condition_switched.emit(morning_cond)
+                            morning_reset_done = True
+
+                        # 2. 09:30 도달 시 전환
+                        if not switched_today and dt.time() >= t_switch:
                             normal_cond = config_mgr.get("COND_NAME_NORMAL", "AI스캘핑주도주")
                             self.logger.warning(f"⏰ [시스템] {switch_time_str} 도달 - 조건식 전환 시도 ({normal_cond})")
                             self.signals.condition_switched.emit(normal_cond)
                             switched_today = True
                     except Exception as e:
-                        self.logger.error(f"스위칭 시간 파싱 에러: {e}")
+                        self.logger.error(f"스위칭 로직 실행 중 에러: {e}")
 
             # Check every second
             await asyncio.sleep(1)

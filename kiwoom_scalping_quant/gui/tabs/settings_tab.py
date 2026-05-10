@@ -102,6 +102,26 @@ class SettingsTab(QWidget):
         db_group.setLayout(db_form)
         left_column.addWidget(db_group)
 
+        # [신규] 2.5 자동 조건 전환 Group (config.yaml)
+        switch_group = QGroupBox("자동 조건 전환 (스케줄러)")
+        switch_form = QFormLayout()
+
+        self.input_cond_morning = QLineEdit()
+        self.input_cond_morning.setPlaceholderText("예: AI스캘핑주도주장시작")
+        switch_form.addRow("장 시작 조건식:", self.input_cond_morning)
+
+        self.input_cond_normal = QLineEdit()
+        self.input_cond_normal.setPlaceholderText("예: AI스캘핑주도주")
+        switch_form.addRow("일반 매매 조건식:", self.input_cond_normal)
+
+        self.time_switch = QTimeEdit()
+        self.time_switch.setDisplayFormat("HH:mm:ss")
+        self.time_switch.setTime(QTime(9, 30, 0))
+        switch_form.addRow("조건식 전환 시간:", self.time_switch)
+
+        switch_group.setLayout(switch_form)
+        left_column.addWidget(switch_group)
+
         # 3. Risk Management Group (config.yaml)
         risk_group = QGroupBox("리스크 관리")
         risk_form = QFormLayout()
@@ -280,7 +300,11 @@ class SettingsTab(QWidget):
             "ai_buy_threshold": self.spin_buy_threshold.value(),
             "ai_sell_threshold": self.spin_sell_threshold.value(),
             "strict_filter_mode": self.chk_strict_filter.isChecked(),
-            "max_daily_rise_pct": self.spin_max_daily_rise.value()
+            "max_daily_rise_pct": self.spin_max_daily_rise.value(),
+            # [신규] 스케줄러 관련
+            "COND_NAME_MORNING": self.input_cond_morning.text().strip(),
+            "COND_NAME_NORMAL": self.input_cond_normal.text().strip(),
+            "SWITCH_TIME": self.time_switch.time().toString("HH:mm:ss")
         }
 
     # --- UI Action Handlers ---
@@ -341,6 +365,12 @@ class SettingsTab(QWidget):
         self.chk_strict_filter.setChecked(config.get("strict_filter_mode", False))
         self.spin_max_daily_rise.setValue(float(config.get("max_daily_rise_pct", 20.0)))
         
+        # [신규] 자동 조건 전환 초기 데이터
+        self.input_cond_morning.setText(config.get("COND_NAME_MORNING", "AI스캘핑주도주장시작"))
+        self.input_cond_normal.setText(config.get("COND_NAME_NORMAL", "AI스캘핑주도주"))
+        switch_time_str = config.get("SWITCH_TIME", "09:30:00")
+        self.time_switch.setTime(QTime.fromString(switch_time_str, "HH:mm:ss"))
+
         # [추가] 장외 시간 테스트 모드 초기 상태
         self.chk_bypass_market.setChecked(config.get("BYPASS_MARKET_HOURS", False))
 

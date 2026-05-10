@@ -628,8 +628,26 @@ async def main():
     order_manager.daily_realized_pnl = summary["today_realized_profit"]
     logger.info(f"📊 [SharedCore] 잔고 동기화 완료: {summary}")
 
-    # 조건식 고유 ID 조회 (REST API)
-    context["target_condition_name"] = config_manager.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+    # [신규] 현재 시간에 따른 초기 조건식 선택 로직
+    from datetime import datetime
+    current_time = datetime.now().time()
+    switch_time_str = config_manager.get("SWITCH_TIME", "09:30:00")
+    try:
+        t_switch = datetime.strptime(switch_time_str, "%H:%M:%S").time()
+    except:
+        t_switch = datetime.strptime("09:30:00", "%H:%M:%S").time()
+
+    morning_cond = config_manager.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+    normal_cond = config_manager.get("COND_NAME_NORMAL", "AI스캘핑주도주")
+
+    if current_time >= t_switch:
+        target_condition_name = normal_cond
+        logger.info(f"⏰ [부팅] 현재 시간({current_time})이 전환 시간({t_switch}) 이후입니다. '일반' 조건식({target_condition_name})으로 시작합니다.")
+    else:
+        target_condition_name = morning_cond
+        logger.info(f"⏰ [부팅] 현재 시간({current_time})이 전환 시간({t_switch}) 이전입니다. '장 시작' 조건식({target_condition_name})으로 시작합니다.")
+
+    context["target_condition_name"] = target_condition_name
     broker_api.target_condition_name = context["target_condition_name"]
     condition_dict = await broker_api.get_condition_list()
     context["target_idx"] = next((idx for idx, name in condition_dict.items() if name == context["target_condition_name"]), None)
