@@ -220,8 +220,7 @@ class QuantSystem:
                 # 1. 조건식 목록 조회 및 실시간 감시 시작 (통합 웹소켓 활용)
                 self.logger.info("🚀 통합 웹소켓을 통한 실시간 감시 가동: AI스캘핑주도주")
                 # [🚨 중요] 이제 DataCollector의 웹소켓 하나로 틱 데이터와 조건검색을 동시에 처리합니다.
-                target_idx = "0" # DataCollector 내부에서 이름으로 매칭 시도함
-                await self.data_collector.start_condition_monitoring(target_idx)
+                await self.data_collector.request_condition_list()
             except Exception as e:
                 self.logger.error(f"❌ 부팅 시 모니터링 가동 실패: {e}")
 
@@ -456,6 +455,14 @@ class QuantSystem:
         # [안정화] 모든 부팅 단계가 완료된 후 장 상태 변경 리스너를 연결합니다.
         # 이제부터 시장 상태가 변할 때만 웹소켓이 자동으로 토글됩니다.
         self.market_scheduler.signals.state_changed.connect(self._on_market_state_changed)
+        
+        # [신규] 조건식 스위칭 시그널 연결
+        self.market_scheduler.signals.condition_switched.connect(
+            lambda name: asyncio.create_task(self.strategy_manager.switch_condition(name))
+        )
+        # StrategyManager에서 스위칭 완료 시 UI 갱신을 위한 콜백 등록
+        self.strategy_manager.on_condition_switched_callbacks.append(self._on_condition_switched_ui)
+
         self._setup_firebase_listeners()
         print("시스템: [Step 4] 장 상태 모니터링 및 Firebase 원격 제어 가동 시작.")
 
@@ -636,6 +643,23 @@ class QuantSystem:
                     is_monitoring_active=False,
                     is_ai_trading_active=not self.strategy_manager.is_ai_paused
                 ))
+
+    def _on_condition_switched_ui(self, new_name: str):
+        """조건식 스위칭 시 UI 업데이트 및 로그 출력"""
+        msg = f"🔄 [조건식 전환] {new_name} 모드로 전환되었습니다."
+        self.logger.info(msg)
+        
+        # 1. 라이브 대시보드 로그 출력
+        if hasattr(self, 'live_vm'):
+            self.live_vm.sig_log_appended.emit(f"⏰ {msg}")
+            
+        # 2. 메인 윈도우 상태바 업데이트
+        if self.main_window and hasattr(self.main_window, 'statusBar'):
+            self.main_window.statusBar().showMessage(msg, 10000)
+            
+        # 3. 탭별 레이블 업데이트 (있을 경우)
+        if hasattr(self.main_window, 'tab_live') and hasattr(self.main_window.tab_live, 'lbl_condition_name'):
+            self.main_window.tab_live.lbl_condition_name.setText(f"현재 조건식: {new_name}")
 
     async def stop(self):
         """시스템 안전 종료 파이프라인 (비동기)"""

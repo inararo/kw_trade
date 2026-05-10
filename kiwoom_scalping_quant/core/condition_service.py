@@ -53,28 +53,43 @@ class ConditionService:
                 if code:
                     symbols.append(code.lstrip("A"))
 
+        import asyncio
         self.logger.info(f"📋 조건검색 스냅샷 수신: {len(symbols)} 종목")
         self.current_symbols = set(symbols)
         for cb in self.on_snapshot:
-            cb(list(self.current_symbols))
+            if asyncio.iscoroutinefunction(cb):
+                asyncio.create_task(cb(list(self.current_symbols)))
+            else:
+                try: cb(list(self.current_symbols))
+                except Exception as e: self.logger.error(f"Snapshot callback error: {e}")
 
     def _handle_insert(self, data: Dict[str, Any]):
         """실시간 종목 편입 처리"""
+        import asyncio
         symbol = data.get("symbol", "").lstrip("A")
         if symbol and symbol not in self.current_symbols:
             self.logger.info(f"🔔 [편입] {symbol}")
             self.current_symbols.add(symbol)
             for cb in self.on_insert:
-                cb(symbol, data)
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(symbol, data))
+                else:
+                    try: cb(symbol, data)
+                    except Exception as e: self.logger.error(f"Insert callback error: {e}")
 
     def _handle_delete(self, data: Dict[str, Any]):
         """실시간 종목 이탈 처리"""
+        import asyncio
         symbol = data.get("symbol", "").lstrip("A")
         if symbol in self.current_symbols:
             self.logger.info(f"🔕 [이탈] {symbol}")
             self.current_symbols.remove(symbol)
             for cb in self.on_delete:
-                cb(symbol, data)
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(symbol, data))
+                else:
+                    try: cb(symbol, data)
+                    except Exception as e: self.logger.error(f"Delete callback error: {e}")
 
     def register_callbacks(self, on_insert=None, on_delete=None, on_snapshot=None):
         if on_insert: self.on_insert.append(on_insert)

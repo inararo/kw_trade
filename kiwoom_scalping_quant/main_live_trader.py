@@ -21,6 +21,7 @@ from core.strategy_manager import StrategyManager
 from core.condition_manager import ConditionManager
 from infrastructure.firebase_manager import FirebaseManager
 from core.config_service import SystemConfig
+from core.scheduler import MarketScheduler, MarketState
 
 # =====================================================================
 # 1. 키움증권 Open API (REST / WebSocket) 통신 래퍼
@@ -42,6 +43,10 @@ class KiwoomBrokerWrapper:
         
         # [Shared Core] 콜백 라우팅용
         self.on_condition_ws_message = None
+        
+        # [신규] 조건식 스위칭 관련
+        self.target_condition_name = "AI스캘핑주도주장시작"
+        self._ws_instance = None # [추가] 실시간 메시지 전송용
 
     # ------------------ REST API (aiohttp) ------------------
     async def login(self):
@@ -95,15 +100,13 @@ class KiwoomBrokerWrapper:
                 async with session.get(endpoint, headers=headers, timeout=5) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        # 서버 응답 구조에 맞게 파싱 필요, 임시로 데이터 반환
-                        logger.info(f"✅ 조건식 목록 수신 완료 ({len(data)}개 항목)")
-                        return data.get("conditions", {"001": "AI스캘핑주도주", "002": "수급단타"})
+                        return data.get("conditions", {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"})
                     else:
                         logger.error(f"❌ 조건식 조회 HTTP 에러: {resp.status}")
-                        return {"001": "AI스캘핑주도주", "002": "수급단타"} # Fallback
+                        return {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"} # Fallback
         except Exception as e:
             logger.error(f"❌ 조건식 조회 통신 에러: {e}")
-            return {"001": "AI스캘핑주도주", "002": "수급단타"} # Fallback
+            return {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"} # Fallback
 
     async def send_order(self, action: int, symbol: str, price: float, qty: int):
         """키움 주식주문 TR (KOA) 전송"""
@@ -262,6 +265,7 @@ class KiwoomBrokerWrapper:
                 try:
                     logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
                     async with websockets.connect(self.ws_url, ping_interval=None) as ws:
+                        self._ws_instance = ws
                         logger.info("✅ 웹소켓 서버 접속 성공!")
                         
                         # 1. 인증(LOGIN)
@@ -298,14 +302,30 @@ class KiwoomBrokerWrapper:
                                 
                                 # 대상 조건식 고유번호(seq) 찾기 (이름으로 매칭, 없으면 파라미터 값 사용)
                                 target_seq = target_condition_idx
+                                
+                                # [Fuzzy Matching] 'ㅐ'와 'ㅔ'의 맞춤법 차이 허용 (키움 서버마다 다를 수 있음)
+                                def clean_name(n):
+                                    return n.replace(" ", "").replace("스켈핑", "스캘핑")
+
+                                search_target = clean_name(self.target_condition_name)
+                                
                                 for item in data_list:
-                                    # 구조: [seq, name] 또는 {"seq": ..., "name": ...} 대비
                                     if isinstance(item, list) and len(item) >= 2:
-                                        if item[1] == "AI스캘핑주도주":
+                                        curr_name = str(item[1])
+                                        if clean_name(curr_name) == search_target:
                                             target_seq = str(item[0])
+                                            break
                                     elif isinstance(item, dict):
-                                        if item.get("name") == "AI스캘핑주도주":
-                                            target_seq = str(item.get("seq"))
+                                        curr_name = str(item.get("name", ""))
+                                        if clean_name(curr_name) == search_target:
+                                            target_seq = str(item.get("seq", ""))
+                                            break
+                                
+                                # [보정] seq가 "001" 등일 경우 "1"로 변환 (일부 서버 대응)
+                                try:
+                                    target_seq = str(int(target_seq))
+                                except:
+                                    pass
                                 
                                 # 실시간 조건검색 등록(CNSRREQ)
                                 req_payload = {
@@ -358,7 +378,19 @@ class KiwoomBrokerWrapper:
                     await asyncio.sleep(5.0)
         finally:
             self.ws_running = False
+            self._ws_instance = None
             logger.warning("🛑 [WS] 웹소켓 리스너가 종료되었습니다.")
+
+    async def request_condition_list(self):
+        """[신규] 실시간으로 조건식 목록 요청을 보냅니다 (스위칭용)"""
+        if self._ws_instance:
+            try:
+                await self._ws_instance.send(json.dumps({"trnm": "CNSRLST"}))
+                logger.info(f"✉️ [WS SEND] CNSRLST 전송 (스위칭 요청: {self.target_condition_name})")
+                return True
+            except Exception as e:
+                logger.error(f"❌ 스위칭 요청 전송 실패: {e}")
+        return False
 
 
 # =====================================================================
@@ -399,6 +431,19 @@ async def main():
     strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager, system_config=system_config)
     condition_manager = ConditionManager(config_manager, data_collector)
 
+    # [신규] 스케줄러 초기화 및 조건식 스위칭 연동
+    market_scheduler = MarketScheduler(config=config_manager)
+    market_scheduler.signals.condition_switched.connect(
+        lambda name: asyncio.create_task(strategy_manager.switch_condition(name))
+    )
+    # 스위칭 완료 시 콘솔 로그 출력 및 브로커 API 연동을 위한 콜백 등록
+    async def _on_switch(name):
+        logger.critical(f"🔔 [TERMINAL] 조건식 스위칭 감지 -> {name}")
+        broker_api.target_condition_name = name
+        await broker_api.request_condition_list()
+
+    strategy_manager.on_condition_switched_callbacks.append(_on_switch)
+
     # 1-1. Firebase 초기화 및 리스너 설정
     firebase_manager = FirebaseManager(config_manager)
     config_manager.firebase_manager = firebase_manager
@@ -430,7 +475,12 @@ async def main():
         logger.info("✅ [Firebase] 부팅 상태 보고 및 기본 설정 업로드 완료")
 
     # [Firebase] 실시간 리스너 설정 (클로저를 활용해 현재 루프 및 매니저들과 연동)
-    loop = asyncio.get_running_loop()
+    # [공통] 공유 컨텍스트 (클로저 NameError 방지 및 상태 공유용)
+    context = {
+        "target_idx": "0",
+        "target_condition_name": config_manager.get("COND_NAME_MORNING", "AI스캘핑주도주장시작"),
+        "loop": asyncio.get_running_loop()
+    }
     
     # 상태 변경 여부 확인을 위한 캐시 변수
     last_states = {
@@ -456,9 +506,9 @@ async def main():
                             logging.getLogger().setLevel(getattr(logging, new_level, logging.INFO))
                             logger.info(f"🔧 [Firebase] 로그 레벨이 {new_level}로 변경되었습니다.")
                             
-                        asyncio.run_coroutine_threadsafe(firebase_manager.report_settings_applied(), loop)
+                        asyncio.run_coroutine_threadsafe(firebase_manager.report_settings_applied(), context["loop"])
                         logger.info(f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}")
-            loop.call_soon_threadsafe(_apply)
+            context["loop"].call_soon_threadsafe(_apply)
         firebase_manager.listen_to_settings(on_settings_changed)
 
         # 리스너 2: 엔진 제어 (모니터링, AI 매매)
@@ -475,8 +525,8 @@ async def main():
                             if not broker_api.ws_running:
                                 # 웹소켓 루프 재가동
                                 global ws_task
-                                ws_task = asyncio.create_task(broker_api.ws_listener_loop(target_idx))
-                                logger.info("[Firebase] 📡 실시간 웹소켓 리스너를 재시작합니다.")
+                                ws_task = asyncio.create_task(broker_api.ws_listener_loop(context["target_idx"]))
+                                logger.info(f"[Firebase] 📡 실시간 웹소켓 리스너를 재시작합니다. (Target: {context['target_idx']})")
                         else:
                             if broker_api.ws_running:
                                 # 웹소켓 루프 중단 (사실상 종료 플래그 설정 및 태스크 취소)
@@ -492,7 +542,7 @@ async def main():
                         last_states["is_ai_trading_active"] = active
                         strategy_manager.set_ai_paused(not active)
                         logger.info(f"🤖 [Firebase] 원격 제어: AI 매매 {'재개' if active else '일시정지'}")
-            loop.call_soon_threadsafe(_apply)
+            context["loop"].call_soon_threadsafe(_apply)
         firebase_manager.listen_to_engine_status(on_engine_status_changed)
 
         # 리스너 3: 긴급 명령 (전량 청산)
@@ -548,7 +598,7 @@ async def main():
                         logger.error(f"❌ [Shutdown] 종료 시퀀스 중 오류: {e}")
                         os._exit(1)
                 
-                asyncio.run_coroutine_threadsafe(_shutdown(), loop)
+                asyncio.run_coroutine_threadsafe(_shutdown(), context["loop"])
         firebase_manager.listen_to_commands(on_command_received)
 
     setup_firebase_listeners()
@@ -579,13 +629,14 @@ async def main():
     logger.info(f"📊 [SharedCore] 잔고 동기화 완료: {summary}")
 
     # 조건식 고유 ID 조회 (REST API)
-    target_condition_name = "AI스캘핑주도주"
+    context["target_condition_name"] = config_manager.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+    broker_api.target_condition_name = context["target_condition_name"]
     condition_dict = await broker_api.get_condition_list()
-    target_idx = next((idx for idx, name in condition_dict.items() if name == target_condition_name), None)
+    context["target_idx"] = next((idx for idx, name in condition_dict.items() if name == context["target_condition_name"]), None)
 
-    if not target_idx:
-        logger.error(f"❌ '{target_condition_name}' 조건식을 찾을 수 없습니다. 시스템을 종료합니다.")
-        return
+    if not context["target_idx"]:
+        logger.warning(f"⚠️ '{context['target_condition_name']}' 인덱스를 REST로 찾지 못했습니다. 웹소켓(CNSRLST)에서 자동 탐색을 시도합니다.")
+        context["target_idx"] = "0" # Default or placeholder
 
     # =====================================================================
     # 4. WebSocket 라우팅 콜백 바인딩
@@ -634,14 +685,15 @@ async def main():
     logger.info("⚙️ 메인 트레이딩 파이프라인 및 웹소켓 리스너 가동...")
     
     # ConditionManager 내부 상태 업데이트
-    await condition_manager.start_condition_monitoring(target_condition_name, target_idx)
+    await condition_manager.start_condition_monitoring(context["target_condition_name"], context["target_idx"])
 
     global ws_task
-    ws_task = asyncio.create_task(broker_api.ws_listener_loop(target_idx))
+    ws_task = asyncio.create_task(broker_api.ws_listener_loop(context["target_idx"]))
     
     # 5. 영구 실행 태스크 (이 태스크들이 종료되면 프로그램 종료)
     main_tasks = [
-        asyncio.create_task(strategy_manager.start())                  # 매매 엔진 워치독 및 웜업 루프
+        asyncio.create_task(strategy_manager.start()),                 # 매매 엔진 워치독 및 웜업 루프
+        asyncio.create_task(market_scheduler.start())                  # [신규] 장 상태 및 조건식 스위칭 스케줄러
     ]
     
     # [Firebase] 하트비트 태스크 추가

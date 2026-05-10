@@ -52,7 +52,11 @@ class StrategyManager:
         # [신규] 순차 웜업 큐 및 워커
         self._warmup_queue = asyncio.Queue()
         self._warmup_worker_task = None
+        self._warmup_worker_task = None
         self._dashboard_task = None
+        
+        # [신규] 조건식 스위칭 이벤트 콜백
+        self.on_condition_switched_callbacks: List[Callable] = []
 
     def set_ai_paused(self, paused: bool):
         if self.is_ai_paused != paused:
@@ -636,3 +640,36 @@ class StrategyManager:
             
             if hasattr(self.data_collector, 'unsubscribe_symbol'):
                 await self.data_collector.unsubscribe_symbol(symbol)
+
+    async def switch_condition(self, new_name: str):
+        """
+        [Shared Core] 지정된 시간에 조건식을 스위칭합니다.
+        1. 기존 대기열 비우기 (활성 8슬롯은 유지)
+        2. 데이터 수집기에 새 조건명 주입
+        3. 새 조건식 서버 요청 (CNSRLST -> CNSRREQ)
+        """
+        self.logger.critical(f"🚀 [시스템 스위칭] 조건식 변경 시작: {self.data_collector.target_condition_name} ➡️ {new_name}")
+        
+        async with self._swap_lock:
+            # 1. 대기열 비우기 (기존 조건식의 대기 종목들은 더 이상 유효하지 않음)
+            old_queue_count = len(self.pending_universe_queue)
+            self.pending_universe_queue.clear()
+            self.logger.info(f"StrategyManager: 기존 대기열({old_queue_count}개)을 초기화했습니다.")
+
+            # 2. 데이터 수집기에 새 조건명 설정
+            if hasattr(self.data_collector, 'target_condition_name'):
+                self.data_collector.target_condition_name = new_name
+            
+            # 3. 서버에 새 조건식 목록 및 실시간 감시 요청
+            if hasattr(self.data_collector, 'request_condition_list'):
+                await self.data_collector.request_condition_list()
+            
+            # 4. 외부 콜백 호출 (UI 갱신 등)
+            for cb in self.on_condition_switched_callbacks:
+                if asyncio.iscoroutinefunction(cb):
+                    asyncio.create_task(cb(new_name))
+                else:
+                    try: cb(new_name)
+                    except: pass
+        
+        self.logger.info(f"✅ [시스템 스위칭] {new_name} 모드로 전환 완료.")

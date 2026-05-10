@@ -38,7 +38,10 @@ class SystemConfig:
                 data = yaml.safe_load(f)
                 if data:
                     self.BYPASS_MARKET_HOURS = data.get("BYPASS_MARKET_HOURS", False)
-                    self.logger.info(f"시스템 설정 로드 완료: BYPASS_MARKET_HOURS={self.BYPASS_MARKET_HOURS}")
+                    self.COND_NAME_MORNING = data.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+                    self.COND_NAME_NORMAL = data.get("COND_NAME_NORMAL", "AI스캘핑주도주")
+                    self.SWITCH_TIME = data.get("SWITCH_TIME", "09:30:00")
+                    self.logger.info(f"시스템 설정 로드 완료: BYPASS_MARKET_HOURS={self.BYPASS_MARKET_HOURS}, Switch={self.SWITCH_TIME}")
         except Exception as e:
             self.logger.error(f"시스템 설정 로드 중 오류 발생: {e}")
 

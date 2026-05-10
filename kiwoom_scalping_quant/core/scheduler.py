@@ -6,6 +6,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 class SchedulerSignals(QObject):
     state_changed = pyqtSignal(str, str) # old_state, new_state
+    condition_switched = pyqtSignal(str) # new_condition_name
 
 class MarketState:
     IDLE = "IDLE"           # 휴장 또는 야간
@@ -22,9 +23,10 @@ class MarketScheduler:
     한국 거래소(KRX) 시간에 맞춰 시스템 상태를 제어하는 스케줄러.
     주말/휴장일 처리 및 강제 시간 조절(디버깅) 기능을 지원합니다.
     """
-    def __init__(self, data_collector=None, order_manager=None, universe_manager=None, telegram_bot=None, firebase_manager=None):
+    def __init__(self, data_collector=None, order_manager=None, universe_manager=None, telegram_bot=None, firebase_manager=None, config=None):
         self.logger = logging.getLogger("MarketScheduler")
         self.signals = SchedulerSignals()
+        self.config_manager = config
 
         self.data_collector = data_collector
         self.order_manager = order_manager
@@ -68,11 +70,14 @@ class MarketScheduler:
 
     def determine_state(self, dt: datetime) -> str:
         if self.current_state == MarketState.STOPPED_FOR_DAY:
-            # Remain stopped for the rest of the day.
-            # To reset, the system must be restarted the next day.
             return MarketState.STOPPED_FOR_DAY
 
-        if self.is_holiday_or_weekend(dt):
+        # [수정] 장외 테스트 모드(BYPASS_MARKET_HOURS)일 경우 주말/공휴일 체크를 건너뜁니다.
+        bypass_on = False
+        if self.config_manager and self.config_manager.get("BYPASS_MARKET_HOURS", False):
+            bypass_on = True
+
+        if not bypass_on and self.is_holiday_or_weekend(dt):
             return MarketState.IDLE
 
         current_time = dt.time()
@@ -263,12 +268,45 @@ class MarketScheduler:
             self.logger.info("Post-Market: 장 종료 및 정산 시점입니다. (자동 수집 생략)")
 
     async def _schedule_loop(self):
+        # [신규] 조건식 스위칭 관리 플래그
+        switched_today = False
+        last_date = None
+
         while self._is_running:
             dt = self.get_current_time()
+            current_date = dt.date()
+            
+            # 날짜가 바뀌면 플래그 초기화
+            if last_date != current_date:
+                switched_today = False
+                last_date = current_date
+
             new_state = self.determine_state(dt)
 
             if new_state != self.current_state:
                 await self._transition_state(self.current_state, new_state)
+
+            # [신규] 09:30 조건식 스위칭 로직
+            if new_state == MarketState.TRADING and not switched_today:
+                config_mgr = self.config_manager
+                if not config_mgr:
+                    if self.universe_manager and hasattr(self.universe_manager, 'config_manager'):
+                        config_mgr = self.universe_manager.config_manager
+                    elif self.order_manager and hasattr(self.order_manager, 'config'):
+                        config_mgr = self.order_manager.config
+
+                if config_mgr:
+                    switch_time_str = config_mgr.get("SWITCH_TIME", "09:30:00")
+                    try:
+                        h, m, s = map(int, switch_time_str.split(':'))
+                        t_switch = time(h, m, s)
+                        if dt.time() >= t_switch:
+                            normal_cond = config_mgr.get("COND_NAME_NORMAL", "AI스캘핑주도주")
+                            self.logger.warning(f"⏰ [시스템] {switch_time_str} 도달 - 조건식 전환 시도 ({normal_cond})")
+                            self.signals.condition_switched.emit(normal_cond)
+                            switched_today = True
+                    except Exception as e:
+                        self.logger.error(f"스위칭 시간 파싱 에러: {e}")
 
             # Check every second
             await asyncio.sleep(1)

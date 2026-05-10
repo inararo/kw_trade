@@ -64,6 +64,9 @@ class DataCollector:
         self._symbol_map = {}
         self._update_symbol_map()
 
+        # [신규] 조건식 스위칭 관련 상태
+        self.target_condition_name = config.get("COND_NAME_MORNING", "AI스캘핑주도주장시작")
+        
         # 자신이 태어나면 전역 변수에 자신을 등록
         global global_data_collector_instance
         global_data_collector_instance = self
@@ -391,17 +394,16 @@ class DataCollector:
             self.ws_connection = None
             self.logger.info("DataCollector: WebSocket 상태가 초기화되었습니다.")
 
-    async def start_condition_monitoring(self, target_idx: str):
-        """실시간 조건검색 모니터링을 위한 초기 요청을 전송합니다."""
+    async def request_condition_list(self):
+        """서버에 조건식 목록(CNSRLST)을 요청합니다. (이후 로직에 의해 자동 CNSRREQ 연계)"""
         if self.is_running and self.ws_connection and self.ws_connection.open:
             try:
-                await asyncio.wait_for(self.login_success_event.wait(), timeout=10.0)
-                # 1. 조건검색식 목록 요청 (CNSRLST)
                 await self.ws_connection.send(json.dumps({"trnm": "CNSRLST"}))
-                self.logger.info("DataCollector: [WS SEND] CNSRLST 전송 완료")
-                self._target_condition_idx = target_idx # 저장을 해두어 리스트 수신 후 자동 요청에 사용
+                self.logger.info("DataCollector: [WS SEND] CNSRLST 전송 (수동 요청)")
+                return True
             except Exception as e:
-                self.logger.error(f"DataCollector: 조건검색 모니터링 시작 실패: {e}")
+                self.logger.error(f"DataCollector: CNSRLST 전송 실패: {e}")
+        return False
 
     async def _process_tick(self, message_data):
         """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
@@ -419,6 +421,12 @@ class DataCollector:
                     target_seq = "0" # Default
                     found = False
                     
+                    # [Fuzzy Matching] 'ㅐ'와 'ㅔ'의 맞춤법 차이 허용
+                    def clean_name(n):
+                        return str(n).replace(" ", "").replace("스켈핑", "스캘핑")
+                    
+                    search_target = clean_name(self.target_condition_name)
+
                     for item in data_list:
                         # 이름 매칭 시도 (AI스캘핑주도주)
                         name = ""
@@ -430,8 +438,8 @@ class DataCollector:
                             seq = str(item.get("seq", ""))
                             name = str(item.get("name", ""))
                             
-                        if name == "AI스캘핑주도주":
-                            target_seq = seq
+                        if clean_name(name) == search_target:
+                            target_seq = str(int(seq)) # [보정] 001 -> 1
                             found = True
                             break
                     
@@ -445,7 +453,7 @@ class DataCollector:
                         "stex_tp": "K"      # KRX 거래소
                     }
                     await self.ws_connection.send(json.dumps(req_payload))
-                    self.logger.info(f"DataCollector: [WS SEND] CNSRREQ 연쇄 전송 (seq={target_seq}, name=AI스캘핑주도주)")
+                    self.logger.info(f"DataCollector: [WS SEND] CNSRREQ 연쇄 전송 (seq={target_seq}, name={self.target_condition_name})")
             
             if message_data.get("return_code") is not None:
                 self.logger.info(f"WS API RESPONSE: {message_data.get('return_msg')} (Code: {message_data.get('return_code')})")

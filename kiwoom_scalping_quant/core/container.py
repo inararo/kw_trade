@@ -134,7 +134,8 @@ class Container(containers.DeclarativeContainer):
         order_manager=order_manager,
         universe_manager=universe_manager,
         telegram_bot=telegram_notifier,
-        firebase_manager=firebase_manager
+        firebase_manager=firebase_manager,
+        config=config_manager
     )
 
     # Presentation Layer - ViewModels (싱글톤으로 전환하여 상태 및 콜백 일관성 유지)
