@@ -430,12 +430,12 @@ class LiveTradingEngine:
         if action in (1, 2):  # 매수 계열
             confidence = probs[action]
             if float(confidence) >= buy_threshold:
-                self.logger.error(
+                print(
                     f"[🔥 매수 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
                     f" | (매수확신: {buy_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
-                self.logger.error(
+                print(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -443,12 +443,12 @@ class LiveTradingEngine:
         elif action in (3, 4):  # 매도 계열
             confidence = probs[action]
             if float(confidence) >= sell_threshold:
-                self.logger.error(
+                print(
                     f"[📉 매도 포착{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} {int(confidence*100)}%"
                     f" | (매도확신: {sell_conf}%) | ➡️ API 주문 전송!"
                 )
             else:
-                self.logger.error(
+                print(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: {ACTION_LABELS[action]} (임계값 미달)"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -458,10 +458,10 @@ class LiveTradingEngine:
             if buy_conf >= int(buy_threshold * 100) and filter_reasons:
                 reason_str = ", ".join(filter_reasons)
                 msg = f"[🚫 필터 차단{status_tag}] {self.symbol} | 매수확신 {buy_conf}% ➡️ Hold 변환 (사유: {reason_str})"
-                self.logger.error(msg)
+                print(msg)
                 self._ui_log(msg)
             else:
-                self.logger.error(
+                print(
                     f"[🧠 AI 판단{status_tag}] 종목: {self.symbol} | 결과: Hold"
                     f" | (매수확신: {buy_conf}%, 매도확신: {sell_conf}%) | 🎯 타점 대기 중..."
                 )
@@ -519,17 +519,17 @@ class LiveTradingEngine:
                     self.strategy_manager.record_buy()
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price * 1.001, "BUY")
-                self.logger.error(
+                print(
                     f" [🔥 매수 주문 전송] 종목: {self.symbol} | Action: {ACTION_LABELS[action]} | API 전송 완료!"
                 )
-                self.logger.error(
+                print(
                     f"[📤 매수 주문 전송 상세] {self.symbol} | {qty}주 @ {valid_price:,}원"
                     f" | 투자금: {invest_amount:,.0f}원 | 비율: {buy_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
                 self.last_action_time = current_time
             else:
-                self.logger.error(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
+                print(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
 
         elif action in (3, 4):  # 매도 계열 (Sell60% / Sell40%)
             real_holdings = self.order_manager.holdings.get(self.symbol, 0)
@@ -538,14 +538,14 @@ class LiveTradingEngine:
                 sell_qty = max(1, int(real_holdings * sell_ratio))
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price * 0.999, "SELL")
-                self.logger.error(
+                print(
                     f"[📤 매도 주문 전송] {self.symbol} | {sell_qty}주 @ {valid_price:,}원"
                     f" | 보유: {real_holdings}주 | 비율: {sell_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
                 self.last_action_time = current_time
             else:
-                self.logger.error(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
+                print(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
 
     async def _execute_order_background(self, side, price, qty):
         """
@@ -554,7 +554,7 @@ class LiveTradingEngine:
         internal_id = None
         
         try:
-            self.logger.error(f"📤 주문 실행 파이프라인 가동: {side} {self.symbol} {qty}주 @ {price:,}원")
+            print(f"📤 주문 실행 파이프라인 가동: {side} {self.symbol} {qty}주 @ {price:,}원")
             
             # 1. 주문 전송
             result = await self.order_manager.send_order(side, self.symbol, price, qty)

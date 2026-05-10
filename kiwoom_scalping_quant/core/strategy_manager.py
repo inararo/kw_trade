@@ -648,7 +648,7 @@ class StrategyManager:
         2. 데이터 수집기에 새 조건명 주입
         3. 새 조건식 서버 요청 (CNSRLST -> CNSRREQ)
         """
-        self.logger.critical(f"🚀 [시스템 스위칭] 조건식 변경 시작: {self.data_collector.target_condition_name} ➡️ {new_name}")
+        print(f"🚀 [시스템 스위칭] 조건식 변경 시작: {self.data_collector.target_condition_name} ➡️ {new_name}")
         
         async with self._swap_lock:
             # 1. 대기열 비우기 (기존 조건식의 대기 종목들은 더 이상 유효하지 않음)

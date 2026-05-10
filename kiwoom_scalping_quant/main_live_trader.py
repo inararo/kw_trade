@@ -441,7 +441,7 @@ async def main():
     )
     # 스위칭 완료 시 콘솔 로그 출력 및 브로커 API 연동을 위한 콜백 등록
     async def _on_switch(name):
-        logger.critical(f"🔔 [TERMINAL] 조건식 스위칭 감지 -> {name}")
+        print(f"🔔 [TERMINAL] 조건식 스위칭 감지 -> {name}")
         broker_api.target_condition_name = name
         await broker_api.request_condition_list()
 
@@ -469,7 +469,14 @@ async def main():
             "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG",
             "influx_bucket", "INFLUX_BUCKET", "TELEGRAM_BOT_TOKEN",
             "telegram_chat_id", "FIREBASE_KEY_PATH", "active_model_path",
-            "kiwoom", "ws_url", "symbols", "universe"
+            "max_buffer_size", "db_batch_size",
+            # ── 복합 타입 (리스트/딕셔너리 — Firestore 별도 관리) ────
+            "kiwoom", "ws_url", "symbols",
+            "universe", "protected_symbols", "global_max_loss",
+            "slippage", "seq_len", "initial_balance", "live_trading_model_type",
+            "is_monitoring_active", "is_ai_trading_active",  # [이동] system_status/engine으로 이동됨
+            "last_updated_by_engine",  # 시스템 관리용 타임스탬프 (yaml 저장 제외)
+            "BYPASS_MARKET_HOURS"
         }
         _default_settings = {
             k: v for k, v in config_manager._config_cache.items()
