@@ -133,6 +133,7 @@ class QuantSystem:
         self.live_vm = self.container.live_dashboard_view_model()
         self.asset_vm = self.container.asset_data_view_model()
         self.account_service = self.container.account_service()
+        self.ai_training_vm = self.container.ai_training_view_model()
 
         # [🚨 최우선 패치] 모든 API 요청 전에 토큰 발급을 가장 먼저 완료합니다.
         print("시스템: [Step 0] Kiwoom API Access Token 발급 시작...")
@@ -281,6 +282,9 @@ class QuantSystem:
         self.token_manager.signals.token_updated.connect(self._on_token_updated)
         self.token_manager.signals.token_error.connect(self._on_token_error)
         self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
+        
+        # [신규] AI 학습 시 전역 통신 중단 제어 연결
+        self.ai_training_vm.sig_pause_all_requested.connect(self._handle_global_pause)
         # [안정화] state_changed 연결은 부팅 완료 후(Step 4)로 이동함
 
         # Step 0: DB 연결 확인
@@ -516,6 +520,29 @@ class QuantSystem:
             print("시스템: 메인 루프 종료됨. (Firebase: OFFLINE/STOPPED 보고 완료)")
             # [최종] 소켓 및 I/O가 물리적으로 닫힐 수 있도록 아주 짧게 대기
             await asyncio.sleep(0.1)
+
+    def _handle_global_pause(self, paused: bool):
+        """AI 학습 시작/종료 시 시스템의 모든 통신 부하를 제어합니다."""
+        if paused:
+            self.logger.critical("🚀 [시스템 제어] AI 학습 시작 감지: 모든 실시간 통신 및 폴링을 중단합니다.")
+            # 1. 웹소켓 중단 (틱 데이터, 조건검색 수신 중지)
+            asyncio.create_task(self.data_collector.stop())
+            # 2. 자산/잔고 폴링 중단 (REST API 호출 중지)
+            self.live_vm._is_running = False
+            # 3. 마켓 스케줄러 중단 (상태 체크 루프 중지)
+            asyncio.create_task(self.market_scheduler.stop())
+            # 4. 전략 매니저 중단 (8슬롯 슬라이싱, 잔고 동기화 루프 중지)
+            asyncio.create_task(self.strategy_manager.stop())
+            # 5. [신규] 매매 엔진 스레드(LiveTradingThread) 중단 요청
+            if hasattr(self, 'live_trading_thread'):
+                self.live_trading_thread.request_stop()
+            
+            self.live_vm.sig_log_appended.emit("[시스템] 🤖 AI 학습을 위해 모든 네트워크 통신 및 전략 엔진을 중단했습니다.")
+        else:
+            self.logger.info("🚀 [시스템 제어] AI 학습 종료 감지: 통신 재개 가능 상태입니다.")
+            # 학습 종료 시에는 사용자 안전을 위해 자동으로 재개하지 않고 메시지만 출력하거나, 
+            # 필요 시 다시 루프를 돌릴 수 있습니다. (사용자 요청: 재개해도 되고 안해도 상관없음)
+            self.live_vm.sig_log_appended.emit("[시스템] 🤖 AI 학습이 종료되었습니다. 실시간 감시는 대시보드에서 수동으로 재개 가능합니다.")
 
     def _setup_firebase_listeners(self):
         """

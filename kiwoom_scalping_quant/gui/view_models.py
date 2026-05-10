@@ -997,6 +997,7 @@ class AITrainingViewModel(QObject):
     sig_training_log = pyqtSignal(str)
     sig_training_finished = pyqtSignal()
     sig_error = pyqtSignal(str)
+    sig_pause_all_requested = pyqtSignal(bool) # [신규] 모든 통신 중단/재개 요청
 
     def __init__(self, config_manager, data_collector, order_manager, influx_client):
         super().__init__()
@@ -1019,6 +1020,9 @@ class AITrainingViewModel(QObject):
         if self.prep_task and not self.prep_task.done():
             self.prep_task.cancel()
 
+        # [신규] 모든 실시간 통신 및 폴링 중단 요청 (AI 학습 부하 방지)
+        self.sig_pause_all_requested.emit(True)
+        
         self.prep_task = asyncio.create_task(self._prepare_and_start_training(
             total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling, ppo_params,
             always_start_day_begin, allow_overnight_episodes
@@ -1145,14 +1149,14 @@ class AITrainingViewModel(QObject):
             )
 
         # 3. Worker 생성 및 실행
-        self.sig_training_log.emit("3. QThread 학습 워커 실행...")
+        self.sig_training_log.emit("3. QThread 학습 워커 실행 (모든 실시간 통신이 중단된 상태입니다)...")
 
         signals = TrainingSignals()
         signals.started.connect(lambda: self.sig_training_started.emit())
         signals.progress_updated.connect(lambda s, r, l: self.sig_training_progress.emit(s, r, l))
         signals.log_msg.connect(lambda m: self.sig_training_log.emit(m))
-        signals.finished.connect(lambda: self.sig_training_finished.emit())
-        signals.error.connect(lambda e: self.sig_error.emit(f"학습 워커 에러: {e}"))
+        signals.finished.connect(self._on_worker_finished)
+        signals.error.connect(self._on_worker_error)
 
         self.worker = TrainingWorker(agent, timesteps, signals)
         self.worker.start()
@@ -1166,8 +1170,19 @@ class AITrainingViewModel(QObject):
             
         # 2. 이미 학습 워커(Thread)가 실행 중인 경우
         if self.worker and self.worker.isRunning():
-            self.sig_training_log.emit("학습 워커 중지 요청 전송됨...")
+            self.sig_training_log.emit("AI 학습 워커 강제 중지를 요청했습니다...")
             self.worker.stop()
+        
+        # [신규] 중지 시 통신 재개 가능 상태로 복구 요청
+        self.sig_pause_all_requested.emit(False)
+
+    def _on_worker_finished(self):
+        self.sig_training_finished.emit()
+        self.sig_pause_all_requested.emit(False)
+
+    def _on_worker_error(self, err):
+        self.sig_error.emit(f"학습 워커 에러: {err}")
+        self.sig_pause_all_requested.emit(False)
 
 class SettingsViewModel(QObject):
     """
