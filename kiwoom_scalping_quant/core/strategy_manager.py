@@ -458,7 +458,7 @@ class StrategyManager:
                 warmup_count = self._warmup_queue.qsize()
                 
                 # 가독성을 위해 리스트 출력
-                self.logger.error(
+                print(
                     f"[📡 시스템 현황] 현재 집중 감시 종목: {curr_count}/{max_count}개 ({active_list}) "
                     f"| 대기열(Queue): {queue_count}개 | 웜업대기: {warmup_count}개"
                 )

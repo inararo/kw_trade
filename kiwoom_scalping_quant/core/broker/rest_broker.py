@@ -22,6 +22,9 @@ class RESTBrokerWrapper:
         self.token_manager = token_manager
         self.logger = logging.getLogger("RESTBrokerWrapper")
         
+        # [신규] 계좌 번호 설정
+        self.account_number = self.config.get("account_number", "")
+        
         # 기본 URL 설정
         kiwoom_cfg = self.config.get("kiwoom", {})
         trading_mode = kiwoom_cfg.get("trading_mode", "real")
@@ -80,6 +83,7 @@ class RESTBrokerWrapper:
         """당일 실현 손익 상세 조회 (ka10077)"""
         # [명세 반영] 필수 필드: stk_cd
         body = {
+            "acc_no": self.account_number, # [추가] 계좌번호 필수
             "stk_cd": "000000", # 필수: 종목코드 (전체 조회를 위해 더미/기본값 설정)
         }
         return await self.request_tr("ka10077", body)
@@ -89,6 +93,7 @@ class RESTBrokerWrapper:
         # [명세 반영] 필수 필드: stk_cd, trde_tp, uv
         # [명세 반영] 선택 필드: io_amt, trde_qty, exp_buy_unp
         body = {
+            "acc_no": self.account_number, # [추가] 계좌번호 필수
             "io_amt": "",          # 입출금액 (선택)
             "stk_cd": symbol,      # 종목코드 (필수)
             "trde_tp": "2",        # 매매구분 1:매도, 2:매수 (필수)

@@ -553,3 +553,32 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"FirebaseManager: 제어 상태 업데이트 실패: {e}")
 
+    async def update_account_status(self, total_assets: int, realized_profit: int, buying_power: int):
+        """
+        실시간 계좌 정보를 system_status/account 문서에 업데이트합니다.
+        
+        Args:
+            total_assets: 총 자산 (평가금액 포함)
+            realized_profit: 당일 실현 손익
+            buying_power: 매수 가능 금액 (주문가능현금)
+        """
+        if not self._initialized or not self._db:
+            return
+
+        from firebase_admin import firestore as fs
+        try:
+            doc_ref = self._db.collection("system_status").document("account")
+            await asyncio.to_thread(
+                doc_ref.set,
+                {
+                    "total_assets": int(total_assets),
+                    "realized_profit": int(realized_profit),
+                    "available_buying_power": int(buying_power),
+                    "updated_at": fs.SERVER_TIMESTAMP
+                },
+                merge=True
+            )
+            logger.debug(f"FirebaseManager: 계좌 상태 업데이트 완료 (system_status/account)")
+        except Exception as e:
+            logger.error(f"FirebaseManager: 계좌 상태 업데이트 실패: {e}")
+

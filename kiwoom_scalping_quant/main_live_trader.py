@@ -33,6 +33,7 @@ class KiwoomBrokerWrapper:
         self.app_secret = app_secret
         self.base_url = base_url
         self.ws_url = ws_url
+        self.account_number = "" # [추가] 계좌번호
         self.access_token = None
         self.ws_running = False  # [추가] 웹소켓 실행 중 여부 플래그
         
@@ -162,11 +163,12 @@ class KiwoomBrokerWrapper:
 
     async def get_realized_profit_details(self) -> Dict[str, Any]:
         """당일 실현 손익 상세 조회 (ka10077)"""
-        return await self.request_tr("ka10077", {"stk_cd": "000000"})
+        return await self.request_tr("ka10077", {"acc_no": self.account_number, "stk_cd": "000000"})
 
     async def get_orderable_cash(self, symbol: str = "005930", price: int = 0) -> Dict[str, Any]:
         """주문 인출 가능 금액 조회 (kt00010)"""
         body = {
+            "acc_no": self.account_number,
             "io_amt": "", "stk_cd": symbol, "trde_tp": "2",
             "trde_qty": "", "uv": str(price) if price > 0 else "250000",
             "exp_buy_unp": ""
@@ -420,6 +422,7 @@ async def main():
         base_url=config_manager.get_rest_url(),
         ws_url=config_manager.get_ws_url()
     )
+    broker_api.account_number = config_manager.get("account_number", "")
     
     account_service = AccountService(broker_api, data_collector)
     condition_service = ConditionService()
@@ -456,8 +459,9 @@ async def main():
             is_monitoring_active=True,
             is_ai_trading_active=True
         )
-        # [중요] OrderManager에 FirebaseManager 주입 (매매 로그 전송용)
+        # [중요] OrderManager 및 AccountService에 FirebaseManager 주입
         order_manager.firebase_manager = firebase_manager
+        account_service.firebase_manager = firebase_manager
         
         # 기본 설정 업로드 (보안 항목 제외)
         _EXCLUDED = {
@@ -708,10 +712,22 @@ async def main():
     global ws_task
     ws_task = asyncio.create_task(broker_api.ws_listener_loop(context["target_idx"]))
     
+    # [신규] 주기적인 계좌 상태 동기화 및 Firebase 업로드 태스크
+    async def account_sync_loop():
+        logger.info("📡 주기적인 계좌 정보 동기화 태스크 시작 (20초 주기)")
+        while True:
+            try:
+                # sync_all() 내부에서 _sync_to_firebase()를 호출하여 Firebase 업로드 수행
+                await account_service.sync_all()
+            except Exception as e:
+                logger.error(f"❌ 계좌 동기화 루프 에러: {e}")
+            await asyncio.sleep(20)
+
     # 5. 영구 실행 태스크 (이 태스크들이 종료되면 프로그램 종료)
     main_tasks = [
         asyncio.create_task(strategy_manager.start()),                 # 매매 엔진 워치독 및 웜업 루프
-        asyncio.create_task(market_scheduler.start())                  # [신규] 장 상태 및 조건식 스위칭 스케줄러
+        asyncio.create_task(market_scheduler.start()),                 # [신규] 장 상태 및 조건식 스위칭 스케줄러
+        asyncio.create_task(account_sync_loop())                       # [신규] 계좌 상태 주기적 동기화 (Firebase)
     ]
     
     # [Firebase] 하트비트 태스크 추가

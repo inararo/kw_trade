@@ -960,6 +960,12 @@ class OrderManager:
                             balance = find_val(res_data, balance_candidates) or self.current_balance
                             
                             self.logger.warning(f"📊 [파싱 결과] 총 자산: {balance:,.0f}")
+                            
+                            # [신규] AccountService에 최신 총 자산 데이터 강제 주입 (Firebase 연동용)
+                            if self.account_service:
+                                self.account_service.total_assets = balance
+                                # 백그라운드 태스크로 즉시 Firebase 동기화 트리거
+                                asyncio.create_task(self.account_service._sync_to_firebase())
 
                             # 3. 당일 실현 손익 파싱
                             # [핵심] AccountService가 가져온 공식 실현 손익을 최우선 신뢰합니다.

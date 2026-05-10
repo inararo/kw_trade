@@ -19,6 +19,7 @@ class AccountService:
         self.orderable_cash = 0.0
         self.total_yield_rate = 0.0
         self.settlement_amount = 0.0
+        self.total_assets = 0.0
         self._lock = asyncio.Lock()
         
         # 콜백 등록 (UI 업데이트용)
@@ -30,14 +31,14 @@ class AccountService:
     async def sync_all(self):
         """실현손익 및 주문가능금액 통합 동기화"""
         async with self._lock:
-            # 1. 당일 실현 손익 (ka10077)
-            profit_data = await self.broker.get_realized_profit_details()
-            self._parse_profit(profit_data)
-            
-            # 2. 주문 가능 금액 (kt00010)
-            await asyncio.sleep(0.2) # API 부하 방지
+            # 1. 주문 가능 금액 (kt00010)
             orderable_data = await self._fetch_orderable_cash()
             self._parse_orderable(orderable_data)
+            
+            # 2. 당일 실현 손익 (ka10077)
+            await asyncio.sleep(0.2) # API 부하 방지
+            profit_data = await self.broker.get_realized_profit_details()
+            self._parse_profit(profit_data)
             
             # 3. Firebase 동기화
             await self._sync_to_firebase()
@@ -84,6 +85,10 @@ class AccountService:
             self.today_realized_profit = float(data.get("tdy_rlzt_pl") or output.get("tdy_rlzt_pl", 0))
             self.total_yield_rate = float(output.get("sl_pfls_rt", 0))
             self.settlement_amount = float(output.get("setl_amt", 0))
+            # [신규] 총 자산 (평가금액 포함) - 응답에 없으면 현금+정산금액으로 추정
+            new_assets = float(output.get("tot_evl_amt") or (self.orderable_cash + self.settlement_amount))
+            if new_assets > 0:
+                self.total_assets = new_assets
         else:
             self.logger.error(f"❌ [ID:{id(self)}] [ka10077] 실현손익 조회 실패: {data.get('return_msg')}")
 
@@ -96,22 +101,19 @@ class AccountService:
             self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패: {data.get('return_msg')}")
 
     async def _sync_to_firebase(self):
-        """Firebase account_status 노드 업데이트"""
+        """Firebase system_status/account 문서 업데이트"""
         if not self.firebase_manager:
             return
             
-        status_data = {
-            "today_realized_pnl": self.today_realized_profit,
-            "total_yield_rate": self.total_yield_rate,
-            "orderable_cash": self.orderable_cash,
-            "settlement_amount": self.settlement_amount,
-            "last_update": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        }
-        
         try:
+            # [요구사항 반영] FirebaseManager의 신규 메서드 호출
             if hasattr(self.firebase_manager, "update_account_status"):
-                await self.firebase_manager.update_account_status(status_data)
-                self.logger.debug(f"✅ [ID:{id(self)}] Firebase 계좌 상태 동기화 완료")
+                await self.firebase_manager.update_account_status(
+                    total_assets=int(self.total_assets),
+                    realized_profit=int(self.today_realized_profit),
+                    buying_power=int(self.orderable_cash)
+                )
+                self.logger.debug(f"✅ [ID:{id(self)}] Firebase 실시간 계좌 상태 동기화 완료")
         except Exception as e:
             self.logger.error(f"❌ [ID:{id(self)}] Firebase 계좌 동기화 실패: {e}")
 
@@ -124,5 +126,6 @@ class AccountService:
             "today_realized_profit": self.today_realized_profit,
             "orderable_cash": self.orderable_cash,
             "yield_rate": self.total_yield_rate,
-            "settlement_amount": self.settlement_amount
+            "settlement_amount": self.settlement_amount,
+            "total_assets": self.total_assets
         }
