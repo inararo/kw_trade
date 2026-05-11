@@ -128,6 +128,11 @@ class QuantSystem:
         # 현재 웹소켓을 담당할 '진짜' 수집기를 강제로 주입합니다.
         self.strategy_manager.data_collector = self.data_collector
         self.token_manager = self.container.token_manager()
+        
+        # [🚨 타임아웃 해결] 토큰 발급 시작(start) 전에 신호를 먼저 연결해야 합니다.
+        self.token_manager.signals.token_updated.connect(self._on_token_updated)
+        self.token_manager.signals.token_error.connect(self._on_token_error)
+
         self.market_scheduler = self.container.market_scheduler()
         self.risk_manager = self.container.risk_manager()
         self.live_vm = self.container.live_dashboard_view_model()
@@ -279,8 +284,6 @@ class QuantSystem:
 
         # Connect Signals
         self.risk_manager.signals.daily_stop_loss_hit.connect(self._on_stop_loss_hit)
-        self.token_manager.signals.token_updated.connect(self._on_token_updated)
-        self.token_manager.signals.token_error.connect(self._on_token_error)
         self.asset_vm.symbols_loaded.connect(self._on_universe_ready)
         
         # [신규] AI 학습 시 전역 통신 중단 제어 연결
