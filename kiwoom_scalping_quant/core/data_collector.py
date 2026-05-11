@@ -476,7 +476,6 @@ class DataCollector:
             # [신규] 조건검색 실시간 이벤트 처리 (trnm="REAL" 및 type="02" 또는 name="조건검색")
             if msg_type == "02" or entry.get("name") == "조건검색":
                 if self.on_condition_message_callback:
-                    # ConditionService 규격에 맞춰 메시지 재구성 및 전달
                     values = entry.get("values", {})
                     status_val = values.get("843", "I")
                     clean_code = (values.get("9001") or entry.get("item", "")).lstrip("A")
@@ -484,13 +483,19 @@ class DataCollector:
                     # I: 편입, D: 이탈
                     mapped_status = "I" if status_val in ["I", "INSERT", "편입", "1"] else "D"
                     
-                    routing_data = {
-                        "type": mapped_status,
-                        "symbol": clean_code,
-                        "event": "condition",
-                        "status": mapped_status
-                    }
-                    self.on_condition_message_callback(json.dumps(routing_data))
+                    # [최적화] ConditionService 인스턴스인 경우 직접 메서드 호출
+                    service = getattr(self.on_condition_message_callback, "__self__", None)
+                    if service and hasattr(service, "update_realtime_condition"):
+                        service.update_realtime_condition(clean_code, mapped_status)
+                    else:
+                        # Fallback: 기존 JSON 문자열 방식
+                        routing_data = {
+                            "type": mapped_status,
+                            "symbol": clean_code,
+                            "event": "condition",
+                            "status": mapped_status
+                        }
+                        self.on_condition_message_callback(json.dumps(routing_data))
                 continue
             
             # [신규] 주문/체결(Chejan) 데이터 처리

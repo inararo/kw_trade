@@ -45,9 +45,9 @@ class KiwoomBrokerWrapper:
         # [Shared Core] 콜백 라우팅용
         self.on_condition_ws_message = None
         
-        # [신규] 조건식 스위칭 관련
         self.target_condition_name = "AI스캘핑주도주장시작"
         self._ws_instance = None # [추가] 실시간 메시지 전송용
+        self.strategy_manager = None # [추가] 재구독 연동용
 
     # ------------------ REST API (aiohttp) ------------------
     async def login(self):
@@ -276,7 +276,7 @@ class KiwoomBrokerWrapper:
                         
                         # 2. 메시지 수신 무한 루프
                         async for message in ws:
-                            logger.warning(f"📩 [WS RECV] {message}")
+                            logger.debug(f"📩 [WS RECV] {message}")
                             
                             # [Shared Core] ConditionService로 메시지 라우팅
                             if hasattr(self, 'on_condition_ws_message') and self.on_condition_ws_message:
@@ -349,8 +349,18 @@ class KiwoomBrokerWrapper:
                                         clean_codes = [self._clean_code(item.get("jmcode", "") if isinstance(item, dict) else str(item)) for item in jm_list]
                                         if hasattr(self, 'on_snapshot_event') and self.on_snapshot_event:
                                             await self.on_snapshot_event(clean_codes)
-                                    else:
-                                        logger.warning(f"⚠️ 초기 스냅샷 데이터가 비어있거나 올바르지 않습니다: {jm_list}")
+                                    # [신규] 웹소켓 재연결 시 기존 활성 슬롯 종목들에 대한 실시간 틱(0B) 재구독 절차 추가
+                                    if self.strategy_manager:
+                                        active_symbols = getattr(self.strategy_manager, 'symbols', [])
+                                        if active_symbols:
+                                            logger.info(f"🔄 [WS 재구독] 기존 활성 종목({len(active_symbols)}개) 실시간 데이터 재등록...")
+                                            reg_payload = {
+                                                "trnm": "REG",
+                                                "grp_no": "1",
+                                                "refresh": "0",
+                                                "data": [{"type": ["0B", "0D"], "item": [s.split('_')[0] for s in active_symbols]}]
+                                            }
+                                            await ws.send(json.dumps(reg_payload))
                                 else:
                                     logger.error(f"❌ 조건검색 실시간 등록 실패: {response.get('return_msg')}")
     
@@ -534,17 +544,20 @@ async def main():
                         
                         if active:
                             if not broker_api.ws_running:
-                                # 웹소켓 루프 재가동
+                                # [개선] 기존 태스크가 있다면 취소 후 안전하게 재시작
                                 global ws_task
+                                if 'ws_task' in globals() and not ws_task.done():
+                                    ws_task.cancel()
+                                
+                                broker_api.ws_running = False # 강제 초기화
                                 ws_task = asyncio.create_task(broker_api.ws_listener_loop(context["target_idx"]))
                                 logger.info(f"[Firebase] 📡 실시간 웹소켓 리스너를 재시작합니다. (Target: {context['target_idx']})")
                         else:
-                            if broker_api.ws_running:
-                                # 웹소켓 루프 중단 (사실상 종료 플래그 설정 및 태스크 취소)
-                                broker_api.ws_running = False
-                                if 'ws_task' in globals() and not ws_task.done():
-                                    ws_task.cancel()
-                                logger.warning("[Firebase] 📡 실시간 웹소켓 리스너가 중단되었습니다.")
+                            # 웹소켓 루프 중단
+                            broker_api.ws_running = False
+                            if 'ws_task' in globals() and not ws_task.done():
+                                ws_task.cancel()
+                            logger.warning("[Firebase] 📡 실시간 웹소켓 리스너가 중단되었습니다.")
                 
                 # 2. AI 매매 상태 변경 확인
                 if "is_ai_trading_active" in data:
@@ -569,7 +582,7 @@ async def main():
                     except Exception as e:
                         await firebase_manager.update_command_status(doc_id, "FAILED")
                         logger.error(f"❌ [Firebase] 긴급 청산 실패: {e}")
-                asyncio.run_coroutine_threadsafe(_execute(), loop)
+                asyncio.run_coroutine_threadsafe(_execute(), context["loop"])
             
             elif action == "PROGRAM_EXIT":
                 safety_token = data.get("safety_token", "")
@@ -578,7 +591,7 @@ async def main():
                 # [🚨 보안] safety_token 검증 (기본값: EXIT_NOW)
                 if safety_token != "EXIT_NOW":
                     logger.warning(f"⚠️ [Firebase] PROGRAM_EXIT 거부: 잘못된 safety_token ({safety_token})")
-                    asyncio.run_coroutine_threadsafe(firebase_manager.update_command_status(doc_id, "REJECTED_BAD_TOKEN"), loop)
+                    asyncio.run_coroutine_threadsafe(firebase_manager.update_command_status(doc_id, "REJECTED_BAD_TOKEN"), context["loop"])
                     return
 
                 logger.critical(f"🛑 [Firebase] 프로그램 종료 명령 수신! (ID: {doc_id}, Liquidate: {liquidate_all})")
@@ -626,6 +639,7 @@ async def main():
 
     if hasattr(strategy_manager, 'broker_api'):
         strategy_manager.broker_api = broker_api
+        broker_api.strategy_manager = strategy_manager # [추가] 재구독 연동
 
     class SimpleAuthManager:
         def get_token(self):

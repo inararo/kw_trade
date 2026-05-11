@@ -167,6 +167,18 @@ class LiveTradingEngine:
                 volume = args[-2] if isinstance(args[-2], (int, float)) else volume
                 timestamp = args[-1]
 
+            # [추가] 당일 등락률 제한 확인 및 미체결 매수 주문 자동 취소
+            max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
+            if self.last_change_rate >= max_rise:
+                active_orders = getattr(self.order_manager, 'active_orders', {}).get(self.symbol, [])
+                buy_orders = [o for o in active_orders if o.get("side") in ["1", "BUY"]]
+                if buy_orders:
+                    self.logger.warning(f"⏰ [취소] {self.symbol} 당일 등락률({self.last_change_rate:.1f}%)이 제한({max_rise}%)을 초과하여 미체결 매수 주문을 취소합니다.")
+                    for order in buy_orders:
+                        oid = order.get("order_no") or order.get("order_id")
+                        if oid:
+                            asyncio.create_task(self.order_manager.cancel_order(self.symbol, oid))
+
             # 형변환 보장
             if price is None or volume is None: return
             price = float(price)
@@ -347,8 +359,6 @@ class LiveTradingEngine:
                 tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
                 atr14 = float(tr.rolling(window=14, min_periods=1).mean().iloc[-1])
                 
-                # 거래대금 필터 (최근 1시간 기준 거래대금 등, 여기서는 당일 거래대금이 파싱 안되므로 생략 또는 보수적 접근)
-                # [동적 설정] 최신 필터 모드 상태 읽기
                 strict_mode = self.config_manager.get("strict_filter_mode", True)
                 
                 # [공격적 매매] strict_mode가 False인 경우 모든 하드 필터 조건을 무시하고 통과(Bypass)합니다.
@@ -364,21 +374,36 @@ class LiveTradingEngine:
                         can_buy = False
                         filter_reasons.append(f"변동성 부족(ATR {atr14:.1f} < {min_atr:.1f})")
 
-                # 필터 3: 당일 급등 종목 매수 제한 (추격 매수 방지)
+                # [수정] max_daily_rise_pct는 strict_mode와 상관없이 항상 체크
                 max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
-                if strict_mode and self.last_change_rate >= max_rise:
+                if self.last_change_rate >= max_rise:
                     can_buy = False
                     filter_reasons.append(f"당일 급등({self.last_change_rate:.1f}%)")
+                    self.logger.warning(f"🚫 [필터 차단] {self.symbol} 당일 등락률({self.last_change_rate:.1f}%)이 제한({max_rise}%)을 초과하여 매수를 차단합니다.")
 
                 # 필터 4: 글로벌 매수 쿨타임 (전략적 분산)
                 if self.strategy_manager and not self.strategy_manager.can_execute_buy():
                     can_buy = False
                     filter_reasons.append("글로벌 쿨타임")
                     
+                # [추가] 당일 등락률 제한 확인 (매수 금지 필터)
+                max_rise = float(self.config_manager.get("max_daily_rise_pct", 30.0))
+                if self.last_change_rate >= max_rise:
+                    # 미체결 매수 주문이 있는지 확인
+                    active_orders = self.order_manager.active_orders.get(self.symbol, [])
+                    buy_orders = [o for o in active_orders if o.get("side") in ["1", "BUY"]]
+                    
+                    if buy_orders:
+                        self.logger.warning(f"⏰ [취소] {self.symbol} 당일 등락률({self.last_change_rate:.1f}%)이 제한({max_rise}%)을 초과하여 미체결 매수 주문을 취소합니다.")
+                        for order in buy_orders:
+                            # order_id 또는 order_no 추출
+                            oid = order.get("order_no") or order.get("order_id")
+                            if oid:
+                                asyncio.create_task(self.order_manager.cancel_order(self.symbol, oid))
+                                
             except Exception as e:
-                self.logger.warning(f"[{self.symbol}] ⚠️ 하드 필터 계산 에러: {e}")
-                if self.config_manager.get("strict_filter_mode", True):
-                    can_buy = False
+                self.logger.error(f"Engine ({self.symbol}) Update Tick Error: {e}")
+                
         # 매도 가능 조건: 보유 수량 있음 & 주문 미진행
         can_sell = (holdings > 0 and not self._is_order_pending)
 

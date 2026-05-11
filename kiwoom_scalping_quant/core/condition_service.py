@@ -22,19 +22,46 @@ class ConditionService:
         """웹소켓 메시지 수신 및 유형별 분기 처리"""
         try:
             data = json.loads(message)
-            # trnm: CNSRREQ, CNSRLST 등 (REST 응답 스타일)
-            # type: I, D 등 (실시간 이벤트 스타일)
-            msg_type = data.get("trnm") or data.get("type")
+            trnm = data.get("trnm")
+            msg_type = data.get("type") or trnm
             
-            if msg_type == "CNSRREQ":
+            if trnm == "CNSRREQ":
                 self._handle_snapshot(data)
             elif msg_type == "I" or (data.get("event") == "condition" and data.get("status") == "I"):
                 self._handle_insert(data)
             elif msg_type == "D" or (data.get("event") == "condition" and data.get("status") == "D"):
                 self._handle_delete(data)
+            elif trnm in ["REAL", "COND"]:
+                # REAL 또는 COND 메시지는 data 배열 내부에 실제 정보가 들어있을 수 있음
+                entries = data.get("data", [])
+                if not entries:
+                    entries = [data]
+                
+                for entry in entries:
+                    e_type = entry.get("type")
+                    if e_type == "02" or entry.get("name") == "조건검색" or trnm == "COND":
+                        values = entry.get("values", {})
+                        code = (values.get("9001") or entry.get("item", "")).lstrip("A")
+                        status = values.get("843", "I")
+                        self.update_realtime_condition(code, status)
                 
         except Exception as e:
             self.logger.error(f"ConditionService: 메시지 파싱 에러: {e}")
+
+    def update_realtime_condition(self, code: str, status: str):
+        """
+        [공개 API] 외부(DataCollector 등)에서 직접 종목 편입/이탈을 호출할 때 사용합니다.
+        code: 종목코드 (예: 005930)
+        status: 'I' (편입) 또는 'D' (이탈)
+        """
+        self.logger.info(f"🔔 [REAL 02] 실시간 조건검색 이벤트 수신: {code} ({'편입' if status == 'I' else '이탈'})")
+        
+        data = {"symbol": code, "status": status}
+        if status == "I":
+            self._handle_insert(data)
+        elif status == "D":
+            self._handle_delete(data)
+
 
     def _handle_snapshot(self, data: Dict[str, Any]):
         """초기 조건검색 결과 스냅샷 처리 (CNSRREQ)"""

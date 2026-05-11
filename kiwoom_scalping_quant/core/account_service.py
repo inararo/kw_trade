@@ -86,7 +86,7 @@ class AccountService:
             self.total_yield_rate = float(output.get("sl_pfls_rt", 0))
             self.settlement_amount = float(output.get("setl_amt", 0))
             # [신규] 총 자산 (평가금액 포함) - 응답에 없으면 현금+정산금액으로 추정
-            new_assets = float(output.get("tot_evl_amt") or (self.orderable_cash + self.settlement_amount))
+            new_assets = float(output.get("tot_evl_amt") or 0)
             if new_assets > 0:
                 self.total_assets = new_assets
         else:
