@@ -344,21 +344,35 @@ class BacktestStudioTab(QWidget):
         self.avg_entry_curve.setData(steps, avg_entries)
 
         # 4. 매매 마커 (Action별 분기)
-        # Buy 40%
-        b40 = df[df['action'] == 'Buy40%']
-        self.buy_40_scatter.setData(x=b40['step'].values, y=b40['low'].values * 0.998)
+        def get_execution_coords(action_name, is_buy=True):
+            """현실 패치: 액션 결정(t) 대비 체결(t+1) 위치를 계산하여 반환"""
+            mask = df['action'] == action_name
+            target_df = df[mask]
+            if target_df.empty:
+                return np.array([]), np.array([])
+            
+            # 이미 history_df의 step이 current_step(t+1)로 기록되어 있으므로 
+            # 추가 offset 없이 해당 step의 low/high를 사용합니다.
+            x = target_df['step'].values
+            if is_buy:
+                y = target_df['low'].values * 0.998
+            else:
+                y = target_df['high'].values * 1.002
+            return x, y
+
+        # Buy Markers
+        x_b40, y_b40 = get_execution_coords('Buy40%', is_buy=True)
+        self.buy_40_scatter.setData(x=x_b40, y=y_b40)
         
-        # Buy 60%
-        b60 = df[df['action'] == 'Buy60%']
-        self.buy_60_scatter.setData(x=b60['step'].values, y=b60['low'].values * 0.998)
+        x_b60, y_b60 = get_execution_coords('Buy60%', is_buy=True)
+        self.buy_60_scatter.setData(x=x_b60, y=y_b60)
         
-        # Sell 40%
-        s40 = df[df['action'] == 'Sell40%']
-        self.sell_40_scatter.setData(x=s40['step'].values, y=s40['high'].values * 1.002)
+        # Sell Markers
+        x_s40, y_s40 = get_execution_coords('Sell40%', is_buy=False)
+        self.sell_40_scatter.setData(x=x_s40, y=y_s40)
         
-        # Sell 60%
-        s60 = df[df['action'] == 'Sell60%']
-        self.sell_60_scatter.setData(x=s60['step'].values, y=s60['high'].values * 1.002)
+        x_s60, y_s60 = get_execution_coords('Sell60%', is_buy=False)
+        self.sell_60_scatter.setData(x=x_s60, y=y_s60)
 
     @pyqtSlot(str)
     def on_bt_error(self, err_msg: str):

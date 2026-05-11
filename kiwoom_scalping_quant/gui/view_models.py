@@ -1418,10 +1418,15 @@ class BacktestViewModel(QObject):
         if not self.model_path:
             self.sig_bt_error.emit("학습된 모델 파일(.zip)을 먼저 선택해주세요.")
             return
+        
+        if getattr(self, "_is_task_running", False):
+            self.sig_bt_error.emit("이미 백테스트가 진행 중입니다. 완료 후 다시 시도해주세요.")
+            return
 
         asyncio.create_task(self._run_backtest_task(start_date, end_date, symbol))
 
     async def _run_backtest_task(self, start_date: str, end_date: str, symbol: str):
+        self._is_task_running = True
         try:
             # 1. 대상 종목 및 데이터 로드 (실제 DB 연동)
             data_list = await self.influx_client.fetch_data_by_range(symbol, start_date, end_date)
@@ -1497,6 +1502,8 @@ class BacktestViewModel(QObject):
 
         except Exception as e:
             self.sig_bt_error.emit(str(e))
+        finally:
+            self._is_task_running = False
 
     def _export_backtest_results(self, kpi, trades_df, symbol, start_date, end_date):
         """백테스트 결과를 CSV 파일로 자동 저장합니다."""

@@ -95,7 +95,7 @@ class ScalpingTradingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         options = options or {}
-        
+
         # 다중 종목 무작위 샘플링
         if self.historical_data_dict:
             available_symbols = list(self.historical_data_dict.keys())
@@ -104,8 +104,15 @@ class ScalpingTradingEnv(gym.Env):
                 self.historical_data = self.historical_data_dict[selected_sym]
                 self.config['symbol'] = selected_sym
                 self.current_symbol_idx = self.symbol_to_idx.get(selected_sym, 0)
-        
+
+        # --- [수정된 핵심 로직 시작] ---
+        # 1. 이전 에피소드의 잔고를 이어받거나 1000만원으로 초기화
         self.balance = options.get('current_balance', self.config.get('initial_balance', 10000000))
+
+        # 🚀 [버그 수정 핵심] 1스텝 깡통 방지를 위해 파산 기준점(initial_balance)을 현재 지갑 잔고에 맞춰 갱신!
+        self.initial_balance = self.balance
+        # --- [수정된 핵심 로직 끝] ---
+
         self.holdings = 0
         self.steps_since_buy = 0
         self.steps_since_sell = 100
@@ -134,11 +141,13 @@ class ScalpingTradingEnv(gym.Env):
                 self.precomputed_features = self._feature_cache[sym]
 
             if self.config.get("mode") == "backtest":
-                # [수정된 부분] 무작정 0부터 시작하지 않고, 최소 60번 캔들(SMA_60 계산을 위해) 또는 window_size부터 시작하도록 강제
-                min_safe_step = max(self.window_size, 60)
-                req_start_step = options.get('start_step', min_safe_step)
+                # 데이터가 짧을 경우를 대비해 유연하게 시작 지점 보정 (최소 SMA_60을 위해 60 권장)
+                data_len = len(self.historical_data)
+                min_safe_step = min(data_len // 2, max(self.window_size, 60))
+                if data_len <= min_safe_step:
+                    min_safe_step = self.window_size
 
-                # 방어 코드: 혹시 밖에서 0을 던졌더라도 안전한 위치로 보정
+                req_start_step = options.get('start_step', min_safe_step)
                 self.current_step = max(req_start_step, min_safe_step)
                 self.end_step = data_len - 1
                 self.logger.info(f"Backtest Reset: Starting at {self.current_step} / End at {self.end_step}")
@@ -149,23 +158,23 @@ class ScalpingTradingEnv(gym.Env):
 
                 if 'start_step' in options:
                     self.current_step = max(options['start_step'], min_safe_step)
-                elif self.use_smart_sampling:
-                    # [개선] 스마트 샘플링 시 필요에 따라 장 시작 시점으로 보정
+                elif getattr(self, 'use_smart_sampling', False):
+                    # 스마트 샘플링 시 필요에 따라 장 시작 시점으로 보정
                     raw_start = self._get_smart_start_step(max_start)
-                    if self.always_start_day_begin:
+                    if getattr(self, 'always_start_day_begin', False):
                         self.current_step = self._get_day_start_index(raw_start)
                     else:
                         self.current_step = raw_start
                 else:
-                    # [기존 유지] 순수 랜덤 샘플링
+                    # 순수 랜덤 샘플링
                     raw_start = random.randint(0, max_start)
-                    if self.always_start_day_begin:
+                    if getattr(self, 'always_start_day_begin', False):
                         self.current_step = self._get_day_start_index(raw_start)
                     else:
                         self.current_step = raw_start
 
-                self.end_step = min(data_len - 1, self.current_step + self.max_steps)
-            
+                self.end_step = min(data_len - 1, self.current_step + getattr(self, 'max_steps', 1000))
+
             self.initial_price = self._get_current_price()
 
         # [Zero-padding 방지] 버퍼 초기화
@@ -175,6 +184,7 @@ class ScalpingTradingEnv(gym.Env):
         buf_start = max(0, self.current_step - self.window_size + 1)
         for fill_idx in range(buf_start, self.current_step + 1):
             self.lookback_buffer.append(self._extract_single_feature(fill_idx))
+
         # 데이터가 window_size보다 부족하면 첫 피처로 앞부분 패딩
         if len(self.lookback_buffer) < self.window_size:
             first_feat = self._extract_single_feature(buf_start)
@@ -462,25 +472,42 @@ class ScalpingTradingEnv(gym.Env):
         return masks
 
     def step(self, action):
-        current_price = self._get_current_price()
-        slippage = self.config.get('slippage', 0.0005)
+        step_reward = 0.0
+        action_executed = 0  # Hold
+
+        # 1. t+1 체결을 위한 인덱스 계산 (미래 참조 방지)
+        execution_step = min(self.current_step + 1, len(self.historical_data) - 1)
+        curr_data = self.historical_data[execution_step]
+
+        # 🚀 2. [버그 해결] 키 오류 방지 (price, close, cur_prc 모두 확인)
+        # 사용자님 코드에 맞춰 변수명을 current_price로 통일합니다!
+        current_price = float(curr_data.get("price", curr_data.get("close", curr_data.get("cur_prc", 1000.0))))
+
+        slippage = self.config.get('slippage', 0.002)
+
         hard_stop_pct = self.config.get('hard_stop_pct', -0.03)  # 기본 -3%
         step_reward = 0.0
         action_executed = action
 
-        # ──────────────────────────────────────────────
-        # [오버라이드 1] 하드 스탑 (무한 물타기 방지)
-        # unrealized_pnl 이 hard_stop_pct 이하이면 강제 전량 매도
-        # ──────────────────────────────────────────────
+        # [스캘핑 개조] MDD/손절 페널티 (-2.5% 도달 시 즉시 강제 청산)
         if self.holdings > 0 and self.avg_entry_price > 0:
             unrealized_pnl = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9)
-            if unrealized_pnl <= hard_stop_pct:
-                action = 4  # 전량 매도로 오버라이드
-                action_executed = 4
-                step_reward -= 1.5  # [완화] 강력한 페널티 축소 (-5.0 -> -1.5)
-                self.logger.debug(
-                    f"🚨 [HardStop] 평가손 {unrealized_pnl*100:.2f}% → 강제 전량 청산"
-                )
+            if unrealized_pnl <= -0.025: # -2.5% 하드코드
+                # 1. 강력한 페널티 부여
+                step_reward -= 5.0 
+                
+                # 2. 강제 전량 청산 (Liquidate 100%)
+                sell_price = current_price * (1 - slippage)
+                revenue = self.holdings * sell_price
+                self.balance += revenue
+                self.holdings = 0
+                self.avg_entry_price = 0.0
+                
+                # 3. 상태 기록 및 액션 스킵
+                action_executed = 4 # Sell로 기록
+                action = 0 # 이번 스텝의 추가 액션 방지
+                
+                self.logger.warning(f"🚨 [MDD LIQUIDATE] 손절한도(-2.5%) 도달! 평가손 {unrealized_pnl*100:.2f}% → 전량 강제 매도 및 계속 진행")
 
         # ──────────────────────────────────────────────
         # [오버라이드 2] 15:20 당일 청산 규칙
@@ -582,8 +609,15 @@ class ScalpingTradingEnv(gym.Env):
                 sell_price = current_price * (1 - slippage)
                 revenue = sell_shares * sell_price
                 realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
-                reward_multiplier = 30.0 if realized_pnl_pct < 0 else 20.0
+                # [Reality Patch] 수익은 5배, 손실은 10배 페널티
+                reward_multiplier = 10.0 if realized_pnl_pct < 0 else 5.0
                 step_reward += realized_pnl_pct * reward_multiplier
+
+                # [스캘핑 개조] 단기 익절 보너스 (수익률 > 1.5% 에서 매도 시 +2.0)
+                if realized_pnl_pct >= 1.5:
+                    step_reward += 2.0
+                    self.logger.info(f"💰 [Scalping Success] {realized_pnl_pct:.2f}% 익절! 보너스 +2.0 지급")
+
                 if self.steps_since_buy < 5 and realized_pnl_pct > 0:
                     step_reward += 0.1
                 self.balance += revenue
@@ -602,8 +636,15 @@ class ScalpingTradingEnv(gym.Env):
                 sell_price = current_price * (1 - slippage)
                 revenue = sell_shares * sell_price
                 realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
-                reward_multiplier = 30.0 if realized_pnl_pct < 0 else 20.0
+                # [Reality Patch] 수익은 5배, 손실은 10배 페널티
+                reward_multiplier = 10.0 if realized_pnl_pct < 0 else 5.0
                 step_reward += realized_pnl_pct * reward_multiplier
+
+                # [스캘핑 개조] 단기 익절 보너스 (수익률 > 1.5% 에서 매도 시 +2.0)
+                if realized_pnl_pct >= 1.5:
+                    step_reward += 2.0
+                    self.logger.info(f"💰 [Scalping Success] {realized_pnl_pct:.2f}% 익절! 보너스 +2.0 지급")
+
                 if self.steps_since_buy < 5 and realized_pnl_pct > 0:
                     step_reward += 0.1
                     self.logger.debug(f"⚡ 속전속결 익절 보너스! (Hold: {self.steps_since_buy}스텝)")
@@ -675,15 +716,31 @@ class ScalpingTradingEnv(gym.Env):
         # ──────────────────────────────────────────────
         self.lookback_buffer.append(self._extract_single_feature(self.current_step))
 
-        terminated = self.balance < 0
+        # [완화] 에피소드 종료 조건: 계좌 잔고가 초기 자본금의 50% 이하일 때만 (깡통)
+        initial_bal = self.config.get('initial_balance', 10000000)
+
+        # 🚀 [수정] 평상시를 위한 기본값을 무조건 선언해 두어야 에러가 나지 않습니다!
+        terminated = False
+        truncated = False
+
+        # 🚀 올바른 깡통 판정 (잔고 + 보유주식가치 총합으로 확인)
+        total_net_worth = self.balance + (self.holdings * current_price)
+        if total_net_worth <= self.initial_balance * 0.5:
+            terminated = True
+
         truncated = False
 
         day_changed = False
-        if self.historical_data is not None and self.current_step < len(self.historical_data):
-            curr_date = str(self.historical_data[self.current_step-1].get("timestamp", ""))[:10]
-            next_date = str(self.historical_data[self.current_step].get("timestamp", ""))[:10]
-            if curr_date and next_date and curr_date != next_date:
-                day_changed = True
+        if self.current_step < len(self.historical_data):
+            curr_ts = str(self.historical_data[self.current_step - 1].get("timestamp", ""))
+            next_ts = str(self.historical_data[self.current_step].get("timestamp", ""))
+
+            # 타임스탬프가 8자리 이상(YYYYMMDD 또는 YYYY-MM-DD 형식)일 때만 날짜가 바뀐 것으로 판별
+            # (6자리 "090100" 같은 분봉 시간 데이터면 같은 날짜로 간주)
+            if len(curr_ts) >= 8 and len(next_ts) >= 8:
+                split_idx = 10 if "-" in curr_ts else 8
+                if curr_ts[:split_idx] != next_ts[:split_idx]:
+                    day_changed = True
 
         is_backtest = self.config.get("mode") == "backtest"
         should_truncate = False
@@ -698,7 +755,9 @@ class ScalpingTradingEnv(gym.Env):
                 sell_price = current_price * (1 - slippage)
                 revenue = self.holdings * sell_price
                 profit_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
-                step_reward += profit_pct * 20.0
+                # 종료 시 자동 청산 보상에도 동일 멀티플라이어 적용
+                reward_mult = 10.0 if profit_pct < 0 else 5.0
+                step_reward += profit_pct * reward_mult
                 self.balance += revenue
                 self.holdings = 0
                 self.avg_entry_price = 0.0
@@ -706,6 +765,14 @@ class ScalpingTradingEnv(gym.Env):
 
         info = self._get_info()
         info["action_executed"] = action_executed
+
+        # 🚀 디버깅 로그 예쁘게 분리하기
+        if terminated:
+            self.logger.info(f"💀 [파산 종료] Step: {self.current_step}, Data_len: {len(self.historical_data)}")
+            self.logger.info(f"잔고: {self.balance}, 평가금: {self.balance + (self.holdings * current_price)}")
+        elif truncated:
+            self.logger.info(f"🏁 [에피소드 완주] Step: {self.current_step}, Data_len: {len(self.historical_data)}")
+            self.logger.info(f"잔고: {self.balance}, 평가금: {self.balance + (self.holdings * current_price)}")
 
         return self._get_observation(), float(np.clip(step_reward, -10, 10)), terminated, truncated, info
 

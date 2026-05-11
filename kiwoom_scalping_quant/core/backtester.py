@@ -19,8 +19,8 @@ ACTION_MAP = {
 }
 BUY_ACTIONS  = (1, 2)
 SELL_ACTIONS = (3, 4)
-BUY_THRESHOLD  = 0.6
-SELL_THRESHOLD = 0.6
+BUY_THRESHOLD  = 0.40
+SELL_THRESHOLD = 0.40
 
 
 def _compute_indicators(data: list) -> pd.DataFrame:
@@ -111,7 +111,7 @@ class BacktestEngine:
         결과로 모든 스텝의 기록이 담긴 DataFrame을 반환합니다.
         """
         self.is_running = True
-        self.history = []
+        history = []
 
         # ── 보조지표 계산 (Env 내부와 동일한 로직) ──────────
         logger = logging.getLogger("BacktestEngine")
@@ -151,28 +151,31 @@ class BacktestEngine:
             next_obs, reward, done, truncated, info = env.step(action)
 
             # ── 4. 기록 ──────────────────────────────────
-            current_price  = getattr(env, '_get_current_price', lambda: 1000.0)()
+            current_price = getattr(env, '_get_current_price', lambda: 1000.0)()
             action_executed = info.get("action_executed", action)
 
-            # 보조지표 값 추가 (디버깅·분석용)
+            # [alignment fix] 실제 환경의 current_step을 기준으로 기록
+            current_idx = info.get("current_step", step)
+
+            # 보조지표 값 추가 (디버깅·분석용) - current_idx 기준
             indic_row = {}
-            if indicator_df is not None and step < len(indicator_df):
-                row = indicator_df.iloc[step]
+            if indicator_df is not None and 0 <= current_idx < len(indicator_df):
+                row = indicator_df.iloc[current_idx]
                 indic_row = {
                     "SMA_20": round(float(row['SMA_20']), 2),
                     "SMA_60": round(float(row['SMA_60']), 2),
                     "RSI_14": round(float(row['RSI_14']), 2),
                 }
 
-            # OHLC 정보 보강 (시각화용)
+            # OHLC 정보 보강 (시각화용) - current_idx 기준
             low_val = 0.0
             high_val = 0.0
-            if df is not None and step < len(df):
-                low_val = float(df.iloc[step].get('low', current_price))
-                high_val = float(df.iloc[step].get('high', current_price))
+            if df is not None and 0 <= current_idx < len(df):
+                low_val = float(df.iloc[current_idx].get('low', current_price))
+                high_val = float(df.iloc[current_idx].get('high', current_price))
 
-            self.history.append({
-                "step":    step,
+            history.append({
+                "step":    current_idx,
                 "price":   current_price,
                 "low":     low_val,
                 "high":    high_val,
@@ -195,7 +198,7 @@ class BacktestEngine:
                 await asyncio.sleep(0)
 
         self.is_running = False
-        return pd.DataFrame(self.history)
+        return pd.DataFrame(history)
 
     # ──────────────────────────────────────────────────────────
     # 예측 헬퍼 (5-액션 대응 / probs 배열 반환)
@@ -314,8 +317,8 @@ class BacktestEngine:
 
 class KPICalculator:
     """
-    백테스트 결과 DataFrame으로부터 KPI를 계산합니다.
-    5-액션 분할 매매(Buy40%/Buy60%/Sell60%/Sell40%) 완전 대응.
+    백테스트 결과 DataFrame으로부터 실제 계좌 잔고(balance) 기반 KPI를 계산합니다.
+    Look-ahead Bias를 제거한 현실적인 성과 측정을 수행합니다.
     """
 
     @staticmethod
@@ -326,31 +329,30 @@ class KPICalculator:
                 "MDD": 0.0, "Profit Factor": 0.0,
             }
 
-        # ── 1. 총 수익률 ──────────────────────────────
+        # ── 1. 총 수익률 (최종 순자산 기준) ──────────────────────────────
         final_balance = history_df.iloc[-1]['balance']
         total_return  = (final_balance - initial_balance) / initial_balance * 100
 
-        # ── 2. 승률 & Profit Factor ───────────────────
-        # 분할 매도(Sell60%, Sell40%) 시점마다 reward가 기록됨
-        # reward가 거래 수익에 직결되는 값은 아니므로,
-        # '매도 체결 시 balance 증분'을 실현 손익으로 사용
+        # ── 2. 승률 & Profit Factor (실제 잔고 증감 기준) ───────────────────
+        # reward 대신 balance의 변화량(diff)을 통해 실제 실현 손익을 추출
+        history_df = history_df.copy()
+        history_df['pnl'] = history_df['balance'].diff().fillna(0)
+        
+        # 매도 액션이 발생한 시점의 PnL만 필터링 (수수료/슬리피지가 반영된 실제 수익)
         sell_mask = history_df['action'].isin(['Sell60%', 'Sell40%'])
-        sell_rows = history_df[sell_mask].copy()
+        sell_rows = history_df[sell_mask]
 
         if len(sell_rows) > 0:
-            # 각 매도 직전과 직후의 balance 차이 = 실현 손익 근사
-            # (env.step()이 net_worth = balance + holdings*price를 반환하므로
-            #  매도 순간의 reward 부호를 승패 판단에 사용)
-            sell_rows = sell_rows.copy()
-            win_trades  = len(sell_rows[sell_rows['reward'] > 0])
+            # 매도 시점의 순자산 변화량이 양수면 익절, 음수면 손절
+            win_trades = len(sell_rows[sell_rows['pnl'] > 0])
             total_sells = len(sell_rows)
-            win_rate    = win_trades / total_sells * 100
+            win_rate = (win_trades / total_sells * 100) if total_sells > 0 else 0.0
 
-            gross_profit = sell_rows[sell_rows['reward'] > 0]['reward'].sum()
-            gross_loss   = abs(sell_rows[sell_rows['reward'] < 0]['reward'].sum())
+            gross_profit = sell_rows[sell_rows['pnl'] > 0]['pnl'].sum()
+            gross_loss = abs(sell_rows[sell_rows['pnl'] < 0]['pnl'].sum())
             profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
         else:
-            win_rate      = 0.0
+            win_rate = 0.0
             profit_factor = 0.0
 
         # ── 3. MDD (Max Drawdown) ─────────────────────
