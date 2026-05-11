@@ -1395,7 +1395,7 @@ class BacktestViewModel(QObject):
     sig_bt_chart_data = pyqtSignal(object) # DataFrame
     sig_bt_error = pyqtSignal(str)
 
-    def __init__(self, config_manager, influx_client, data_collector, order_manager, universe_manager=None, historical_fetcher=None):
+    def __init__(self, config_manager, influx_client, data_collector, order_manager, universe_manager=None, historical_fetcher=None, token_manager=None):
         super().__init__()
         self.config_manager = config_manager
         self.influx_client = influx_client
@@ -1403,6 +1403,7 @@ class BacktestViewModel(QObject):
         self.order_manager = order_manager
         self.universe_manager = universe_manager
         self.historical_fetcher = historical_fetcher
+        self.token_manager = token_manager
         self.logger = logging.getLogger("BacktestViewModel")
 
         from core.backtester import BacktestEngine
@@ -1571,13 +1572,22 @@ class BacktestViewModel(QObject):
     async def _run_auto_batch_task(self, start_date: str, end_date: str):
         try:
             # 1. Top 30 종목 스캔
-            access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
-            if not access_token:
-                self.sig_bt_error.emit("API 접근 토큰이 없습니다. 먼저 로그인(토큰 발급)이 필요합니다.")
-                return
-
             if not self.universe_manager:
                 self.sig_bt_error.emit("UniverseManager가 주입되지 않았습니다.")
+                return
+
+            # [신규] 토큰 유효성 확인 및 갱신
+            access_token = self.config_manager.get("KIWOOM_ACCESS_TOKEN", "")
+            if self.token_manager:
+                self.logger.info("API 토큰 유효성 확인 중...")
+                # TokenManager가 background 루프를 돌고 있다면 최신 토큰을 가져옴
+                # 만약 토큰이 없거나 만료 임박했다면 강제 갱신 시도
+                if not access_token:
+                    await self.token_manager.refresh_token()
+                    access_token = self.token_manager.get_token()
+            
+            if not access_token:
+                self.sig_bt_error.emit("API 접근 토큰이 없습니다. 먼저 로그인(토큰 발급)이 필요합니다.")
                 return
 
             self.sig_bt_progress.emit(0, 100, 0)

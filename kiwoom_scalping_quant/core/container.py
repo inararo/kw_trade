@@ -181,4 +181,5 @@ class Container(containers.DeclarativeContainer):
         order_manager=order_manager,
         universe_manager=universe_manager,
         historical_fetcher=historical_fetcher,
+        token_manager=token_manager,
     )

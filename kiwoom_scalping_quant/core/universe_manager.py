@@ -260,7 +260,7 @@ class UniverseManager:
                     page_cnt = 0
                     m_name = "코스피" if mrkt_tp == "001" else ("코스닥" if mrkt_tp == "101" else "전체")
                     
-                    while page_cnt < 2: # 각 시장당 최대 2페이지(200개) 시도
+                    while page_cnt < 5: # 각 시장당 최대 5페이지(500개) 시도 (필터링 고려하여 확대)
                         page_cnt += 1
                         headers = {
                             'Content-Type': 'application/json;charset=UTF-8',
@@ -349,7 +349,8 @@ class UniverseManager:
                                 if not any(x["code"] == code for x in raw_market):
                                     raw_market.append(parsed_stock)
 
-                            if not next_key or len(raw_market) >= (top_n * 1.5): # 여유있게 수집 후 필터링
+                            # [개선] 필터링 후에도 충분한 종목을 확보하기 위해 수집 버퍼를 대폭 확대 (top_n의 4배 또는 최소 300개)
+                            if not next_key or len(raw_market) >= max(300, top_n * 4): 
                                 break
                 
                 if raw_market:
@@ -400,6 +401,11 @@ class UniverseManager:
 
             filtered_universe.append(stock)
 
+        # [추가] 필터링 결과 로그
+        excluded_count = len(raw_market) - len(filtered_universe)
+        if excluded_count > 0:
+            self.logger.info(f"💡 필터링 완료: {len(raw_market)}개 중 {excluded_count}개 종목 제외 (ETF/ETN/우선주/갭미달 등)")
+
         # 2. 정렬 (사용자 선택 기준)
         sort_key_map = {
             "volume": "volume",
@@ -436,12 +442,11 @@ class UniverseManager:
             "api-id": "ka10030"
         }
 
-        # mang_stk_incls: 4 (관리종목, 우선주제외) 
-        # sort_tp: 1 (거래량)
+        # mang_stk_incls: 0 (전체 - 필터링은 내부 _is_valid_scalping_symbol에서 수행)
         params = {
             'mrkt_tp': '000',      # 000: 전체
             'sort_tp': '1',      # 1: 거래량
-            'mang_stk_incls': '4', # 4: 관리종목, 우선주제외
+            'mang_stk_incls': '0', # 0: 전체 (기존 4에서 변경하여 호환성 강화)
             'crd_tp': '0',
             'trde_qty_tp': '0',
             'pric_tp': '0',
@@ -460,10 +465,18 @@ class UniverseManager:
                         raise RuntimeError(f"Kiwoom API 연동 실패: {response.status} - {err_text}")
 
                     data = await response.json()
+                    r_code = str(data.get("return_code", ""))
+                    r_msg = data.get("return_msg", "")
+                    
                     items = data.get("ka10030", []) or data.get("output", []) or data.get("output1", [])
                     
                     if not items:
-                        self.logger.warning(f"Kiwoom API 응답에 예상된 데이터 키가 없습니다. 수신된 키: {list(data.keys())}")
+                        self.logger.warning(f"Kiwoom API 응답에 예상된 데이터 키가 없습니다. Code: {r_code}, Msg: {r_msg} | Keys: {list(data.keys())}")
+                        
+                        # [특수] 토큰 만료 처리
+                        if r_code == "3" or "Token이 유효하지 않습니다" in r_msg:
+                            raise RuntimeError("TOKEN_EXPIRED: API 접근 토큰이 만료되었습니다.")
+
                         # [안정화] 일부 TR은 'output' 대신 다른 키를 사용할 수 있으므로 전체 탐색 시도
                         for k, v in data.items():
                             if isinstance(v, list) and len(v) > 0:
