@@ -58,6 +58,10 @@ class StrategyManager:
         # [신규] 조건식 스위칭 이벤트 콜백
         self.on_condition_switched_callbacks: List[Callable] = []
 
+        # [신규] 최소 감시 보장(Minimum Lock Time) 관련 상태
+        self.inserted_at: Dict[str, float] = {} # {symbol: timestamp}
+        self.MIN_LOCK_TIME = 15 # 초 단위
+
     def set_ai_paused(self, paused: bool):
         if self.is_ai_paused != paused:
             self.is_ai_paused = paused
@@ -193,6 +197,7 @@ class StrategyManager:
                                            strategy_manager=self, broker_api=self.broker_api)
                 self.envs[sym] = engine
                 self.last_action_times[sym] = 0.0
+                self.inserted_at[sym] = time.time() # [추가] 진입 시간 기록
                 
                 # [🚨 중요] 활성 슬롯일 때만 시세 구독 요청
                 if hasattr(self.data_collector, 'subscribe_symbol'):
@@ -592,11 +597,28 @@ class StrategyManager:
                     if engine:
                         engine.is_condition_deleted = True
                 else:
+                    # [신규] 최소 감시 시간(MIN_LOCK_TIME) 보호 로직
+                    import time
+                    entry_time = self.inserted_at.get(clean_symbol, 0)
+                    elapsed = time.time() - entry_time
+                    if elapsed < self.MIN_LOCK_TIME:
+                        wait_time = self.MIN_LOCK_TIME - elapsed
+                        self.logger.info(f"⏳ [{clean_symbol}] 조건 이탈 지연 (최소 감시 시간 보호: 남은 시간 {wait_time:.1f}초)")
+                        asyncio.create_task(self._delayed_condition_delete(clean_symbol, wait_time))
+                        return
+
                     self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 활성 슬롯 비움 및 엔진 제거")
                     await self.update_engines([], [clean_symbol])
+                    if clean_symbol in self.inserted_at: del self.inserted_at[clean_symbol]
                     
                     # [핵심] 빈 자리가 생겼으므로 대기열에서 보충
                     await self._process_pending_queue()
+
+    async def _delayed_condition_delete(self, symbol: str, delay: float):
+        """지정된 시간 대기 후 이탈 처리를 다시 시도합니다."""
+        await asyncio.sleep(delay)
+        self.logger.info(f"⏰ [{symbol}] 최소 감시 시간 경과. 이탈 처리 재시도...")
+        await self.handle_condition_delete(symbol)
 
     async def _process_pending_queue(self):
         """대기열(Queue)에서 다음 종목을 꺼내어 활성 슬롯으로 배치"""
@@ -619,6 +641,7 @@ class StrategyManager:
                                            strategy_manager=self, broker_api=self.broker_api)
             self.envs[symbol] = new_engine
             self.last_action_times[symbol] = 0.0
+            self.inserted_at[symbol] = time.time() # [추가] 진입 시간 기록
             
             # 실시간 구독 요청
             if hasattr(self.data_collector, 'subscribe_symbol'):

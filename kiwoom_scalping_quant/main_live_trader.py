@@ -49,6 +49,36 @@ class KiwoomBrokerWrapper:
         self._ws_instance = None # [추가] 실시간 메시지 전송용
         self.strategy_manager = None # [추가] 재구독 연동용
 
+    async def subscribe_symbol(self, symbol: str):
+        """[신규] 실시간 시세(0B/0D) 구독 등록 메시지 전송"""
+        if self._ws_instance and self._ws_instance.open:
+            clean_symbol = symbol.split('_')[0].strip()
+            reg_payload = {
+                "trnm": "REG",
+                "grp_no": "1",
+                "refresh": "0",
+                "data": [{"type": ["0B", "0D"], "item": [clean_symbol]}]
+            }
+            try:
+                await self._ws_instance.send(json.dumps(reg_payload))
+                logger.info(f"📡 [WS] 종목 실시간 구독 요청 전송: {clean_symbol}")
+            except Exception as e:
+                logger.error(f"❌ [WS] 구독 요청 전송 실패 ({clean_symbol}): {e}")
+
+    async def unsubscribe_symbol(self, symbol: str):
+        """[신규] 실시간 시세 구독 해제 메시지 전송"""
+        if self._ws_instance and self._ws_instance.open:
+            clean_symbol = symbol.split('_')[0].strip()
+            unreg_payload = {
+                "trnm": "UNREG",
+                "data": [{"type": ["0B", "0D"], "item": [clean_symbol]}]
+            }
+            try:
+                await self._ws_instance.send(json.dumps(unreg_payload))
+                logger.info(f"📡 [WS] 종목 실시간 구독 해제 전송: {clean_symbol}")
+            except Exception as e:
+                logger.error(f"❌ [WS] 구독 해제 전송 실패 ({clean_symbol}): {e}")
+
     # ------------------ REST API (aiohttp) ------------------
     async def login(self):
         """OAuth2 토큰 발급 (키움 규격)"""
