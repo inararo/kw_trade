@@ -107,7 +107,7 @@ class AsyncInfluxDBClient:
         clean_symbol = symbol.split('_')[0].strip()
         search_range = "-1y" # 최근 30일에서 1년으로 확장 (과거 수집분 포함)
 
-        print(f"InfluxDB: [{symbol}/{clean_symbol}] 과거 데이터 {limit}건 조회 시도 (범위: {search_range})")
+        print(f"InfluxDB: [{clean_symbol}] 과거 데이터 {limit}건 조회 시도 (범위: {search_range})")
 
         try:
             query_api = self.client.query_api()

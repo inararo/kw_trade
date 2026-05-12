@@ -138,6 +138,23 @@ class AITrainingStudioTab(QWidget):
         self.spin_gae.setToolTip("GAE Lambda: 어드밴티지 추정 시 편향-분산 트레이드오프 조절")
         create_h_spin(self.spin_gae, "GAE 람다:", form_layout)
 
+        # [신규] 추론 임계값 설정 (Inference Thresholds)
+        self.spin_buy_threshold = QDoubleSpinBox()
+        self.spin_buy_threshold.setRange(0.01, 1.0)
+        self.spin_buy_threshold.setValue(0.30)
+        self.spin_buy_threshold.setSingleStep(0.05)
+        self.spin_buy_threshold.setDecimals(2)
+        self.spin_buy_threshold.setToolTip("Buy Threshold: AI 매수 확신도가 이 값 이상일 때 주문 전송")
+        create_h_spin(self.spin_buy_threshold, "매수 임계값 (Buy):", form_layout)
+
+        self.spin_sell_threshold = QDoubleSpinBox()
+        self.spin_sell_threshold.setRange(0.01, 1.0)
+        self.spin_sell_threshold.setValue(0.30)
+        self.spin_sell_threshold.setSingleStep(0.05)
+        self.spin_sell_threshold.setDecimals(2)
+        self.spin_sell_threshold.setToolTip("Sell Threshold: AI 매도 확신도가 이 값 이상일 때 주문 전송")
+        create_h_spin(self.spin_sell_threshold, "매도 임계값 (Sell):", form_layout)
+
         # [스마트 샘플링 토글] 데이터 분석 모드 바로 아래
         self.chk_smart_sampling = QCheckBox("활황장(Volume Spike) 구간 집중 학습")
         self.chk_smart_sampling.setChecked(False)  # 기본값: OFF (Pure Random)
@@ -247,6 +264,8 @@ class AITrainingStudioTab(QWidget):
         self.spin_clip.valueChanged.connect(self._update_info_summary)
         self.spin_gamma.valueChanged.connect(self._update_info_summary)
         self.spin_gae.valueChanged.connect(self._update_info_summary)
+        self.spin_buy_threshold.valueChanged.connect(self._update_info_summary)
+        self.spin_sell_threshold.valueChanged.connect(self._update_info_summary)
         self.chk_day_begin.stateChanged.connect(self._update_info_summary)
         self.chk_overnight.stateChanged.connect(self._update_info_summary)
 
@@ -262,7 +281,9 @@ class AITrainingStudioTab(QWidget):
             "ent_coef": self.spin_ent.value(),
             "clip_range": self.spin_clip.value(),
             "gamma": self.spin_gamma.value(),
-            "gae_lambda": self.spin_gae.value()
+            "gae_lambda": self.spin_gae.value(),
+            "ai_buy_threshold": self.spin_buy_threshold.value(),
+            "ai_sell_threshold": self.spin_sell_threshold.value()
         }
 
         # [즉각 반응] 시작 버튼을 먼저 비활성화하여 중복 클릭 방지
@@ -359,6 +380,8 @@ class AITrainingStudioTab(QWidget):
     <li><b>Clip Range:</b> {self.spin_clip.value():.2f}</li>
     <li><b>Gamma:</b> {self.spin_gamma.value()}</li>
     <li><b>GAE Lambda:</b> {self.spin_gae.value()}</li>
+    <li><b>Buy Threshold:</b> {self.spin_buy_threshold.value():.2f}</li>
+    <li><b>Sell Threshold:</b> {self.spin_sell_threshold.value():.2f}</li>
 </ul>
         """
         self.txt_info_summary.setHtml(summary)

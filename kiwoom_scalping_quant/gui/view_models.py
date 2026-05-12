@@ -1118,6 +1118,14 @@ class AITrainingViewModel(QObject):
             "tensorboard_log": tb_log_dir,
             "model_name_suffix": sampling_tag,
         }
+
+        # [신규] 임계값 설정 반영 (config.yaml 업데이트)
+        if ppo_params:
+            self.config_manager.update_settings({
+                "ai_buy_threshold": ppo_params.get("ai_buy_threshold", 0.3),
+                "ai_sell_threshold": ppo_params.get("ai_sell_threshold", 0.3)
+            })
+            self.sig_training_log.emit(f"   => 추론 임계값 설정 완료: 매수 {ppo_params.get('ai_buy_threshold')}, 매도 {ppo_params.get('ai_sell_threshold')}")
         
         self.sig_training_log.emit(
             f"   => 모델 저장 경로: [{model_save_dir}] | 학습 태그: [{sampling_tag}]"
