@@ -64,7 +64,18 @@ def get_tick_size(price: float) -> int:
 def get_valid_tick_price(price: float, side: str = "BUY") -> int:
     """
     가격을 유효한 호가 단위로 보정합니다.
+    실전 스캘핑을 위해 매수는 올림(Ceil), 매도는 내림(Floor)을 적용하여 체결 우선순위를 확보합니다.
     """
     if price <= 0: return 0
+    
+    # 1. 현재 가격대에 맞는 호가 단위(Tick Size) 획득
     tick = get_tick_size(price)
-    return int((price // tick) * tick)
+    
+    # 2. 주문 방향에 따른 전략적 보정
+    # BUY/SELL 모두 호가 단위로 내림(Floor) 처리하여 지정가 초과 방지
+    if side in ["BUY", "SELL"]:
+        return int(np.floor(round(price, 2) / tick) * tick)
+    
+    # 기타 (취소/정정 등): 기본 내림 처리
+    else:
+        return int((price // tick) * tick)

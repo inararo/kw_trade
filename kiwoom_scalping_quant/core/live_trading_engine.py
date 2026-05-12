@@ -552,7 +552,7 @@ class LiveTradingEngine:
                     f" | 투자금: {invest_amount:,.0f}원 | 비율: {buy_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
-                self.last_action_time = current_time
+                self.last_action_time = current_time_val
             else:
                 print(f"[{self.symbol}] 주문 수량 0: 가용현금({orderable_cash:,.0f}), 투자비율({buy_ratio*100:.0f}%)")
 
@@ -568,7 +568,7 @@ class LiveTradingEngine:
                     f" | 보유: {real_holdings}주 | 비율: {sell_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))
-                self.last_action_time = current_time
+                self.last_action_time = current_time_val
             else:
                 print(f"[{self.symbol}] 중복 매도 신호 차단: 이미 보유 수량이 0입니다.")
 

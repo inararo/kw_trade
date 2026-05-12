@@ -88,10 +88,11 @@ class OrderManager:
         # [추가] 실전 잔고 상태 및 쿨다운 관리 변수
         self._last_sell_fill_time: Dict[str, float] = {}  # 매도 직후 API 지연 방어용
 
-        # [추가] 주문 제한(Throttling) 관련
+        # [추가] 주문 제한(Throttling) 및 중복 취소 방지
         self.rate_limit = config.get("rate_limit", 5)
         self.order_semaphore = asyncio.Semaphore(self.rate_limit)
         self.order_timestamps = []
+        self._cancelling_orders = set() # [추가] 중복 취소 전송 방지용
 
         # [추가] 글로벌 리스크 제한 (RiskManager 주입 전 기본값)
         self.global_max_loss = config.get("global_max_loss", -500000)
@@ -315,8 +316,8 @@ class OrderManager:
                 api_id = 'kt10002'
                 body = {
                     "cano":          str(account_no),
-					"dmst_stex_tp": 'KRX',
-                    "orig_ord_no":   str(orig_order_no),
+                    "dmst_stex_tp": 'KRX',
+                    "orig_ord_no":   int(orig_order_no) if str(orig_order_no).isdigit() else orig_order_no,
                     "stk_cd":        clean_symbol,
                     "mdfy_qty":      str(qty),
                     "mdfy_uv":       str(price) if price > 0 else '',
@@ -327,8 +328,8 @@ class OrderManager:
                 api_id = 'kt10003'
                 body = {
                     "cano":        str(account_no),
-					"dmst_stex_tp": 'KRX',
-                    "orig_ord_no": str(orig_order_no),
+                    "dmst_stex_tp": 'KRX',
+                    "orig_ord_no": int(orig_order_no) if str(orig_order_no).isdigit() else orig_order_no,
                     "stk_cd":      clean_symbol,
                     "cncl_qty":    str(qty),
                 }
@@ -755,16 +756,34 @@ class OrderManager:
         """
         부분 체결 발생 시 미체결 잔량을 즉시 시장가 취소(또는 정정)하여 포지션 꼬임 방지.
         """
+        internal_id = order.get('internal_id')
+        if not internal_id: return
+
         if order['unexecuted_qty'] > 0:
+            # [중복 방지] 이미 취소 주문이 전송 중이면 건너뜀
+            if internal_id in self._cancelling_orders:
+                return
+
             self.logger.warning(f"부분 체결 감지! 잔여 수량({order['unexecuted_qty']}주) 긴급 취소 진행. (Broker ID: {order['broker_id']})")
-            # 비동기로 취소 주문 전송
-            asyncio.create_task(self.send_order(
-                order_type="CANCEL",
-                symbol=order['symbol'],
-                price=0,
-                qty=order['unexecuted_qty'],
-                orig_order_no=order['broker_id']
-            ))
+            
+            # 취소 주문 전송 태스크 생성
+            async def do_cancel():
+                self._cancelling_orders.add(internal_id)
+                try:
+                    await self.send_order(
+                        order_type="CANCEL",
+                        symbol=order['symbol'],
+                        price=0,
+                        qty=order['unexecuted_qty'],
+                        orig_order_no=order['broker_id']
+                    )
+                finally:
+                    # 전송 후 일정 시간(예: 1초) 후에 셋에서 제거하여 과도한 재전송 방지
+                    await asyncio.sleep(1.0)
+                    if internal_id in self._cancelling_orders:
+                        self._cancelling_orders.remove(internal_id)
+
+            asyncio.create_task(do_cancel())
 
     async def execute_smart_order(self, action: str, symbol: str, target_qty: int, data_collector):
         """
