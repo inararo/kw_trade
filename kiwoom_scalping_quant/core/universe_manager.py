@@ -93,7 +93,7 @@ class UniverseManager:
                                 "flu_rt": float(str(item.get("flu_rt", 0)).replace(',', '')),
                                 "volume": float(str(item.get("trde_qty", 0)).replace(',', ''))
                             })
-                        self.logger.info(f"✅ 조건검색 결과 수신 완료: {cond_nm} ({len(symbols)}개 종목)")
+                        self.logger.error(f"✅ 조건검색 결과 수신 완료: {cond_nm} ({len(symbols)}개 종목)")
                     else:
                         self.logger.error(f"❌ 조건검색 종목 조회 실패 (Status {resp.status})")
         except Exception as e:

@@ -60,7 +60,7 @@ class StrategyManager:
 
         # [신규] 최소 감시 보장(Minimum Lock Time) 관련 상태
         self.inserted_at: Dict[str, float] = {} # {symbol: timestamp}
-        self.MIN_LOCK_TIME = 15 # 초 단위
+        self.MIN_LOCK_TIME = 60 # 초 단위 (깜빡임 방지를 위해 60초로 연장)
 
     def set_ai_paused(self, paused: bool):
         if self.is_ai_paused != paused:
@@ -515,7 +515,7 @@ class StrategyManager:
     # ==========================================
     async def handle_condition_snapshot(self, symbols: List[str]):
         """초기 조건검색 스냅샷(예: 31개) 수신 처리"""
-        self.logger.info(f"📋 [조건검색 스냅샷] 전체 {len(symbols)} 종목 수신 (8슬롯 & Queue 로직 적용)")
+        self.logger.error(f"📋 [조건검색 스냅샷] 전체 {len(symbols)} 종목 수신 (8슬롯 & Queue 로직 적용)")
         
         async with self._swap_lock:
             # 1. 현재 관리 중인 종목(보유 종목 등)은 유지하고, 
@@ -557,17 +557,24 @@ class StrategyManager:
     async def handle_condition_insert(self, symbol: str, event_data: dict = None):
         """조건검색 편입 이벤트 수신"""
         clean_symbol = symbol.split('_')[0]
+        self.logger.info(f"📥 [StrategyManager] handle_condition_insert 호출됨: {clean_symbol}")
         
         async with self._swap_lock:
-            # 이미 관리 중인 종목이면 무시
-            if clean_symbol in self.symbols or clean_symbol in self.pending_universe_queue:
+            # [보완] 이미 관리 중인 종목이라도 이탈 예약 상태라면 해제
+            if clean_symbol in self.symbols:
+                engine = self.envs.get(clean_symbol)
+                if engine and getattr(engine, 'is_condition_deleted', False):
+                    engine.is_condition_deleted = False
+                    self.logger.info(f"♻️ {clean_symbol} 재편입 확인: 이탈 예약을 취소하고 감시를 유지합니다.")
+                else:
+                    self.logger.info(f"ℹ️ {clean_symbol}은 이미 활성 감시 중입니다. (Skip) 현재 목록: {self.symbols}")
+                return
+
+            if clean_symbol in self.pending_universe_queue:
+                self.logger.info(f"ℹ️ {clean_symbol}은 이미 대기열에 있습니다. (Skip)")
                 return
 
             # 최대 감시 종목 수 여유가 있는지 확인
-            active_count = len([s for s in self.symbols if not self.order_manager.has_unexecuted_orders(s) and self.order_manager.holdings.get(s, 0) == 0])
-            # 실제 활성 감시 수 = (총 심볼 수 - 잔고 보유로 인한 강제유지 수)  
-            # 편의상 len(self.symbols)를 기준으로 하되 MAX_CONCURRENT_STOCKS를 초과하면 대기열로 넣음
-            
             if len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
                 self.logger.info(f"🌟 [조건검색 편입] {clean_symbol} 활성 슬롯 즉시 배정 (현재 {len(self.symbols)}/{self.MAX_CONCURRENT_STOCKS})")
                 await self.update_engines([clean_symbol], [])
@@ -576,9 +583,10 @@ class StrategyManager:
                     self.pending_universe_queue.append(clean_symbol)
                     self.logger.info(f"⏳ [조건검색 대기] {clean_symbol} 슬롯 포화. 대기열 추가 (Queue: {len(self.pending_universe_queue)}개)")
 
-    async def handle_condition_delete(self, symbol: str, event_data: dict = None):
+    async def handle_condition_delete(self, symbol: str, event_data: dict = None, is_retry: bool = False):
         """조건검색 이탈 이벤트 수신"""
         clean_symbol = symbol.split('_')[0]
+        self.logger.info(f"📤 [StrategyManager] handle_condition_delete 호출됨: {clean_symbol}")
         
         async with self._swap_lock:
             if clean_symbol in self.pending_universe_queue:
@@ -588,23 +596,34 @@ class StrategyManager:
                 
             if clean_symbol in self.symbols:
                 # 잔고와 미체결 내역이 있는지 확인
-                has_holdings = self.order_manager.holdings.get(clean_symbol, 0) > 0
+                holdings_qty = self.order_manager.holdings.get(clean_symbol, 0)
                 has_unex = self.order_manager.has_unexecuted_orders(clean_symbol)
                 
-                if has_holdings or has_unex:
-                    self.logger.warning(f"⚠️ [조건검색 이탈 보류] {clean_symbol} 잔고/미체결 존재. 슬롯 유지 (이탈 표시)")
-                    engine = self.envs.get(clean_symbol)
-                    if engine:
-                        engine.is_condition_deleted = True
+                engine = self.envs.get(clean_symbol)
+                
+                # [상태 업데이트] 이탈 예정임을 표시 (최초 이탈 이벤트 발생 시에만)
+                if not is_retry and engine:
+                    engine.is_condition_deleted = True
+
+                if holdings_qty > 0 or has_unex:
+                    self.logger.info(f"⚠️ [조건검색 이탈 보류] {clean_symbol} 잔고({holdings_qty}주)/미체결({has_unex}) 존재. 슬롯 유지")
                 else:
                     # [신규] 최소 감시 시간(MIN_LOCK_TIME) 보호 로직
                     import time
                     entry_time = self.inserted_at.get(clean_symbol, 0)
                     elapsed = time.time() - entry_time
-                    if elapsed < self.MIN_LOCK_TIME:
-                        wait_time = self.MIN_LOCK_TIME - elapsed
-                        self.logger.info(f"⏳ [{clean_symbol}] 조건 이탈 지연 (최소 감시 시간 보호: 남은 시간 {wait_time:.1f}초)")
-                        asyncio.create_task(self._delayed_condition_delete(clean_symbol, wait_time))
+                    # float precision 오차 방지를 위해 0.1초 마진
+                    if elapsed < self.MIN_LOCK_TIME - 0.1:
+                        if not is_retry:
+                            wait_time = self.MIN_LOCK_TIME - elapsed
+                            self.logger.info(f"⏳ [{clean_symbol}] 조건 이탈 지연 (최소 감시 시간 보호: 경과 {elapsed:.1f}초, 남은 시간 {wait_time:.1f}초)")
+                            asyncio.create_task(self._delayed_condition_delete(clean_symbol, wait_time))
+                        return
+
+                    # [최종 검증] 지연 대기 중에 다시 편입되지 않았는지 확인
+                    if engine and not engine.is_condition_deleted:
+                        if is_retry:
+                            self.logger.info(f"🛡️ {clean_symbol} 지연 이탈 취소: 대기 중 재편입되었습니다.")
                         return
 
                     self.logger.info(f"🗑️ [조건검색 이탈] {clean_symbol} 활성 슬롯 비움 및 엔진 제거")
@@ -613,23 +632,28 @@ class StrategyManager:
                     
                     # [핵심] 빈 자리가 생겼으므로 대기열에서 보충
                     await self._process_pending_queue()
+            else:
+                if not is_retry:
+                    self.logger.info(f"ℹ️ {clean_symbol}은 감시 중인 종목이 아닙니다. (Skip)")
 
     async def _delayed_condition_delete(self, symbol: str, delay: float):
         """지정된 시간 대기 후 이탈 처리를 다시 시도합니다."""
         await asyncio.sleep(delay)
         self.logger.info(f"⏰ [{symbol}] 최소 감시 시간 경과. 이탈 처리 재시도...")
-        await self.handle_condition_delete(symbol)
+        await self.handle_condition_delete(symbol, is_retry=True)
 
     async def _process_pending_queue(self):
-        """대기열(Queue)에서 다음 종목을 꺼내어 활성 슬롯으로 배치"""
+        """
+        대기열(Queue)에서 다음 종목을 꺼내어 활성 슬롯으로 배치합니다.
+        주의: 이 메서드는 호출자가 반드시 self._swap_lock을 보유한 상태에서 호출해야 합니다. (Deadlock 방지)
+        """
         next_sym = None
-        async with self._swap_lock:
-            if self.pending_universe_queue and len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
-                next_sym = self.pending_universe_queue.pop(0)
-                self.logger.info(f"🔄 [슬롯 교체] 대기열에서 '{next_sym}'를 꺼내어 활성 슬롯으로 이동합니다.")
+        if self.pending_universe_queue and len(self.symbols) < self.MAX_CONCURRENT_STOCKS:
+            next_sym = self.pending_universe_queue.pop(0)
+            self.logger.info(f"🔄 [슬롯 교체] 대기열에서 '{next_sym}'를 꺼내어 활성 슬롯으로 이동합니다.")
         
         if next_sym:
-            # update_engines를 사용하면 내부적으로 symbols 체크와 웜업까지 수행함
+            # update_engines는 동기화 상태에서 안전하게 내부 속성을 수정합니다.
             await self.update_engines([next_sym], [])
 
     async def _add_dynamic_symbol(self, symbol: str):

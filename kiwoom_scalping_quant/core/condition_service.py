@@ -1,5 +1,7 @@
 import logging
 import json
+import asyncio
+import inspect
 from typing import Dict, Any, List, Callable
 
 class ConditionService:
@@ -62,10 +64,28 @@ class ConditionService:
         elif status == "D":
             self._handle_delete(data)
 
+    def _run_callback(self, callbacks: List[Callable], *args, **kwargs):
+        """
+        [보완] 등록된 콜백들을 동기/비동기 여부에 관계없이 안전하게 실행합니다.
+        """
+        for cb in callbacks:
+            try:
+                # 1. 코루틴 함수인 경우 (async def)
+                if inspect.iscoroutinefunction(cb):
+                    self.logger.info(f"Scheduling async callback: {cb.__name__ if hasattr(cb, '__name__') else 'unknown'} for {args[0] if args else 'unknown'}")
+                    asyncio.create_task(cb(*args, **kwargs))
+                else:
+                    # 2. 일반 함수인 경우 호출 후 결과 확인
+                    self.logger.info(f"Calling callback: {cb.__name__ if hasattr(cb, '__name__') else 'unknown'} for {args[0] if args else 'unknown'}")
+                    res = cb(*args, **kwargs)
+                    # 만약 일반 함수가 코루틴 객체를 반환했다면 (예: partial 등)
+                    if inspect.iscoroutine(res):
+                        asyncio.create_task(res)
+            except Exception as e:
+                self.logger.error(f"❌ [ConditionService] 콜백 실행 오류 ({cb.__name__ if hasattr(cb, '__name__') else 'unknown'}): {e}")
 
     def _handle_snapshot(self, data: Dict[str, Any]):
         """초기 조건검색 결과 스냅샷 처리 (CNSRREQ)"""
-        # [수정] 키움 API 규격: data 필드 내에 [{jmcode: A005930}, ...] 형태로 수신됨
         raw_items = data.get("data", [])
         symbols = []
         
@@ -80,43 +100,25 @@ class ConditionService:
                 if code:
                     symbols.append(code.lstrip("A"))
 
-        import asyncio
         self.logger.info(f"📋 조건검색 스냅샷 수신: {len(symbols)} 종목")
         self.current_symbols = set(symbols)
-        for cb in self.on_snapshot:
-            if asyncio.iscoroutinefunction(cb):
-                asyncio.create_task(cb(list(self.current_symbols)))
-            else:
-                try: cb(list(self.current_symbols))
-                except Exception as e: self.logger.error(f"Snapshot callback error: {e}")
+        self._run_callback(self.on_snapshot, list(self.current_symbols))
 
     def _handle_insert(self, data: Dict[str, Any]):
         """실시간 종목 편입 처리"""
-        import asyncio
         symbol = data.get("symbol", "").lstrip("A")
         if symbol and symbol not in self.current_symbols:
             self.logger.info(f"🔔 [편입] {symbol}")
             self.current_symbols.add(symbol)
-            for cb in self.on_insert:
-                if asyncio.iscoroutinefunction(cb):
-                    asyncio.create_task(cb(symbol, data))
-                else:
-                    try: cb(symbol, data)
-                    except Exception as e: self.logger.error(f"Insert callback error: {e}")
+            self._run_callback(self.on_insert, symbol, data)
 
     def _handle_delete(self, data: Dict[str, Any]):
         """실시간 종목 이탈 처리"""
-        import asyncio
         symbol = data.get("symbol", "").lstrip("A")
         if symbol in self.current_symbols:
             self.logger.info(f"🔕 [이탈] {symbol}")
             self.current_symbols.remove(symbol)
-            for cb in self.on_delete:
-                if asyncio.iscoroutinefunction(cb):
-                    asyncio.create_task(cb(symbol, data))
-                else:
-                    try: cb(symbol, data)
-                    except Exception as e: self.logger.error(f"Delete callback error: {e}")
+            self._run_callback(self.on_delete, symbol, data)
 
     def register_callbacks(self, on_insert=None, on_delete=None, on_snapshot=None):
         if on_insert: self.on_insert.append(on_insert)

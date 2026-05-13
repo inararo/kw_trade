@@ -258,10 +258,19 @@ class KiwoomBrokerWrapper:
                 # ORDR, CNTG 등 주문/체결/잔고(Chejan) 이벤트
                 elif msg_type in ["ORDR", "CNTG", "K1", "H1"]:
                     symbol = entry.get("stk_cd") or data.get("symbol", "")
+                    # [개선] 체결/주문 정보 상세 추출 (OrderManager 연동용)
+                    values = entry.get("values", entry)
+                    broker_id = str(entry.get("ord_no") or values.get("ord_no", ""))
+                    msg_type_str = "접수" if msg_type == "ORDR" or "접수" in str(entry.get("return_msg", "")) else "체결"
+                    
                     return {
                         "event": "execution",
+                        "msg_type": msg_type_str,
                         "type": "체결",
-                        "symbol": self._clean_code(symbol)
+                        "symbol": self._clean_code(symbol),
+                        "broker_id": broker_id,
+                        "exec_qty": int(float(values.get("exec_qty") or 0)),
+                        "exec_price": float(values.get("exec_prc") or values.get("exec_price") or 0)
                     }
             
             return {"event": "unknown"}
@@ -288,17 +297,30 @@ class KiwoomBrokerWrapper:
         logger.info(f"📡 키움 WebSocket 리스너 시작: {self.ws_url}")
         
         try:
-            login_payload = {
-                "trnm": "LOGIN",
-                "token": self.access_token
-            }
-        
-            while True:
+            # [🚨 중요] 인증 토큰이 확보될 때까지 대기 (최대 10초)
+            wait_cnt = 0
+            while not self.access_token and wait_cnt < 20:
+                logger.warning(f"⏳ [WS] 인증 토큰 대기 중... ({wait_cnt+1}/20)")
+                await asyncio.sleep(0.5)
+                wait_cnt += 1
+                
+            if not self.access_token:
+                logger.error("❌ [WS] 인증 토큰 확보 실패. 웹소켓 리스너를 중단합니다.")
+                self.ws_running = False
+                return
+
+            while self.ws_running:
                 try:
                     logger.info(f"🔗 웹소켓 서버 접속 시도: {self.ws_url}")
                     async with websockets.connect(self.ws_url, ping_interval=None) as ws:
                         self._ws_instance = ws
                         logger.info("✅ 웹소켓 서버 접속 성공!")
+                        
+                        # [🚨 중요] 인증(LOGIN) 페이로드를 매 연결 시점에 생성 (최신 토큰 반영)
+                        login_payload = {
+                            "trnm": "LOGIN",
+                            "token": self.access_token
+                        }
                         
                         # 1. 인증(LOGIN)
                         await ws.send(json.dumps(login_payload))
@@ -683,6 +705,18 @@ async def main():
     order_manager.daily_realized_pnl = summary["today_realized_profit"]
     logger.info(f"📊 [SharedCore] 잔고 동기화 완료: {summary}")
 
+    # [신규] 기존 보유 종목을 집중감시종목에 먼저 등록 (보호 종목 제외)
+    await order_manager.sync_balance(force=True)
+    protected_list = config_manager.get("protected_symbols", [])
+    protected_symbols = set(str(s).split('_')[0] for s in protected_list)
+    
+    for symbol, qty in order_manager.holdings.items():
+        if qty > 0:
+            clean_symbol = symbol.split('_')[0]
+            if clean_symbol not in protected_symbols:
+                logger.info(f"📦 [초기 보유 종목] {clean_symbol} 감시 대상 추가 ({qty}주)")
+                await strategy_manager.handle_condition_insert(clean_symbol)
+
     # [신규] 현재 시간에 따른 초기 조건식 선택 로직
     from datetime import datetime
     current_time = datetime.now().time()
@@ -747,10 +781,18 @@ async def main():
     # 4-3. 체결/잔고 이벤트 라우팅
     async def on_execution_ws_event(exec_data: dict):
         logger.info(f"💰 [체결/잔고 업데이트 수신] {exec_data}")
-        # 체결 발생 시 즉각 잔고 동기화 (내부 219차원 포트폴리오 상태 오류 방지)
-        await order_manager.sync_balance()
+        # [핵심] 1. 체결 데이터를 OrderManager에 즉각 반영 (holdings, avg_price 실시간 업데이트)
+        await order_manager.on_receive_chejan_data(exec_data)
+        
+        # [핵심] 2. 체결 발생 시 즉각 잔고 동기화 (REST API를 통한 최종 검증)
+        await order_manager.sync_balance(force=True)
 
     broker_api.on_execution_event = on_execution_ws_event
+    
+    # [추가] DataCollector의 체결 콜백에도 OrderManager를 등록하여 이중으로 실시간성 보장
+    if order_manager and hasattr(data_collector, 'on_execution_callbacks'):
+        data_collector.on_execution_callbacks.append(order_manager.on_receive_chejan_data)
+        logger.info("✅ DataCollector 체결 콜백에 OrderManager 등록 완료")
 
     # =====================================================================
     # 5. 백그라운드 태스크 무한 루프 실행 (asyncio.gather)
