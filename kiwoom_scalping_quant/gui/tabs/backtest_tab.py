@@ -78,6 +78,15 @@ class BacktestStudioTab(QWidget):
         self.btn_auto_batch.setToolTip("상위 30개 종목에 대해 일괄 백테스트를 수행합니다.")
         self.btn_auto_batch.clicked.connect(self._on_start_auto_batch)
         btn_layout.addWidget(self.btn_auto_batch)
+        
+        # [신규] Top 30 - 여러임계값 순회 버튼
+        self.btn_multi_th_batch = QPushButton("Top 30 - 여러임계값 순회")
+        self.btn_multi_th_batch.setMinimumWidth(200)
+        self.btn_multi_th_batch.setFixedHeight(35)
+        self.btn_multi_th_batch.setStyleSheet("background-color: #5d3fd3; color: white; font-weight: bold;")
+        self.btn_multi_th_batch.setToolTip("매수/매도 임계값 7종 조합(b70s50~b90s50)을 순차적으로 테스트합니다.")
+        self.btn_multi_th_batch.clicked.connect(self._on_start_multi_threshold_batch)
+        btn_layout.addWidget(self.btn_multi_th_batch)
 
         # 실행 버튼 3: 다중 모델 일괄 배치
         self.btn_multi_batch = QPushButton("일괄 백테스트 (다중 모델 x 전체 종목)")
@@ -157,7 +166,12 @@ class BacktestStudioTab(QWidget):
 
     def _connect_signals(self):
         from PyQt6.QtCore import Qt
-        self.view_model.sig_bt_progress.connect(self.on_bt_progress)
+        # 배치 및 순회 테스트 시그널 (스레드 안전을 위해 QueuedConnection 사용)
+        self.view_model.sig_bt_progress.connect(self.on_bt_progress, Qt.ConnectionType.QueuedConnection)
+        self.view_model.sig_bt_finished.connect(self._on_batch_complete, Qt.ConnectionType.QueuedConnection)
+        self.view_model.sig_bt_error.connect(self._on_batch_complete, Qt.ConnectionType.QueuedConnection)
+        
+        # 기존 시그널 연결 유지
         self.view_model.sig_bt_finished.connect(self.on_bt_finished, Qt.ConnectionType.QueuedConnection)
         self.view_model.sig_bt_error.connect(self.on_bt_error, Qt.ConnectionType.QueuedConnection)
         self.view_model.sig_bt_chart_data.connect(self.on_bt_chart_data)
@@ -245,11 +259,52 @@ class BacktestStudioTab(QWidget):
             self.progress_dialog = QProgressDialog("자동 백테스트 배치 작업 중...", None, 0, 100, self)
             self.progress_dialog.setWindowTitle("배치 시뮬레이션")
             self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-            self.progress_dialog.setAutoClose(True)
+            self.progress_dialog.setAutoClose(False) # 100% 도달 시 자동 닫힘 방지
+            self.progress_dialog.setAutoReset(False)
             self.progress_dialog.setMinimumDuration(0)
             self.progress_dialog.show()
 
             self.view_model.start_auto_backtest_batch(start_dt, end_dt)
+
+    def _on_start_multi_threshold_batch(self):
+        """[신규] 7종 임계값 조합 순회 배치 시작"""
+        if not self._validate_dates(): return
+        start_dt = self.date_start.date().toString("yyyyMMdd")
+        end_dt = self.date_end.date().toString("yyyyMMdd")
+
+        reply = QMessageBox.question(
+            self, "임계값 순회 테스트 시작",
+            f"7가지 임계값 조합(b70s50 ~ b90s50)으로 Top 30 종목 일괄 테스트를 시작하시겠습니까?\n"
+            f"총 210회(30종목 x 7회)의 시뮬레이션이 진행됩니다.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.btn_multi_th_batch.setEnabled(False)
+            self.lbl_progress.setText("진행률: 임계값 순회 준비 중...")
+            
+            # 프로그레스 다이얼로그 생성
+            self.progress_dialog = QProgressDialog("임계값 순회 배치 작업 중...", "중단", 0, 100, self)
+            self.progress_dialog.setWindowTitle("임계값 순회 시뮬레이션")
+            self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            self.progress_dialog.setAutoClose(False)
+            self.progress_dialog.setAutoReset(False)
+            self.progress_dialog.canceled.connect(self.view_model.stop_batch_backtest)
+            self.progress_dialog.show()
+
+            self.view_model.start_multi_threshold_batch(start_dt, end_dt)
+
+    def _on_batch_complete(self, *args):
+        """[신규] 배치 작업 완료/에러 시 UI 복구"""
+        self.btn_auto_batch.setEnabled(True)
+        self.btn_multi_th_batch.setEnabled(True)
+        self.btn_multi_batch.setEnabled(True)
+        
+        if hasattr(self, "progress_dialog") and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+            
+        self.lbl_progress.setText("진행률: 작업 완료")
 
     def _on_start_multi_model_batch(self):
         """다중 모델 x 전 종목 일괄 백테스트 시작"""
@@ -284,10 +339,10 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(dict)
     def on_bt_finished(self, kpi: dict):
-        if self.progress_dialog:
-            self.progress_dialog.close()
+        # 모든 배치 관련 UI 복구 (통합 관리)
+        self._on_batch_complete()
+        
         self.btn_start.setEnabled(True)
-        self.btn_auto_batch.setEnabled(True)
         self.lbl_progress.setText("진행률: 완료")
 
         if "Batch Count" in kpi:
@@ -376,10 +431,8 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(str)
     def on_bt_error(self, err_msg: str):
-        if self.progress_dialog:
-            self.progress_dialog.close()
+        self._on_batch_complete()
         self.btn_start.setEnabled(True)
-        self.btn_auto_batch.setEnabled(True)
         self.lbl_progress.setText("진행률: 에러 발생")
         QMessageBox.critical(self, "백테스트 에러", f"시뮬레이션 중 오류가 발생했습니다:\n{err_msg}")
 

@@ -102,17 +102,26 @@ class BacktestEngine:
         agent,
         env,
         df: pd.DataFrame,
-        callbacks: List[Any] = None
+        callbacks: List[Any] = None,
+        buy_threshold: float = None,
+        sell_threshold: float = None
     ) -> pd.DataFrame:
         """
         주어진 DataFrame과 에이전트를 기반으로 Env 위에서 백테스트를 수행합니다.
-        결과로 모든 스텝의 기록이 담긴 DataFrame을 반환합니다.
         """
         self.is_running = True
         history = []
 
-        # ── 보조지표 계산 (Env 내부와 동일한 로직) ──────────
+        # [임계값 결정] 명시적 주입값이 없으면 설정에서 읽음
+        if buy_threshold is None:
+            buy_threshold = float(self.config_manager.get("ai_buy_threshold", 0.40))
+        if sell_threshold is None:
+            sell_threshold = float(self.config_manager.get("ai_sell_threshold", 0.40))
+        
         logger = logging.getLogger("BacktestEngine")
+        logger.info(f"백테스트 실행: 임계값 [매수: {buy_threshold}, 매도: {sell_threshold}]")
+
+        # ── 보조지표 계산 (Env 내부와 동일한 로직) ──────────
         raw_data = getattr(env, 'historical_data', None)
         indicator_df = None
         if raw_data:
@@ -125,20 +134,6 @@ class BacktestEngine:
         step      = 0
         total_steps = len(df)
         initial_balance = info.get('net_worth', info.get('balance', 10000000))
-
-        # [동적 설정 반영] 루프 밖에서 초기값 로드 (ConfigManager 활용)
-        def get_thresholds():
-            if hasattr(self.config_manager, "get"):
-                buy_th = float(self.config_manager.get("ai_buy_threshold", 0.40))
-                sell_th = float(self.config_manager.get("ai_sell_threshold", 0.40))
-            else:
-                # 폴백: config_manager가 dict인 경우 대응
-                buy_th = float(self.config_manager.get("ai_buy_threshold", 0.40))
-                sell_th = float(self.config_manager.get("ai_sell_threshold", 0.40))
-            return buy_th, sell_th
-
-        buy_threshold, sell_threshold = get_thresholds()
-        logger.info(f"백테스트 시작: 임계값 설정 [매수: {buy_threshold}, 매도: {sell_threshold}]")
 
         def _notify(s, tot, pnl):
             if callbacks:

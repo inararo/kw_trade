@@ -1613,14 +1613,15 @@ class BacktestViewModel(QObject):
             
             result = await self.universe_manager.fetch_top_30_volume_symbols(access_token)
 
-            from returns.io import IOSuccess, IOFailure
-            if isinstance(result, IOFailure):
-                err = result.failure()._inner_value
-                self.sig_bt_error.emit(f"Kiwoom API 호출 실패: {err}")
-                return
-
-            # IOSuccess(Success(list)) 형태이므로 unwrap()._inner_value 사용
-            top_30_list = result.unwrap()._inner_value
+            # [수정] Result 객체 언래핑 및 결과 추출
+            if hasattr(result, "unwrap"):
+                # Success/Failure 객체에서 값 추출
+                top_30_list = result.unwrap()
+                # 만약 내부값이 또 다른 래퍼(Success/IOResult 등)라면 한 번 더 추출
+                if hasattr(top_30_list, "_inner_value"):
+                    top_30_list = top_30_list._inner_value
+            else:
+                top_30_list = result
                 
             if not top_30_list:
                 self.logger.warning("UniverseManager가 빈 종목 리스트를 반환했습니다. 필터링 조건이나 API 응답을 확인하세요.")
@@ -1715,6 +1716,54 @@ class BacktestViewModel(QObject):
         # 대신 뷰모델의 로거로 직접 출력
         self.logger.info(f"BT 배치 [{idx+1}/{total}] {status_msg}")
         self.sig_bt_progress.emit(idx + 1, total, 0.0)
+
+    def start_multi_threshold_batch(self, start_date: str, end_date: str):
+        """[신규] 7가지 임계값 조합에 대해 순차적으로 자동 백테스트 수행 (스레드 분리)"""
+        if getattr(self, "_is_task_running", False):
+            self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
+            return
+
+        from gui.multi_th_worker import MultiThresholdBatchWorker
+        self.multi_th_worker = MultiThresholdBatchWorker(
+            self.config_manager, self.engine, self.historical_fetcher, 
+            self.universe_manager, self.token_manager,
+            self.model_path, start_date, end_date
+        )
+        
+        # 시그널 연결
+        self.multi_th_worker.sig_progress.connect(self.sig_bt_progress.emit)
+        self.multi_th_worker.sig_status.connect(lambda msg: self.logger.info(f"[MultiTh] {msg}"))
+        self.multi_th_worker.sig_finished.connect(self._on_multi_th_finished)
+        self.multi_th_worker.sig_error.connect(self._on_multi_th_error)
+        
+        self.multi_th_worker.finished.connect(self._reset_task_flag) # 스레드 종료 시 최종 보루
+        
+        self._is_task_running = True
+        self.multi_th_worker.start()
+
+    def _on_multi_th_finished(self, kpi):
+        self._is_task_running = False
+        self.sig_bt_finished.emit(kpi)
+        self.logger.info("✅ 모든 임계값 순회 백테스트가 완료되었습니다.")
+
+    def _on_multi_th_error(self, err_msg):
+        self._is_task_running = False
+        self.sig_bt_error.emit(err_msg)
+        self.logger.error(f"❌ 임계값 순회 백테스트 오류: {err_msg}")
+
+    def _reset_task_flag(self):
+        """스레드 종료 시 최종 보루로 플래그 해제"""
+        self._is_task_running = False
+
+    def stop_batch_backtest(self):
+        """배치 작업 중단"""
+        if hasattr(self, 'multi_th_worker') and self.multi_th_worker:
+            self.multi_th_worker.stop()
+        if hasattr(self, 'batch_worker') and self.batch_worker:
+            self.batch_worker.stop()
+        self._is_task_running = False
+
+
 
     def _save_batch_results_csv(self, results, model_path):
         """[NEW] 요구사항에 맞춘 상세 CSV 저장 포맷"""

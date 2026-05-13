@@ -58,6 +58,11 @@ class BatchBacktestWorker(QThread):
             from env.trading_env import ScalpingTradingEnv
             from core.backtester import KPICalculator
             
+            # [수정] 실행 시점의 임계값 고정 (루프 도중 전역 설정이 바뀌어도 일관성 유지)
+            fixed_buy_th = float(self.config_manager.get("ai_buy_threshold", 0.4))
+            fixed_sell_th = float(self.config_manager.get("ai_sell_threshold", 0.4))
+            self.logger.info(f"일괄 백테스트 시작 임계값: 매수 {fixed_buy_th}, 매도 {fixed_sell_th}")
+
             worker_engine = BacktestEngine(None, self.config_manager)
 
             results = []
@@ -151,7 +156,11 @@ class BatchBacktestWorker(QThread):
                     try:
                         agent.load_weights(model_path)
                         # 백테스트 실행 (엔진은 내부 연산용이므로 loop 사용)
-                        trades_df = loop.run_until_complete(worker_engine.run_backtest(agent, env, df))
+                        trades_df = loop.run_until_complete(worker_engine.run_backtest(
+                            agent, env, df, 
+                            buy_threshold=fixed_buy_th, 
+                            sell_threshold=fixed_sell_th
+                        ))
                         
                         buy_actions  = ['Buy40%', 'Buy60%']
                         sell_actions = ['Sell60%', 'Sell40%']
@@ -161,8 +170,8 @@ class BatchBacktestWorker(QThread):
                         results.append({
                             "테스트 일시": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "모델명": model_name, "종목코드": symbol, "종목명": name,
-                            "매수 임계값": self.config_manager.get("ai_buy_threshold", 0.4),
-                            "매도 임계값": self.config_manager.get("ai_sell_threshold", 0.4),
+                            "매수 임계값": fixed_buy_th,
+                            "매도 임계값": fixed_sell_th,
                             "시작일": self.start_date, "종료일": self.end_date,
                             "점 거래횟수": len(trades_df[trades_df['action'].isin(buy_actions + sell_actions)]),
                             "승률 (%)": round(kpi.get("Win Rate", 0), 2),
