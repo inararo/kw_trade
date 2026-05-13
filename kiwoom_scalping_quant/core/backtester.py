@@ -19,8 +19,6 @@ ACTION_MAP = {
 }
 BUY_ACTIONS  = (1, 2)
 SELL_ACTIONS = (3, 4)
-BUY_THRESHOLD  = 0.40
-SELL_THRESHOLD = 0.40
 
 
 def _compute_indicators(data: list) -> pd.DataFrame:
@@ -92,9 +90,9 @@ class BacktestEngine:
     과거 데이터에 대해 시뮬레이션을 수행합니다.
     5-액션(Hold / Buy40% / Buy60% / Sell60% / Sell40%) 완전 대응.
     """
-    def __init__(self, data_collector, config: Dict[str, Any]):
+    def __init__(self, data_collector, config_manager: Any):
         self.data_collector = data_collector
-        self.config = config
+        self.config_manager = config_manager # [개선] 딕셔너리 대신 매니저 객체 보유
         self.is_running = False
         self.trades  = []
         self.history = []
@@ -128,6 +126,20 @@ class BacktestEngine:
         total_steps = len(df)
         initial_balance = info.get('net_worth', info.get('balance', 10000000))
 
+        # [동적 설정 반영] 루프 밖에서 초기값 로드 (ConfigManager 활용)
+        def get_thresholds():
+            if hasattr(self.config_manager, "get"):
+                buy_th = float(self.config_manager.get("ai_buy_threshold", 0.40))
+                sell_th = float(self.config_manager.get("ai_sell_threshold", 0.40))
+            else:
+                # 폴백: config_manager가 dict인 경우 대응
+                buy_th = float(self.config_manager.get("ai_buy_threshold", 0.40))
+                sell_th = float(self.config_manager.get("ai_sell_threshold", 0.40))
+            return buy_th, sell_th
+
+        buy_threshold, sell_threshold = get_thresholds()
+        logger.info(f"백테스트 시작: 임계값 설정 [매수: {buy_threshold}, 매도: {sell_threshold}]")
+
         def _notify(s, tot, pnl):
             if callbacks:
                 for cb in callbacks:
@@ -142,9 +154,10 @@ class BacktestEngine:
             action, probs = self._predict_with_confidence(agent, obs, action_masks)
 
             # Confidence 필터 (매수/매도 계열 분리 적용)
-            if action in BUY_ACTIONS and float(probs[action]) < BUY_THRESHOLD:
+            # probs가 모든 액션에 대해 1.0(fallback)인 경우 필터를 통과시킵니다.
+            if action in BUY_ACTIONS and float(probs[action]) < buy_threshold:
                 action = 0
-            elif action in SELL_ACTIONS and float(probs[action]) < SELL_THRESHOLD:
+            elif action in SELL_ACTIONS and float(probs[action]) < sell_threshold:
                 action = 0
 
             # ── 3. 환경 Step ─────────────────────────────
@@ -209,7 +222,7 @@ class BacktestEngine:
         반환: (action: int, probs: np.ndarray[5])
         """
         n_actions = 5
-        fallback_probs = np.ones(n_actions) / n_actions
+        fallback_probs = np.ones(n_actions) # [개선] 확률 정보 부재 시 필터 통과를 위해 1.0으로 설정
 
         try:
             if hasattr(agent, 'model') and hasattr(agent, 'predict'):

@@ -58,7 +58,7 @@ class BatchBacktestWorker(QThread):
             from env.trading_env import ScalpingTradingEnv
             from core.backtester import KPICalculator
             
-            worker_engine = BacktestEngine(None, self.symbols)
+            worker_engine = BacktestEngine(None, self.config_manager)
 
             results = []
             total_models = len(self.model_paths)
@@ -161,6 +161,8 @@ class BatchBacktestWorker(QThread):
                         results.append({
                             "테스트 일시": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             "모델명": model_name, "종목코드": symbol, "종목명": name,
+                            "매수 임계값": self.config_manager.get("ai_buy_threshold", 0.4),
+                            "매도 임계값": self.config_manager.get("ai_sell_threshold", 0.4),
                             "시작일": self.start_date, "종료일": self.end_date,
                             "점 거래횟수": len(trades_df[trades_df['action'].isin(buy_actions + sell_actions)]),
                             "승률 (%)": round(kpi.get("Win Rate", 0), 2),
@@ -226,10 +228,13 @@ class BatchBacktestWorker(QThread):
                     action, probs = result
                     confidence = float(probs[action]) if hasattr(probs, '__len__') else float(probs)
 
-                    # [5-액션] 매수/매도 계열 분리 필터
-                    if action in (1, 2) and confidence < 0.6:
+                    # [5-액션] 동적 임계값 반영
+                    buy_threshold = float(self.config_manager.get("ai_buy_threshold", 0.4))
+                    sell_threshold = float(self.config_manager.get("ai_sell_threshold", 0.4))
+
+                    if action in (1, 2) and confidence < buy_threshold:
                         action = 0
-                    elif action in (3, 4) and confidence < 0.6:
+                    elif action in (3, 4) and confidence < sell_threshold:
                         action = 0
                     return action, confidence
                 else:
@@ -252,10 +257,13 @@ class BatchBacktestWorker(QThread):
                 action = int(probs.argmax())
                 confidence = float(probs[action])
 
-                # [5-액션] 매수/매도 계열 분리 필터
-                if action in (1, 2) and confidence < 0.6:
+                # [5-액션] 동적 임계값 반영
+                buy_threshold = float(self.config_manager.get("ai_buy_threshold", 0.4))
+                sell_threshold = float(self.config_manager.get("ai_sell_threshold", 0.4))
+
+                if action in (1, 2) and confidence < buy_threshold:
                     action = 0
-                elif action in (3, 4) and confidence < 0.6:
+                elif action in (3, 4) and confidence < sell_threshold:
                     action = 0
                 return action, confidence
             else:

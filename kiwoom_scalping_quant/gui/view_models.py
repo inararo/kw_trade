@@ -1415,7 +1415,7 @@ class BacktestViewModel(QObject):
         self.logger = logging.getLogger("BacktestViewModel")
 
         from core.backtester import BacktestEngine
-        self.engine = BacktestEngine(self.data_collector, self.config_manager.get_symbols())
+        self.engine = BacktestEngine(self.data_collector, self.config_manager)
         self.model_path = None
         self.batch_worker = None # [신규] 일괄 백테스트 워커 참조 저장
 
@@ -1532,8 +1532,9 @@ class BacktestViewModel(QObject):
             # 2. KPI Summary 저장 (누적 모드)
             summary_path = os.path.join(results_dir, "backtest_summary.csv")
             
-            # 매매 횟수 계산 (Hold 제외)
-            total_trades = len(trades_df[trades_df['action'].isin(['Buy', 'Sell'])])
+            # [수정] 5-액션 체계에 맞게 매매 횟수 계산 (Buy/Sell 포함된 모든 액션)
+            trade_actions = ['Buy40%', 'Buy60%', 'Sell60%', 'Sell40%']
+            total_trades = len(trades_df[trades_df['action'].isin(trade_actions)])
 
             summary_row = {
                 "Timestamp": timestamp,
@@ -1545,7 +1546,9 @@ class BacktestViewModel(QObject):
                 "Win Rate (%)": round(kpi.get("Win Rate", 0), 2),
                 "MDD (%)": round(kpi.get("MDD", 0), 2),
                 "Profit Factor": round(kpi.get("Profit Factor", 0), 3),
-                "Total Trades": total_trades
+                "Total Trades": total_trades,
+                "Buy Threshold": self.config_manager.get("ai_buy_threshold", 0.4),
+                "Sell Threshold": self.config_manager.get("ai_sell_threshold", 0.4)
             }
             summary_df = pd.DataFrame([summary_row])
             
@@ -1723,10 +1726,15 @@ class BacktestViewModel(QObject):
             if not os.path.exists(results_dir):
                 os.makedirs(results_dir)
 
-            model_name = os.path.basename(model_path)
+            model_name = os.path.basename(model_path).replace('.zip', '')
             today_str = datetime.datetime.now().strftime("%Y%m%d")
+            
+            # [신규] 임계값 정보를 파일명에 포함 (0.75 -> 75)
+            buy_th = int(self.config_manager.get("ai_buy_threshold", 0.4) * 100)
+            sell_th = int(self.config_manager.get("ai_sell_threshold", 0.4) * 100)
+            
             timestamp_now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            filename = f"auto_bt_{model_name.replace('.zip', '')}_{today_str}.csv"
+            filename = f"auto_bt_{model_name}_{today_str}_b{buy_th}s{sell_th}.csv"
             save_path = os.path.join(results_dir, filename)
 
             # DataFrame 생성
