@@ -273,7 +273,9 @@ class BacktestEngine:
         symbol_list: List[str],
         start_date: str,
         end_date: str,
-        progress_cb=None
+        progress_cb=None,
+        buy_threshold: float = None,
+        sell_threshold: float = None
     ) -> List[Dict[str, Any]]:
         """여러 종목에 대해 독립적으로 백테스트를 실행하는 배치 프로세스."""
         batch_results = []
@@ -294,7 +296,12 @@ class BacktestEngine:
                     if progress_cb:
                         progress_cb(i, total, f"[{symbol}] 진행 중... {step}/{tot}")
 
-                history_df = await self.run_backtest(agent, env, df, callbacks=[inner_cb])
+                history_df = await self.run_backtest(
+                    agent, env, df, 
+                    callbacks=[inner_cb],
+                    buy_threshold=buy_threshold,
+                    sell_threshold=sell_threshold
+                )
                 kpi = KPICalculator.calculate(history_df)
 
                 buy_actions  = ['Buy40%', 'Buy60%']

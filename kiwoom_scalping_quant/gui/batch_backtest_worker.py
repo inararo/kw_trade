@@ -138,6 +138,7 @@ class BatchBacktestWorker(QThread):
                     if not data_list:
                         self.logger.warning(f"데이터 없음: {symbol} ({self.start_date}~{self.end_date})")
                         completed_tasks += 1
+                        self.sig_progress.emit(completed_tasks, total_tasks, 0.0)
                         continue
 
                     df = pd.DataFrame(data_list)
@@ -194,6 +195,8 @@ class BatchBacktestWorker(QThread):
                         self.logger.error(f"백테스트 실행 실패 ({model_name} - {symbol}): {e}")
 
                     completed_tasks += 1
+                    # 진행률 갱신 시그널 송신
+                    self.sig_progress.emit(completed_tasks, total_tasks, 0.0)
 
             # 2. 결과 저장 및 클라이언트 종료
             if results:

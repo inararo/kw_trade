@@ -171,10 +171,10 @@ class BacktestStudioTab(QWidget):
         self.view_model.sig_bt_finished.connect(self._on_batch_complete, Qt.ConnectionType.QueuedConnection)
         self.view_model.sig_bt_error.connect(self._on_batch_complete, Qt.ConnectionType.QueuedConnection)
         
-        # 기존 시그널 연결 유지
+        # [안정화] 차트 시각화 데이터도 QueuedConnection으로 연결하여 크래시 방지
         self.view_model.sig_bt_finished.connect(self.on_bt_finished, Qt.ConnectionType.QueuedConnection)
         self.view_model.sig_bt_error.connect(self.on_bt_error, Qt.ConnectionType.QueuedConnection)
-        self.view_model.sig_bt_chart_data.connect(self.on_bt_chart_data)
+        self.view_model.sig_bt_chart_data.connect(self.on_bt_chart_data, Qt.ConnectionType.QueuedConnection)
 
     def _on_load_model(self):
         # [FIX] 파일 다이얼로그 시작 경로를 saved_models 폴더로 고정
@@ -230,10 +230,20 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(int, int, float)
     def on_bt_progress(self, step: int, total: int, pnl: float):
-        if self.progress_dialog and self.progress_dialog.isVisible():
+        # [최적화] 총 스텝이 많을 때만(예: 500개 이상) 스로틀링 수행
+        # 일괄 백테스트(30~100건)는 모든 스텝을 즉시 업데이트하여 답답함을 해소
+        if total > 500:
+            if step % 100 != 0 and step != total:
+                return
+        
+        # [안정화] setValue 도중 이벤트 루프가 돌아 progress_dialog가 None이 될 수 있으므로 로컬 참조 보관
+        dialog = self.progress_dialog
+        if dialog and dialog.isVisible():
             pct = int((step / total) * 100) if total > 0 else 0
-            self.progress_dialog.setValue(pct)
-            self.progress_dialog.setLabelText(f"배치 진행 중... ({step}/{total})")
+            dialog.setValue(pct)
+            # 다시 한번 확인 (setValue 내부에서 닫혔을 수도 있음)
+            if self.progress_dialog:
+                dialog.setLabelText(f"배치 진행 중... ({step}/{total})")
             
         pct_text = (step / total) * 100 if total > 0 else 0
         self.lbl_progress.setText(f"진행률: {step}/{total} ({pct_text:.1f}%) | 누적 PnL: {pnl:,.0f}")

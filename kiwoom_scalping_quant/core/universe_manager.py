@@ -38,6 +38,10 @@ class UniverseManager:
 
     async def get_condition_list(self, access_token: str) -> Dict[str, str]:
         """서버에 저장된 조건검색식 목록 조회 (가상 TR: ka10050)"""
+        # [오프라인 모드] 통신 차단
+        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+            return {}
+
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         headers = {
             "authorization": f"Bearer {access_token}",
@@ -64,6 +68,10 @@ class UniverseManager:
 
     async def get_condition_symbols(self, access_token: str, cond_idx: str, cond_nm: str) -> List[Dict[str, Any]]:
         """특정 조건식에 해당하는 실시간 종목 리스트 조회 (가상 TR: ka10051)"""
+        # [오프라인 모드] 통신 차단
+        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+            return []
+
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         headers = {
             "authorization": f"Bearer {access_token}",
@@ -152,6 +160,10 @@ class UniverseManager:
         # 1. 캐시 확인
         if clean_code in self._name_cache:
             return self._name_cache[clean_code]
+
+        # [오프라인 모드] 캐시에 없으면 API 조회 차단
+        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+            return None
 
         # 2. API 조회 (ka10001: 주식 기본정보 요청)
         endpoint = f"{self.base_url}/api/dostk/stkitem"
@@ -431,6 +443,13 @@ class UniverseManager:
         [NEW] 증권사 API를 호출하여 거래량 상위 30개 종목을 가져옵니다.
         관리종목, 우선주, ETF/ETN, SPAC은 필터링하여 순수 주식 리스트만 반환합니다.
         """
+        # [오프라인 모드] 통신 차단 및 로컬 데이터 반환
+        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+            self.logger.info("🚫 오프라인 모드: 외부 유니버스 스캔을 스킵하고 로컬 설정을 사용합니다.")
+            local_symbols = self.config_manager.get_symbols()
+            # 로컬 설정의 종목들을 API 응답과 유사한 형식으로 변환 (최대 30개)
+            return [{"code": s["code"], "name": s.get("name", "Unknown")} for s in local_symbols[:30]]
+
         endpoint = f"{self.base_url}/api/dostk/rkinfo"
         self.logger.info("거래량 상위 30개 종목 스캔 시작...")
 
