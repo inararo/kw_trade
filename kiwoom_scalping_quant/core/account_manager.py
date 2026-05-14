@@ -106,7 +106,9 @@ class AccountManager(QObject):
                 )
                 self.logger.info(f"💳 주문 가능 금액 동기화: {self.orderable_cash:,.0f}원")
             else:
-                self.logger.error(f"❌ 주문 가능 금액 조회 실패: {orderable_data.get('return_msg')}")
+                # [수정] 오프라인 모드인 경우 에러 로그 출력 생략
+                if orderable_data.get("return_code") != "OFFLINE":
+                    self.logger.error(f"❌ 주문 가능 금액 조회 실패: {orderable_data.get('return_msg')}")
 
             # 3. Firebase 실시간 동기화
             await self._sync_to_firebase()

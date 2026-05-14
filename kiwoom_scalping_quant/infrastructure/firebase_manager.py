@@ -50,6 +50,11 @@ class FirebaseManager:
 
     def _init_firebase(self):
         """Firebase 앱 및 Firestore 클라이언트를 초기화합니다."""
+        # [오프라인 모드] Firebase 초기화 차단
+        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+            logger.info("🚫 오프라인 모드: Firebase 연동을 비활성화합니다.")
+            return
+
         try:
             import firebase_admin
             from firebase_admin import credentials, firestore

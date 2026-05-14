@@ -36,6 +36,11 @@ class RESTBrokerWrapper:
 
     async def _request(self, api_id: str, endpoint: str, body: Dict[str, Any]) -> Dict[str, Any]:
         """공통 HTTP POST 요청 처리부 (Rate Limit 고려)"""
+        # [오프라인 모드] 실시간 API 요청 차단
+        if self.config.get("OFFLINE_MODE", False):
+            self.logger.info(f"🚫 오프라인 모드: [{api_id}] REST API 요청을 차단합니다.")
+            return {"return_code": "OFFLINE", "return_msg": "System is running in OFFLINE mode."}
+
         token = self.token_manager.get_token()
         if not token:
             self.logger.error(f"[{api_id}] 요청 실패: Access Token이 없습니다.")

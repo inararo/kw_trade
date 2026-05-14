@@ -60,12 +60,27 @@ class QuantSystem:
                 "db_batch_size": 500
             }
 
+        # [오프라인 모드 감지] python main.py offline
+        is_offline = "offline" in sys.argv
+        config_dict["OFFLINE_MODE"] = is_offline
+
         self.container.config.from_dict(config_dict)
+        
+        # [핵심] config_manager 싱글톤에 오프라인 모드 주입
+        # Container가 Lazy 로딩하므로 인스턴스 생성 직후 강제 주입
+        self.container.config_manager()._config_cache["OFFLINE_MODE"] = is_offline
         
         # [추가] 로그 레벨 동적 적용
         log_level_str = config_dict.get("log_level", "INFO").upper()
         logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
-        print(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
+        
+        if is_offline:
+            print("="*50)
+            print("🚀 시스템: 오프라인 모드로 실행되었습니다.")
+            print("   (토큰 갱신을 제외한 모든 외부 서버 통신이 차단됩니다)")
+            print("="*50)
+        else:
+            print(f"시스템: 로그 레벨이 {log_level_str}로 설정되었습니다.")
 
         # 의존성 와이어링 (필요시)
         self.container.wire(modules=[__name__])

@@ -233,6 +233,11 @@ class DataCollector:
             self.logger.warning("DataCollector is already running.")
             return
         
+        # [오프라인 모드] 실시간 데이터 수집(WebSocket) 차단
+        if self.config.get("OFFLINE_MODE", False):
+            self.logger.info("🚫 오프라인 모드: 웹소켓 서버에 연결하지 않습니다.")
+            return
+
         self.is_running = True
         self.logger.info(f"DataCollector: 수집을 시작합니다. (등록된 체결 콜백: {len(self.on_execution_callbacks)}개)")
         # 상태 이벤트 초기화

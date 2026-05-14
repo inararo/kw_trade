@@ -90,7 +90,9 @@ class AccountService:
             if new_assets > 0:
                 self.total_assets = new_assets
         else:
-            self.logger.error(f"❌ [ID:{id(self)}] [ka10077] 실현손익 조회 실패: {data.get('return_msg')}")
+            # [수정] 오프라인 모드인 경우 에러 로그 출력 생략
+            if data.get("return_code") != "OFFLINE":
+                self.logger.error(f"❌ [ID:{id(self)}] [ka10077] 실현손익 조회 실패: {data.get('return_msg')}")
 
     def _parse_orderable(self, data: dict):
         self.logger.debug(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
@@ -98,7 +100,9 @@ class AccountService:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.orderable_cash = float(data.get("ord_alowa") or output.get("ord_alowa", output.get("ord_psbl_amt", 0)))
         else:
-            self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패: {data.get('return_msg')}")
+            # [수정] 오프라인 모드인 경우 에러 로그 출력 생략
+            if data.get("return_code") != "OFFLINE":
+                self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패: {data.get('return_msg')}")
 
     async def _sync_to_firebase(self):
         """Firebase system_status/account 문서 업데이트"""
