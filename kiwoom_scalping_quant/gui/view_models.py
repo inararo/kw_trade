@@ -1119,13 +1119,9 @@ class AITrainingViewModel(QObject):
             "model_name_suffix": sampling_tag,
         }
 
-        # [신규] 임계값 설정 반영 (config.yaml 업데이트)
+        # [수정] 임계값 설정 반영 (전역 설정을 오염시키지 않도록 로깅만 수행)
         if ppo_params:
-            self.config_manager.update_settings({
-                "ai_buy_threshold": ppo_params.get("ai_buy_threshold", 0.3),
-                "ai_sell_threshold": ppo_params.get("ai_sell_threshold", 0.3)
-            })
-            self.sig_training_log.emit(f"   => 추론 임계값 설정 완료: 매수 {ppo_params.get('ai_buy_threshold')}, 매도 {ppo_params.get('ai_sell_threshold')}")
+            self.sig_training_log.emit(f"   => 학습 세션용 추론 임계값 (로깅): 매수 {ppo_params.get('ai_buy_threshold')}, 매도 {ppo_params.get('ai_sell_threshold')}")
         
         self.sig_training_log.emit(
             f"   => 모델 저장 경로: [{model_save_dir}] | 학습 태그: [{sampling_tag}]"
@@ -1692,10 +1688,16 @@ class BacktestViewModel(QObject):
                 agent.load_weights(self.model_path)
                 return agent
 
+            # [수정] 설정에서 최신 임계값을 읽어와 명시적으로 전달 (학습 세션 설정에 오염되지 않도록 보장)
+            buy_th = float(self.config_manager.get("ai_buy_threshold", 0.4))
+            sell_th = float(self.config_manager.get("ai_sell_threshold", 0.4))
+
             # 3. 엔진 배치 실행
             results = await self.engine.run_automation_batch(
                 agent_builder, env_builder, symbols, start_date, end_date,
-                progress_cb=self._on_batch_progress
+                progress_cb=self._on_batch_progress,
+                buy_threshold=buy_th,
+                sell_threshold=sell_th
             )
 
             # 4. CSV 저장 및 완료 알림
