@@ -90,9 +90,10 @@ class TokenManager:
                         r_msg = data.get("return_msg", "")
 
                         # f-string을 사용하면 None이나 숫자 데이터도 안전하게 문자열로 합쳐집니다.
-                        token_info = f"{token_val}, {expires}, {t_type}, {r_code}, {r_msg}"
-                        print(f"JYJ  token_info: {token_info}")
-                        print(f"Token successfully refreshed. Expires at {self.expires_at}, access_token : {self.access_token}")
+                        # [수정] print 대신 logger 사용 및 오프라인 모드 시 억제
+                        if not self.config_manager.get("OFFLINE_MODE", False):
+                            self.logger.info(f"Token successfully refreshed. Expires at {self.expires_at}")
+                            self.logger.debug(f"JYJ token_info: {token_val}, {expires}, {t_type}, {r_code}, {r_msg}")
 
                         # Update globally
                         self.config_manager.update_settings({"KIWOOM_ACCESS_TOKEN": self.access_token})

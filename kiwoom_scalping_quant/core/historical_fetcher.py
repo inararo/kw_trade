@@ -186,11 +186,9 @@ class HistoricalFetcher:
                                             self.logger.error("❌ [HistoricalFetcher] 토큰 갱신 후에도 연속 3회 실패하여 중단합니다.")
                                             self._retry_cnt = 0
                                             break
-                                    else:
-                                        self.logger.error("❌ [HistoricalFetcher] 토큰 재발급 실패.")
-                                        return Failure("TOKEN_REFRESH_FAILED")
                                 else:
-                                    self.logger.error("[HistoricalFetcher] 토큰 만료되었으나 재발급 API가 연결되지 않았습니다.")
+                                    if not self.config_manager.get("OFFLINE_MODE", False):
+                                        self.logger.error("[HistoricalFetcher] 토큰 만료되었으나 재발급 API가 연결되지 않았습니다.")
                                     return Failure("TOKEN_EXPIRED")
 
                             # 성공 시 재시도 카운트 초기화

@@ -908,7 +908,8 @@ class AssetDataViewModel(QObject):
             # DB에서 마지막 수집 시점 조회 (증분 수집용)
             last_ts = await self.influx_client.get_last_timestamp(symbol)
             if last_ts:
-                self.logger.error(f"[{symbol}] DB 체크포인트 발견: {last_ts}. 이후 데이터만 증분 수집합니다.")
+                if not self.config_manager.get("OFFLINE_MODE", False):
+                    self.logger.info(f"[{symbol}] DB 체크포인트 발견: {last_ts}. 이후 데이터만 증분 수집합니다.")
 
             def update_progress(pct: int, msg: str):
                 base_pct = (idx / total_symbols) * 100

@@ -419,7 +419,8 @@ class StrategyManager:
                     if getattr(engine, 'is_warmed_up', False):
                         # [검증] 최소 데이터(예: 30개) 확보 여부 확인
                         if len(getattr(engine, 'minute_buffer', [])) < 30:
-                            self.logger.error(f"❌ [{sym}] 웜업 데이터 부족 ({len(engine.minute_buffer)}/30). 감시 대상에서 제외합니다.")
+                            if not self.config_manager.get("OFFLINE_MODE", False):
+                                self.logger.error(f"❌ [{sym}] 웜업 데이터 부족 ({len(engine.minute_buffer)}/30). 감시 대상에서 제외합니다.")
                             await self._remove_dynamic_symbol(sym)
                             await self._process_pending_queue()
                         else:

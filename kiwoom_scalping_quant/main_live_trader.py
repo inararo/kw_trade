@@ -470,6 +470,12 @@ async def main():
     config_manager = ConfigManager(config_path="config.yaml")
     system_config = SystemConfig(config_path="config.yaml")
 
+    # [오프라인 모드] 실행 인자 확인 (--offline 또는 offline)
+    is_offline = "offline" in sys.argv or "--offline" in sys.argv
+    config_manager.set_runtime("OFFLINE_MODE", is_offline)
+    if is_offline:
+        logger.info("📡 오프라인 모드로 실행합니다. 메모리상에서만 활성화되며 파일에 저장되지 않습니다.")
+
     # [추가] 로그 레벨 동적 적용
     log_level_str = config_manager.get("log_level", "INFO").upper()
     logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
@@ -496,8 +502,17 @@ async def main():
     strategy_manager = StrategyManager(config_manager, data_collector, order_manager, risk_manager, system_config=system_config)
     condition_manager = ConditionManager(config_manager, data_collector)
 
+    # 1-1. Firebase 초기화 및 리스너 설정
+    firebase_manager = FirebaseManager(config_manager)
+    config_manager.firebase_manager = firebase_manager
+
     # [신규] 스케줄러 초기화 및 조건식 스위칭 연동
-    market_scheduler = MarketScheduler(config=config_manager)
+    market_scheduler = MarketScheduler(
+        config=config_manager,
+        firebase_manager=firebase_manager if getattr(firebase_manager, '_initialized', False) else None,
+        data_collector=data_collector,
+        order_manager=order_manager
+    )
     market_scheduler.signals.condition_switched.connect(
         lambda name: asyncio.create_task(strategy_manager.switch_condition(name))
     )
@@ -509,10 +524,6 @@ async def main():
 
     strategy_manager.on_condition_switched_callbacks.append(_on_switch)
 
-    # 1-1. Firebase 초기화 및 리스너 설정
-    firebase_manager = FirebaseManager(config_manager)
-    config_manager.firebase_manager = firebase_manager
-    
     # [Firebase] 부팅 시 초기화 (상태 보고 및 기본 설정 업로드)
     if getattr(firebase_manager, '_initialized', False):
         await firebase_manager.update_system_status("RUNNING")

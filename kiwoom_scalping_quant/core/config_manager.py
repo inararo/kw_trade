@@ -18,6 +18,7 @@ class ConfigManager:
         self.env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
         self._config_cache: Dict[str, Any] = {}
         self._env_keys = {"KIWOOM_APP_KEY", "KIWOOM_APP_SECRET", "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG", "TELEGRAM_BOT_TOKEN", "FIREBASE_KEY_PATH"}
+        self._runtime_keys = {"OFFLINE_MODE"} # [신규] 메모리(런타임)에만 유지하고 파일에 저장하지 않을 키 목록
         self.firebase_manager = None # [NEW] 역방향 동기화를 위한 매니저 주입용
 
         self.load_config(skip_symbols=True) # 초기 생성 시에는 종목 리스트를 비워둠 (이중 로드 방지)
@@ -148,7 +149,7 @@ class ConfigManager:
             # [안전 장치] YAML 저장 시 복잡한 Python 객체(Firestore Timestamp 등)가 포함되지 않도록 기본 타입만 필터링
             yaml_data = {
                 k: v for k, v in self._config_cache.items() 
-                if k not in self._env_keys and isinstance(v, (str, int, float, bool, list, dict))
+                if k not in self._env_keys and k not in self._runtime_keys and isinstance(v, (str, int, float, bool, list, dict))
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
                 yaml.dump(yaml_data, f, default_flow_style=False, allow_unicode=True)
@@ -190,6 +191,11 @@ class ConfigManager:
                     asyncio.create_task(self.firebase_manager.update_setting_to_remote(key, value))
         
         return Success(True)
+
+    def set_runtime(self, key: str, value: Any):
+        """[신규] 파일에 저장하지 않고 메모리(캐시)에서만 유효한 설정을 추가합니다."""
+        self._config_cache[key] = value
+        self._runtime_keys.add(key)
 
     def get_symbols(self) -> List[Dict[str, str]]:
         """저장된 종목 리스트 반환 (symbols를 우선하며 universe를 폴백으로 사용)"""

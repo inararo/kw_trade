@@ -61,20 +61,16 @@ class QuantSystem:
             }
 
         # [오프라인 모드 감지] python main.py offline
-        is_offline = "offline" in sys.argv
-        config_dict["OFFLINE_MODE"] = is_offline
-
-        self.container.config.from_dict(config_dict)
+        self.is_offline = "offline" in sys.argv
         
-        # [핵심] config_manager 싱글톤에 오프라인 모드 주입
-        # Container가 Lazy 로딩하므로 인스턴스 생성 직후 강제 주입
-        self.container.config_manager()._config_cache["OFFLINE_MODE"] = is_offline
+        # [핵심] config_manager 싱글톤에 오프라인 모드 주입 (메모리에만 유지)
+        self.container.config_manager().set_runtime("OFFLINE_MODE", self.is_offline)
         
         # [추가] 로그 레벨 동적 적용
         log_level_str = config_dict.get("log_level", "INFO").upper()
         logging.getLogger().setLevel(getattr(logging, log_level_str, logging.INFO))
         
-        if is_offline:
+        if self.is_offline:
             print("="*50)
             print("🚀 시스템: 오프라인 모드로 실행되었습니다.")
             print("   (토큰 갱신을 제외한 모든 외부 서버 통신이 차단됩니다)")
@@ -291,7 +287,8 @@ class QuantSystem:
         self.live_trading_thread.signal_ai_trading_toggled.connect(
             self.main_window.tab_live.on_ai_trading_toggled
         )
-        print("시스템: LiveTradingThread 생성 완료 → 라이브 대시보드 [실전매매 시작] 버튼으로 가동하세요.")
+        if not self.is_offline:
+            print("시스템: LiveTradingThread 생성 완료 → 라이브 대시보드 [실전매매 시작] 버튼으로 가동하세요.")
         # ──────────────────────────────────────────────────────────────
 
         # [신규] 대시보드 자산/현금 폴링 루프 시작 (1초 주기 UI 갱신)
@@ -318,18 +315,19 @@ class QuantSystem:
         # [LiveTradingThread] Firebase 지연 주입 (스레드 생성 시점에는 아직 초기화 전이었으므로)
         if hasattr(self, 'live_trading_thread'):
             self.live_trading_thread.inject_firebase_manager(self.firebase_manager)
-            print("시스템: [Firebase] LiveTradingThread에 FirebaseManager 주입 완료")
+            if not self.is_offline:
+                print("시스템: [Firebase] LiveTradingThread에 FirebaseManager 주입 완료")
 
-        asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
-        # 초기 제어 상태도 함께 보고 (기본값: Monitoring=False, AI=True)
-        asyncio.create_task(self.firebase_manager.update_control_status(
-            is_monitoring_active=True,
-            is_ai_trading_active=True
-        ))
-        asyncio.create_task(self.firebase_manager.update_engine_status("RUNNING"))
-        self._heartbeat_task = asyncio.create_task(self.firebase_manager.start_heartbeat())
-        
-        print("시스템: [Firebase] 부팅 상태(BOOTING) 및 가동 상태(RUNNING)를 Firestore에 전송합니다.")
+        if not self.is_offline:
+            asyncio.create_task(self.firebase_manager.update_system_status("BOOTING"))
+            # 초기 제어 상태도 함께 보고 (기본값: Monitoring=False, AI=True)
+            asyncio.create_task(self.firebase_manager.update_control_status(
+                is_monitoring_active=True,
+                is_ai_trading_active=True
+            ))
+            asyncio.create_task(self.firebase_manager.update_engine_status("RUNNING"))
+            self._heartbeat_task = asyncio.create_task(self.firebase_manager.start_heartbeat())
+            print("시스템: [Firebase] 부팅 상태(BOOTING) 및 가동 상태(RUNNING)를 Firestore에 전송합니다.")
 
         # [Firebase] settings/core 기본값 업로드 (모바일 앱 설정 화면 초기화)
         # config.yaml 실제 값을 읽어 업로드하되, 보안·내부 항목은 제외합니다.

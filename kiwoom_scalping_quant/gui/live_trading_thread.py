@@ -243,7 +243,8 @@ class LiveTradingThread(QThread):
                 if k not in _EXCLUDED and isinstance(v, (int, float, str, bool))
             }
             await fb.initialize_default_settings(default_settings)
-            self.signal_log_message.emit("✅ [Firebase] 부팅 상태(RUNNING) 및 기본 설정 업로드 완료")
+            if not self.config_manager.get("OFFLINE_MODE", False):
+                self.signal_log_message.emit("✅ [Firebase] 부팅 상태(RUNNING) 및 기본 설정 업로드 완료")
         except Exception as e:
             logger.error(f"[Firebase] 부팅 초기화 실패 (무시): {e}")
 
@@ -355,7 +356,8 @@ class LiveTradingThread(QThread):
             asyncio.run_coroutine_threadsafe(_execute(), loop)
 
         fb.listen_to_commands(on_command_received)
-        self.signal_log_message.emit("✅ [Firebase] 실시간 리스너 3종 활성화 완료 (설정/제어/명령)")
+        if not self.config_manager.get("OFFLINE_MODE", False):
+            self.signal_log_message.emit("✅ [Firebase] 실시간 리스너 3종 활성화 완료 (설정/제어/명령)")
 
     # ──────────────────────────────────────────────
     # 주기적 잔고 동기화 루프
