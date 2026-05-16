@@ -1581,6 +1581,18 @@ class BacktestViewModel(QObject):
                 return
         
         # [수정] 무조건 '당일'이 아니라 사용자가 선택한 '종료일(end_date)'을 기준으로 배치 실행
+        # [추가] 주말(토/일)인 경우 직전 금요일로 자동 조정
+        import datetime
+        target_dt = datetime.datetime.strptime(end_date.replace("-", ""), "%Y%m%d")
+        if target_dt.weekday() == 5: # 토요일
+            target_dt -= datetime.timedelta(days=1)
+            end_date = target_dt.strftime("%Y%m%d")
+            self.logger.info(f"📅 종료일이 토요일입니다. 직전 금요일({end_date})로 조정하여 진행합니다.")
+        elif target_dt.weekday() == 6: # 일요일
+            target_dt -= datetime.timedelta(days=2)
+            end_date = target_dt.strftime("%Y%m%d")
+            self.logger.info(f"📅 종료일이 일요일입니다. 직전 금요일({end_date})로 조정하여 진행합니다.")
+
         self.logger.info(f"Top 30 자동 백테스트 시작: 기준일={end_date}")
         asyncio.create_task(self._run_auto_batch_task(end_date, end_date))
 
@@ -1725,6 +1737,18 @@ class BacktestViewModel(QObject):
         if getattr(self, "_is_task_running", False):
             self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
             return
+
+        # [추가] 주말(토/일)인 경우 직전 금요일로 자동 조정
+        import datetime
+        target_dt = datetime.datetime.strptime(end_date.replace("-", ""), "%Y%m%d")
+        if target_dt.weekday() == 5: # 토요일
+            target_dt -= datetime.timedelta(days=1)
+            end_date = target_dt.strftime("%Y%m%d")
+            self.logger.info(f"📅 종료일이 토요일입니다. 직전 금요일({end_date})로 조정하여 진행합니다.")
+        elif target_dt.weekday() == 6: # 일요일
+            target_dt -= datetime.timedelta(days=2)
+            end_date = target_dt.strftime("%Y%m%d")
+            self.logger.info(f"📅 종료일이 일요일입니다. 직전 금요일({end_date})로 조정하여 진행합니다.")
 
         from gui.multi_th_worker import MultiThresholdBatchWorker
         self.multi_th_worker = MultiThresholdBatchWorker(
