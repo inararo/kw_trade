@@ -98,6 +98,7 @@ class AccountService:
 
     def _parse_orderable(self, data: dict):
         is_offline = self.broker.config.get("OFFLINE_MODE", False)
+        self.logger.info(f"DEBUG: AccountService check -> is_offline={is_offline}")
         if not is_offline:
             self.logger.debug(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
 

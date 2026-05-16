@@ -16,7 +16,7 @@ class MultiThresholdBatchWorker(QThread):
     sig_error = pyqtSignal(str)
 
     def __init__(self, config_manager, engine, historical_fetcher, universe_manager, token_manager, 
-                 model_path, start_date, end_date):
+                 influx_client, model_path, start_date, end_date):
         super().__init__()
         # 메인 루프 저장 (GUI 스레드에서 생성된 루프)
         try:
@@ -29,6 +29,7 @@ class MultiThresholdBatchWorker(QThread):
         self.historical_fetcher = historical_fetcher
         self.universe_manager = universe_manager
         self.token_manager = token_manager
+        self.influx_client = influx_client
         self.model_path = model_path
         self.start_date = start_date
         self.end_date = end_date
@@ -122,7 +123,11 @@ class MultiThresholdBatchWorker(QThread):
                 # 글로벌 진행률 송신 (0~30/240)
                 self.sig_progress.emit(i + 1, GLOBAL_TOTAL, 0.0)
                 
-                # [수정] 종료일(end_date) 기준 하루치만 수집하도록 stop_ts 설정
+                # [수정] "여러임계값 순회" 기능은 오프라인 모드라도 네트워크 접근을 허용 (사용자 요청)
+                data = None
+                
+                # 1. API 수집 시도 (종료일 기준 하루치)
+                self.logger.info(f"[{sym}] 데이터 수집 시도 (API)...")
                 stop_ts = f"{self.end_date[:4]}-{self.end_date[4:6]}-{self.end_date[6:8]} 08:00:00"
                 result = await self.historical_fetcher.fetch_historical_data(
                     sym, self.end_date, access_token, stop_timestamp=stop_ts, max_pages=5
@@ -131,21 +136,27 @@ class MultiThresholdBatchWorker(QThread):
                 if is_successful(result):
                     inner_res = result.unwrap()
                     data = inner_res._inner_value if hasattr(inner_res, "_inner_value") else inner_res
-                    
-                    if data and len(data) > 0:
-                        df = pd.DataFrame(data)
-                        df['step'] = range(len(df))
-                        env_config = {
-                            "symbol": sym, "initial_balance": 10000000, "historical_data": data,
-                            "mode": "backtest", "feature_mode": detected_mode, "target_dim": model_dim,
-                            "all_symbols": all_symbols_list
-                        }
-                        cached_data[sym] = (env_config, df)
+                
+                # 2. API 실패 시 DB 조회 시도
+                if not data or len(data) == 0:
+                    self.logger.info(f"[{sym}] API 데이터 없음, DB에서 조회를 시도합니다. (조회일: {self.end_date})")
+                    data = await self.influx_client.fetch_data_by_range(sym, self.end_date, self.end_date)
+                    if data:
+                        self.logger.info(f"[{sym}] DB에서 {len(data)}건의 데이터를 찾았습니다.")
                     else:
-                        self.logger.warning(f"종목 {sym}: 데이터가 비어있습니다.")
+                        self.logger.warning(f"[{sym}] DB에도 데이터가 없습니다.")
+                
+                if data and len(data) > 0:
+                    df = pd.DataFrame(data)
+                    df['step'] = range(len(df))
+                    env_config = {
+                        "symbol": sym, "initial_balance": 10000000, "historical_data": data,
+                        "mode": "backtest", "feature_mode": detected_mode, "target_dim": model_dim,
+                        "all_symbols": all_symbols_list
+                    }
+                    cached_data[sym] = (env_config, df)
                 else:
-                    err_val = result.failure() if hasattr(result, "failure") else result
-                    self.logger.error(f"종목 {sym} 데이터 수집 실패: {err_val}")
+                    self.logger.warning(f"종목 {sym}: 유효한 데이터를 찾을 수 없습니다 (API/DB 모두 실패).")
 
             if not cached_data:
                 self.logger.error("캐시된 데이터가 하나도 없습니다. 작업을 중단합니다.")
