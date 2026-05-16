@@ -55,25 +55,21 @@ class AccountService:
 
     async def _fetch_orderable_cash(self):
         """실시간 가격을 반영한 주문 가능 금액 요청"""
-        # [안정화] 유니버스의 첫 번째 종목 또는 하이닉스를 조회 대상으로 우선 선정
-        target_symbol = "000660" # 하이닉스 (고가주 테스트용 기본값)
-        target_price = 1500000   # 하이닉스 폴백 가격
+        # [안정화] 유니버스의 첫 번째 종목 또는 맥쿼리를 조회 대상으로 우선 선정
+        target_symbol = "088980" # 맥쿼리 (고가주 테스트용 기본값)
+        target_price = 11200   # 맥쿼리 폴백 가격
         
         if self.data_collector and hasattr(self.data_collector, 'config'):
             universe = self.data_collector.config.get('universe', [])
             if universe:
-                target_symbol = str(universe[0].get('code', '005930')).split('_')[0]
-                target_price = 250000 # 삼성전자급 폴백
+                target_symbol = str(universe[0].get('code', '415640')).split('_')[0]
+                target_price = 9900 # kb발해인프라 폴백
 
         # 실시간 가격 참조
         if self.data_collector and hasattr(self.data_collector, 'last_prices'):
             price = self.data_collector.last_prices.get(target_symbol, 0)
             if price > 0: 
                 target_price = price
-            
-        # [핵심] 고가 종목(하이닉스 등) 하한가 에러 방지 보정
-        if target_symbol == "000660" and target_price < 1500000:
-            target_price = 1500000
             
         self.logger.info(f"📡 계좌 동기화 요청 (kt00010) -> 종목: {target_symbol} | 가격: {target_price:,}원")
         return await self.broker.get_orderable_cash(symbol=target_symbol, price=target_price)
