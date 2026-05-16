@@ -53,19 +53,30 @@ class TradingAgentWrapper:
     """
     LSTMExtractor와 MaskablePPO를 결합한 에이전트 래퍼 클래스
     """
-    def __init__(self, env: gym.Env, config: Dict[str, Any]):
+    def __init__(self, env: gym.Env, config: Dict[str, Any], model: Optional[MaskablePPO] = None, device: str = "auto"):
         self.env = env
         self.config = config
         self.feature_mode = config.get("feature_mode", "basic")
         
         # 모델 저장/로드 시 샘플링 방식에 따른 prefix 생성
-        # 예: model_advanced_smart, model_advanced_random, model_basic_smart ...
         sampling_suffix = config.get("model_name_suffix", "random")
         self.model_prefix = f"model_{self.feature_mode}_{sampling_suffix}"
-        self.model = None
+        self.model = model
         self.seq_len = config.get("seq_len", 10)
+        
+        import torch
+        if device == "auto":
+            self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
 
-        self._initialize_model()
+        if self.model is None:
+            self._initialize_model()
+        else:
+            # 전달받은 모델의 환경을 현재 환경으로 교체
+            self.model.set_env(self.env)
+            # 모델을 지정된 장치로 이동
+            self.model.policy.to(self.device)
 
     def _initialize_model(self):
         policy_kwargs = dict(
@@ -89,6 +100,7 @@ class TradingAgentWrapper:
             gamma=self.config.get("gamma", 0.99),
             gae_lambda=self.config.get("gae_lambda", 0.95),
             tensorboard_log=tb_log_dir,
+            device=self.device,
             verbose=1
         )
 
@@ -115,7 +127,7 @@ class TradingAgentWrapper:
         """GUI에서 모델을 동적으로 교체하기 위한 메서드"""
         if os.path.exists(path + ".zip") or os.path.exists(path):
             try:
-                self.model = MaskablePPO.load(path, env=self.env)
+                self.model = MaskablePPO.load(path, env=self.env, device=self.device)
             except ValueError as e:
                 # Value Error: 보통 Observation Space Dimension mismatch 시 발생
                 raise ValueError(f"Observation Space 차원 불일치 (현재 피처 모드: {self.feature_mode}): {e}")
@@ -126,8 +138,8 @@ class TradingAgentWrapper:
     def get_model_dimension(path: str) -> int:
         """모델 파일을 실제로 에칭하기 전에 관측 차원(Dimension)만 추출합니다."""
         try:
-            # env=None으로 로드하여 메타데이터만 확인
-            model = MaskablePPO.load(path, env=None)
+            # env=None으로 로드하여 메타데이터만 확인 (안정성을 위해 CPU 사용)
+            model = MaskablePPO.load(path, env=None, device="cpu")
             if hasattr(model, "observation_space"):
                 return model.observation_space.shape[0]
         except Exception:

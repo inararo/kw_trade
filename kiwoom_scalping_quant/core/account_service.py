@@ -106,10 +106,9 @@ class AccountService:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.orderable_cash = float(data.get("ord_alowa") or output.get("ord_alowa", output.get("ord_psbl_amt", 0)))
         else:
-            # [수정] 오프라인 모드인 경우 모든 에러 로그 출력 생략
             is_offline = self.broker.config.get("OFFLINE_MODE", False)
             if not is_offline and data.get("return_code") != "OFFLINE":
-                self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패: {data.get('return_msg')}")
+                self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패 (is_offline={is_offline}): {data.get('return_msg')}")
 
     async def _sync_to_firebase(self):
         """Firebase system_status/account 문서 업데이트"""

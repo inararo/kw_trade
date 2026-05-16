@@ -194,6 +194,8 @@ class ConfigManager:
 
     def set_runtime(self, key: str, value: Any):
         """[신규] 파일에 저장하지 않고 메모리(캐시)에서만 유효한 설정을 추가합니다."""
+        import logging
+        logging.getLogger("ConfigManager").info(f"DEBUG: ConfigManager.set_runtime -> {key}={value}")
         self._config_cache[key] = value
         self._runtime_keys.add(key)
 

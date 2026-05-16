@@ -1478,7 +1478,7 @@ class BacktestViewModel(QObject):
             print(f"   => 백테스트 설정: 모델 차원({model_dim}) 감지됨. 분석 모드를 '{detected_mode}'로 자동 전환합니다.")
 
             agent_config = {"seq_len": 10}
-            agent = TradingAgentWrapper(env, agent_config)
+            agent = TradingAgentWrapper(env, agent_config, device="cpu")
 
             # 모델 로드
             try:
@@ -1697,7 +1697,7 @@ class BacktestViewModel(QObject):
                 return ScalpingTradingEnv(self.data_collector, self.order_manager, env_config), df
 
             def agent_builder(env):
-                agent = TradingAgentWrapper(env, {"seq_len": 10})
+                agent = TradingAgentWrapper(env, {"seq_len": 10}, device="cpu")
                 agent.load_weights(self.model_path)
                 return agent
 
@@ -1753,7 +1753,7 @@ class BacktestViewModel(QObject):
         from gui.multi_th_worker import MultiThresholdBatchWorker
         self.multi_th_worker = MultiThresholdBatchWorker(
             self.config_manager, self.engine, self.historical_fetcher, 
-            self.universe_manager, self.token_manager,
+            self.universe_manager, self.token_manager, self.influx_client,
             self.model_path, start_date, end_date
         )
         

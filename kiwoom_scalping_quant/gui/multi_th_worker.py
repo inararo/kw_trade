@@ -4,6 +4,7 @@ import os
 import pandas as pd
 from PyQt6.QtCore import QThread, pyqtSignal
 from typing import List, Dict, Any
+from sb3_contrib import MaskablePPO
 
 class MultiThresholdBatchWorker(QThread):
     """
@@ -18,11 +19,7 @@ class MultiThresholdBatchWorker(QThread):
     def __init__(self, config_manager, engine, historical_fetcher, universe_manager, token_manager, 
                  influx_client, model_path, start_date, end_date):
         super().__init__()
-        # 메인 루프 저장 (GUI 스레드에서 생성된 루프)
-        try:
-            self.main_loop = asyncio.get_event_loop()
-        except RuntimeError:
-            self.main_loop = asyncio.new_event_loop()
+        # [복원] 스레드 고유의 루프를 사용하기 위해 main_loop 제거
             
         self.config_manager = config_manager
         self.engine = engine
@@ -42,20 +39,17 @@ class MultiThresholdBatchWorker(QThread):
             self.engine.stop()
 
     def run(self):
-        """별도 스레드에서 실행되지만, 로직은 메인 루프에서 수행하도록 위임"""
-        if not self.main_loop:
-            self.sig_error.emit("메인 이벤트 루프를 찾을 수 없습니다.")
-            return
-            
-        # 워커 스레드에서 메인 루프에 코루틴 실행 요청
-        future = asyncio.run_coroutine_threadsafe(self._execute_batch(), self.main_loop)
+        """별도 스레드에서 자체 이벤트 루프를 생성하여 실행"""
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
         
         try:
-            # 작업 완료 대기
-            future.result()
+            self.loop.run_until_complete(self._execute_batch())
         except Exception as e:
             self.logger.error(f"워커 실행 중 치명적 에러: {e}")
             self.sig_error.emit(str(e))
+        finally:
+            self.loop.close()
 
     async def _execute_batch(self):
         # 1. 기존 설정 백업
@@ -116,6 +110,9 @@ class MultiThresholdBatchWorker(QThread):
             model_dim = TradingAgentWrapper.get_model_dimension(self.model_path)
             detected_mode = "advanced" if model_dim >= 200 else "basic"
             all_symbols_list = [s.get("code") for s in self.config_manager.get_symbols()]
+
+            # [복원] 모델 재사용 제거 (안정성 문제로 매번 로드 방식으로 회귀)
+            # shared_model = MaskablePPO.load(self.model_path, device="cpu")
 
             for i, sym in enumerate(symbols):
                 if not self.is_running: break
@@ -178,8 +175,8 @@ class MultiThresholdBatchWorker(QThread):
                     self.sig_status.emit(f"[{current_combo_name}] {msg}")
                     self.sig_progress.emit(global_step, GLOBAL_TOTAL, 0.0)
 
-                # [수정] 엔진에 임계값을 직접 전달 (전역 설정 변경 안 함)
-                results = await self._run_cached_batch(cached_data, 
+                # [복원] 공유 모델 대신 모델 경로만 전달하여 각 시뮬레이션에서 로드
+                results = await self._run_cached_batch(cached_data,
                                                      progress_cb=sim_progress_cb,
                                                      buy_th=b_th, sell_th=s_th)
                 self.logger.info(f"   └ 조합 {idx+1} 완료. {len(results)}개 결과 저장 시도...")
@@ -209,7 +206,8 @@ class MultiThresholdBatchWorker(QThread):
             return ScalpingTradingEnv(None, None, env_config), df
 
         def agent_builder(env):
-            agent = TradingAgentWrapper(env, {"seq_len": 10})
+            # [복원] 매번 가중치를 로드 (CPU 강제)
+            agent = TradingAgentWrapper(env, {"seq_len": 10}, device="cpu")
             agent.load_weights(self.model_path)
             return agent
 

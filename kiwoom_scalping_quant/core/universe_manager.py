@@ -444,7 +444,10 @@ class UniverseManager:
         관리종목, 우선주, ETF/ETN, SPAC은 필터링하여 순수 주식 리스트만 반환합니다.
         """
         # [오프라인 모드] 통신 차단 및 로컬 데이터 반환
-        if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
+        is_off = self.config_manager.get("OFFLINE_MODE", False) if self.config_manager else False
+        self.logger.info(f"DEBUG: UniverseManager check -> OFFLINE_MODE={is_off}")
+        
+        if is_off:
             self.logger.info("🚫 오프라인 모드: 외부 유니버스 스캔을 스킵하고 로컬 설정을 사용합니다.")
             local_symbols = self.config_manager.get_symbols()
             # 로컬 설정의 종목들을 API 응답과 유사한 형식으로 변환 (최대 30개)

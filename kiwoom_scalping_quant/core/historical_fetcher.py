@@ -82,9 +82,11 @@ class HistoricalFetcher:
         특정 종목의 과거 데이터를 키움 REST API (ka10080) 명세에 맞춰 수집합니다.
         """
         # [오프라인 모드] 외부 데이터 수집 차단
-        # if self.config_manager and self.config_manager.get("OFFLINE_MODE", False):
-        #     self.logger.info(f"🚫 오프라인 모드: {symbol}의 외부 시세 데이터 수집을 스킵합니다.")
-        #     return []
+        is_off = self.config_manager.get("OFFLINE_MODE", False) if self.config_manager else False
+        self.logger.info(f"DEBUG: HistoricalFetcher check -> OFFLINE_MODE={is_off}")
+        if is_off:
+            self.logger.info(f"🚫 오프라인 모드: {symbol}의 외부 시세 데이터 수집을 스킵합니다.")
+            return []
 
         all_data = []
         next_key = ""
