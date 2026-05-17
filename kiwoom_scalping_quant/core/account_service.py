@@ -53,6 +53,15 @@ class AccountService:
 
             return summary
 
+    def _is_offline(self) -> bool:
+        """안전하게 오프라인 모드 상태를 반환합니다 (브로커 config 누락 대응 방어 로직)"""
+        if hasattr(self.broker, 'config') and self.broker.config is not None:
+            try:
+                return self.broker.config.get("OFFLINE_MODE", False)
+            except AttributeError:
+                pass
+        return False
+
     async def _fetch_orderable_cash(self):
         """실시간 가격을 반영한 주문 가능 금액 요청"""
         # [안정화] 유니버스의 첫 번째 종목 또는 맥쿼리를 조회 대상으로 우선 선정
@@ -64,7 +73,7 @@ class AccountService:
             if universe:
                 target_symbol = str(universe[0].get('code', '415640')).split('_')[0]
                 target_price = 9900 # kb발해인프라 폴백
-
+ 
         # 실시간 가격 참조
         if self.data_collector and hasattr(self.data_collector, 'last_prices'):
             price = self.data_collector.last_prices.get(target_symbol, 0)
@@ -72,15 +81,15 @@ class AccountService:
                 target_price = price
             
         # [수정] 오프라인 모드인 경우 동기화 요청 로그 출력 생략
-        if not self.broker.config.get("OFFLINE_MODE", False):
+        if not self._is_offline():
             self.logger.info(f"📡 계좌 동기화 요청 (kt00010) -> 종목: {target_symbol} | 가격: {target_price:,}원")
         return await self.broker.get_orderable_cash(symbol=target_symbol, price=target_price)
-
+ 
     def _parse_profit(self, data: dict):
-        is_offline = self.broker.config.get("OFFLINE_MODE", False)
+        is_offline = self._is_offline()
         if not is_offline:
             self.logger.debug(f"🔍 [ID:{id(self)}] [ka10077] RAW Response: {data}")
-
+ 
         if str(data.get("return_code")) == "0" or "tdy_rlzt_pl" in data:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.today_realized_profit = float(data.get("tdy_rlzt_pl") or output.get("tdy_rlzt_pl", 0))
@@ -92,21 +101,21 @@ class AccountService:
                 self.total_assets = new_assets
         else:
             # [수정] 오프라인 모드인 경우 모든 에러 로그 출력 생략
-            is_offline = self.broker.config.get("OFFLINE_MODE", False)
+            is_offline = self._is_offline()
             if not is_offline and data.get("return_code") != "OFFLINE":
                 self.logger.error(f"❌ [ID:{id(self)}] [ka10077] 실현손익 조회 실패: {data.get('return_msg')}")
-
+ 
     def _parse_orderable(self, data: dict):
-        is_offline = self.broker.config.get("OFFLINE_MODE", False)
+        is_offline = self._is_offline()
         self.logger.info(f"DEBUG: AccountService check -> is_offline={is_offline}")
         if not is_offline:
             self.logger.debug(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
-
+ 
         if str(data.get("return_code")) == "0" or "ord_alowa" in data:
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
             self.orderable_cash = float(data.get("ord_alowa") or output.get("ord_alowa", output.get("ord_psbl_amt", 0)))
         else:
-            is_offline = self.broker.config.get("OFFLINE_MODE", False)
+            is_offline = self._is_offline()
             if not is_offline and data.get("return_code") != "OFFLINE":
                 self.logger.error(f"❌ [ID:{id(self)}] [kt00010] 주문가능금액 조회 실패 (is_offline={is_offline}): {data.get('return_msg')}")
 

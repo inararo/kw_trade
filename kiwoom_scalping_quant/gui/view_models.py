@@ -1598,8 +1598,16 @@ class BacktestViewModel(QObject):
             end_date = target_dt.strftime("%Y%m%d")
             self.logger.info(f"📅 종료일이 일요일입니다. 직전 금요일({end_date})로 조정하여 진행합니다.")
 
+        if getattr(self, "_is_task_running", False):
+            self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
+            return
+
         self.logger.info(f"Top 30 자동 백테스트 시작: 기준일={end_date}")
-        asyncio.create_task(self._run_auto_batch_task(end_date, end_date))
+        self._is_task_running = True
+        
+        # 태스크 완료 시 플래그 해제 콜백 연결
+        task = asyncio.create_task(self._run_auto_batch_task(end_date, end_date))
+        task.add_done_callback(lambda _: self._reset_task_flag())
 
     async def _run_auto_batch_task(self, start_date: str, end_date: str):
         try:
@@ -1743,6 +1751,14 @@ class BacktestViewModel(QObject):
             self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
             return
 
+        # 이전 워커 완벽 정리 (Segmentation Fault 방지)
+        if hasattr(self, 'multi_th_worker') and self.multi_th_worker is not None:
+            if self.multi_th_worker.isRunning():
+                self.multi_th_worker.stop()
+                self.multi_th_worker.wait()
+            self.multi_th_worker.deleteLater()
+            self.multi_th_worker = None
+
         # [추가] 주말(토/일)인 경우 직전 금요일로 자동 조정
         import datetime
         target_dt = datetime.datetime.strptime(end_date.replace("-", ""), "%Y%m%d")
@@ -1788,14 +1804,22 @@ class BacktestViewModel(QObject):
         self._is_task_running = False
 
     def stop_batch_backtest(self):
-        """배치 작업 중단"""
-        if hasattr(self, 'multi_th_worker') and self.multi_th_worker:
-            self.multi_th_worker.stop()
-        if hasattr(self, 'batch_worker') and self.batch_worker:
-            self.batch_worker.stop()
+        """배치 작업 중단 및 워커 완벽 정리"""
+        if hasattr(self, 'multi_th_worker') and self.multi_th_worker is not None:
+            if self.multi_th_worker.isRunning():
+                self.multi_th_worker.stop()
+                self.multi_th_worker.wait()
+            self.multi_th_worker.deleteLater()
+            self.multi_th_worker = None
+            
+        if hasattr(self, 'batch_worker') and self.batch_worker is not None:
+            if self.batch_worker.isRunning():
+                self.batch_worker.stop()
+                self.batch_worker.wait()
+            self.batch_worker.deleteLater()
+            self.batch_worker = None
+            
         self._is_task_running = False
-
-
 
     def _save_batch_results_csv(self, results, model_path):
         """[NEW] 요구사항에 맞춘 상세 CSV 저장 포맷"""
@@ -1874,10 +1898,13 @@ class BacktestViewModel(QObject):
             self.sig_bt_error.emit("유니버스에 등록된 종목이 없습니다.")
             return
 
-        # 이전 워커가 있다면 정리
-        if self.batch_worker and self.batch_worker.isRunning():
-            self.batch_worker.stop()
-            self.batch_worker.wait()
+        # 이전 워커 완벽 정리 (Segmentation Fault 방지)
+        if hasattr(self, 'batch_worker') and self.batch_worker is not None:
+            if self.batch_worker.isRunning():
+                self.batch_worker.stop()
+                self.batch_worker.wait()
+            self.batch_worker.deleteLater()
+            self.batch_worker = None
 
         self.logger.info(f"일괄 백테스트 시작: 모델 {len(model_paths)}개, 종목 {len(symbols)}개")
         

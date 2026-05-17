@@ -193,8 +193,9 @@ class QuantSystem:
         _ws_url     = _cfg.get_ws_url()
 
         self._broker_api = KiwoomBrokerWrapper(_app_key, _app_secret, _base_url, _ws_url)
-        # [🚨 추가 패치] 생성 즉시 현재 토큰을 주입합니다.
+        # [🚨 추가 패치] 생성 즉시 현재 토큰 및 config를 주입합니다.
         self._broker_api.access_token = self.token_manager.get_token()
+        self._broker_api.config = _cfg
         
         # [Shared Core] 서비스 및 UI 브릿지 초기화 (Broker 생성 후로 이동)
         from gui.condition_worker import ConditionWorkerThread

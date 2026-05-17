@@ -454,7 +454,7 @@ class StrategyManager:
         """주기적으로 현재 감시 중인 종목 리스트와 상태를 통합 리포팅합니다."""
         # [오프라인 모드] 실시간 API 요청 차단
         if self.config.get("OFFLINE_MODE", False):
-            self.logger.info(f"🚫 오프라인 모드: 실시간 감시를 차단합니다.")
+            self.logger.info(f"🚫 오프라인 모드: 실시간 감시가 차단합니다.")
             return {"return_code": "OFFLINE", "return_msg": "System is running in OFFLINE mode."}
 
         self.logger.info("📡 StrategyManager: 실시간 감시 현황 대시보드 루프 가동")

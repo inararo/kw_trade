@@ -36,6 +36,7 @@ class KiwoomBrokerWrapper:
         self.account_number = "" # [추가] 계좌번호
         self.access_token = None
         self.ws_running = False  # [추가] 웹소켓 실행 중 여부 플래그
+        self.config = None       # [🚨 안전장치] 공유 서비스 호환용 config 기본값 선언
         
         # 콜백 함수들
         self.on_condition_event = None
@@ -491,6 +492,7 @@ async def main():
         ws_url=config_manager.get_ws_url()
     )
     broker_api.account_number = config_manager.get("account_number", "")
+    broker_api.config = config_manager # [🚨 추가] AccountService 등 공유 서비스 호환용 config 객체 주입
     
     account_service = AccountService(broker_api, data_collector)
     condition_service = ConditionService()

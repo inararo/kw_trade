@@ -230,9 +230,9 @@ class BacktestStudioTab(QWidget):
 
     @pyqtSlot(int, int, float)
     def on_bt_progress(self, step: int, total: int, pnl: float):
-        # [최적화] 총 스텝이 많을 때만(예: 500개 이상) 스로틀링 수행
-        # 일괄 백테스트(30~100건)는 모든 스텝을 즉시 업데이트하여 답답함을 해소
-        if total > 500:
+        # 배치/일괄 백테스트(다이얼로그가 뜬 경우)는 개별 종목 단위를 나타내므로 스로틀링을 하지 않고 즉시 업데이트합니다.
+        is_batch = hasattr(self, "progress_dialog") and self.progress_dialog is not None
+        if total > 500 and not is_batch:
             if step % 100 != 0 and step != total:
                 return
         
