@@ -184,18 +184,76 @@ class AITrainingStudioTab(QWidget):
         self.chk_overnight.setStyleSheet(self.chk_smart_sampling.styleSheet())
         form_layout.addRow("연속 학습:", self.chk_overnight)
 
+        params_group.setLayout(form_layout)
+        
+        # 1-1.5. 보상 및 페널티 설정 그룹
+        reward_group = QGroupBox("보상 및 페널티 설정")
+        reward_form = QFormLayout()
+        
+        self.spin_penalty_hold = QDoubleSpinBox()
+        self.spin_penalty_hold.setRange(-0.1, 0.0)
+        self.spin_penalty_hold.setValue(-0.001)
+        self.spin_penalty_hold.setSingleStep(0.001)
+        self.spin_penalty_hold.setDecimals(3)
+        create_h_spin(self.spin_penalty_hold, "관망 페널티:", reward_form)
+
+        self.spin_penalty_holding_step = QDoubleSpinBox()
+        self.spin_penalty_holding_step.setRange(-0.1, 0.0)
+        self.spin_penalty_holding_step.setValue(-0.005)
+        self.spin_penalty_holding_step.setSingleStep(0.001)
+        self.spin_penalty_holding_step.setDecimals(3)
+        create_h_spin(self.spin_penalty_holding_step, "단순 보유 페널티:", reward_form)
+
+        self.spin_penalty_loss_hold = QDoubleSpinBox()
+        self.spin_penalty_loss_hold.setRange(-0.1, 0.0)
+        self.spin_penalty_loss_hold.setValue(-0.001)
+        self.spin_penalty_loss_hold.setSingleStep(0.001)
+        self.spin_penalty_loss_hold.setDecimals(3)
+        create_h_spin(self.spin_penalty_loss_hold, "손실 방치 페널티:", reward_form)
+
+        self.spin_mdd_threshold = QDoubleSpinBox()
+        self.spin_mdd_threshold.setRange(-0.2, 0.0)
+        self.spin_mdd_threshold.setValue(-0.025)
+        self.spin_mdd_threshold.setSingleStep(0.005)
+        self.spin_mdd_threshold.setDecimals(3)
+        create_h_spin(self.spin_mdd_threshold, "하드 손절 한도(MDD):", reward_form)
+
+        self.spin_penalty_mdd = QDoubleSpinBox()
+        self.spin_penalty_mdd.setRange(-20.0, 0.0)
+        self.spin_penalty_mdd.setValue(-5.0)
+        self.spin_penalty_mdd.setSingleStep(0.5)
+        self.spin_penalty_mdd.setDecimals(1)
+        create_h_spin(self.spin_penalty_mdd, "하드 손절 페널티:", reward_form)
+
+        self.spin_sell_loss_mult = QDoubleSpinBox()
+        self.spin_sell_loss_mult.setRange(1.0, 50.0)
+        self.spin_sell_loss_mult.setValue(10.0)
+        self.spin_sell_loss_mult.setSingleStep(1.0)
+        self.spin_sell_loss_mult.setDecimals(1)
+        create_h_spin(self.spin_sell_loss_mult, "손실 매도 가중치:", reward_form)
+
+        self.spin_sell_profit_mult = QDoubleSpinBox()
+        self.spin_sell_profit_mult.setRange(1.0, 50.0)
+        self.spin_sell_profit_mult.setValue(5.0)
+        self.spin_sell_profit_mult.setSingleStep(1.0)
+        self.spin_sell_profit_mult.setDecimals(1)
+        create_h_spin(self.spin_sell_profit_mult, "수익 매도 가중치:", reward_form)
+
+        # 시작/중지 버튼은 reward_group 아래에 배치
+        btn_layout = QHBoxLayout()
         self.btn_start = QPushButton("학습 시작")
         self.btn_start.setStyleSheet("background-color: green; color: white;")
         self.btn_start.clicked.connect(self._on_start_clicked)
-        form_layout.addRow("", self.btn_start)
+        btn_layout.addWidget(self.btn_start)
 
         self.btn_stop = QPushButton("학습 중지")
         self.btn_stop.setStyleSheet("background-color: orange; color: white;")
         self.btn_stop.clicked.connect(self._on_stop_clicked)
         self.btn_stop.setEnabled(False)
-        form_layout.addRow("", self.btn_stop)
-
-        params_group.setLayout(form_layout)
+        btn_layout.addWidget(self.btn_stop)
+        
+        reward_form.addRow("", btn_layout)
+        reward_group.setLayout(reward_form)
         
         # 1-2. 좌측 하단: AI 뇌 구조 요약 패널 (MLOps 정보)
         self.info_group = QGroupBox("AI 모델 및 훈련 환경 정보")
@@ -214,11 +272,21 @@ class AITrainingStudioTab(QWidget):
         self.info_group.setLayout(info_layout)
         
         # 좌측 레이아웃 구성
-        left_panel = QVBoxLayout()
-        left_panel.addWidget(params_group, stretch=1)
-        left_panel.addWidget(self.info_group, stretch=1)
+        # 스크롤 영역을 추가하여 내용이 길어져도 UI가 깨지지 않도록 함
+        from PyQt6.QtWidgets import QScrollArea
+        left_container = QWidget()
+        left_panel = QVBoxLayout(left_container)
+        left_panel.setContentsMargins(0, 0, 0, 0)
+        left_panel.addWidget(params_group)
+        left_panel.addWidget(reward_group)
+        left_panel.addWidget(self.info_group)
         
-        main_layout.addLayout(left_panel, stretch=1)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(left_container)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        
+        main_layout.addWidget(scroll_area, stretch=1)
 
         # 초기 요약 정보 수립
         self._update_info_summary()
@@ -268,6 +336,13 @@ class AITrainingStudioTab(QWidget):
         self.spin_sell_threshold.valueChanged.connect(self._update_info_summary)
         self.chk_day_begin.stateChanged.connect(self._update_info_summary)
         self.chk_overnight.stateChanged.connect(self._update_info_summary)
+        self.spin_penalty_hold.valueChanged.connect(self._update_info_summary)
+        self.spin_penalty_holding_step.valueChanged.connect(self._update_info_summary)
+        self.spin_penalty_loss_hold.valueChanged.connect(self._update_info_summary)
+        self.spin_mdd_threshold.valueChanged.connect(self._update_info_summary)
+        self.spin_penalty_mdd.valueChanged.connect(self._update_info_summary)
+        self.spin_sell_loss_mult.valueChanged.connect(self._update_info_summary)
+        self.spin_sell_profit_mult.valueChanged.connect(self._update_info_summary)
 
     def _on_start_clicked(self):
         timesteps = self.spin_steps.value()
@@ -295,12 +370,23 @@ class AITrainingStudioTab(QWidget):
         self.reward_curve.setData([], [])
         self.log_list.clear()
 
+        env_params = {
+            "penalty_hold": self.spin_penalty_hold.value(),
+            "penalty_holding_step": self.spin_penalty_holding_step.value(),
+            "penalty_loss_hold": self.spin_penalty_loss_hold.value(),
+            "mdd_threshold": self.spin_mdd_threshold.value(),
+            "penalty_mdd_liquidate": self.spin_penalty_mdd.value(),
+            "sell_loss_multiplier": self.spin_sell_loss_mult.value(),
+            "sell_profit_multiplier": self.spin_sell_profit_mult.value()
+        }
+
         self.view_model.start_training(timesteps, lr, max_records, 
                                      feature_mode=feature_mode, 
                                      use_smart_sampling=use_smart_sampling,
                                      ppo_params=ppo_params,
                                      always_start_day_begin=self.chk_day_begin.isChecked(),
-                                     allow_overnight_episodes=self.chk_overnight.isChecked())
+                                     allow_overnight_episodes=self.chk_overnight.isChecked(),
+                                     env_params=env_params)
 
     def _on_stop_clicked(self):
         self.btn_stop.setEnabled(False) # 중복 중단 요청 방지
@@ -369,9 +455,11 @@ class AITrainingStudioTab(QWidget):
 </ul>
 <b>🎯 보상 체계 (Reward):</b>
 <ul>
-    <li><b>승수:</b> 실현 수익률 10x 가중치 적용 (도파민 강화)</li>
-    <li><b>인내심:</b> 초기 {grace_period}스텝 패널티 유예 (패닉셀 방지)</li>
-    <li><b>감가:</b> 보유 시간당 -0.005 패널티 (장기보유 방지)</li>
+    <li><b>관망/허수:</b> {self.spin_penalty_hold.value():.3f} (타점 탐색 강제)</li>
+    <li><b>단순 보유:</b> {self.spin_penalty_holding_step.value():.3f} (매 스텝 누적)</li>
+    <li><b>손실 방치:</b> 기본보유 + {self.spin_penalty_loss_hold.value():.3f} (20스텝 초과 시)</li>
+    <li><b>강제 청산:</b> MDD {self.spin_mdd_threshold.value()*100:.1f}% 도달 시 {self.spin_penalty_mdd.value():.1f}</li>
+    <li><b>매도 가중치:</b> 수익 {self.spin_sell_profit_mult.value():.1f}배 / 손실 {self.spin_sell_loss_mult.value():.1f}배</li>
 </ul>
 <b>⚙️ 하이퍼파라미터 (Hyperparams):</b>
 <ul>

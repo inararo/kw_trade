@@ -234,12 +234,18 @@ class MultiThresholdBatchWorker(QThread):
         import pandas as pd
         df_raw = pd.DataFrame(results)
         
-        # 숫자 컬럼만 추출하여 평균 계산
+        # 숫자 컬럼만 추출하여 평균 계산 (전체 평균 및 거래발생 종목 평균)
         numeric_cols = ["Total Return (%)", "Win Rate (%)", "MDD (%)", "Profit Factor", "Total Trades"]
         avg_values = {}
+        active_df = df_raw[df_raw["Total Trades"] > 0] if "Total Trades" in df_raw.columns else df_raw.iloc[0:0]
         for col in numeric_cols:
             if col in df_raw.columns:
-                avg_values[col] = round(df_raw[col].mean(), 2)
+                avg_all = round(df_raw[col].mean(), 2)
+                if not active_df.empty:
+                    avg_active = round(active_df[col].mean(), 2)
+                    avg_values[col] = f"{avg_all} ({avg_active})"
+                else:
+                    avg_values[col] = f"{avg_all} (0.0)"
         
         # 평균 행 생성
         avg_row = {

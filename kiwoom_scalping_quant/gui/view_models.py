@@ -1011,7 +1011,8 @@ class AITrainingViewModel(QObject):
 
     def start_training(self, total_timesteps: int, learning_rate: float, max_records: int, 
                        feature_mode: str = "basic", use_smart_sampling: bool = False, ppo_params: dict = None,
-                       always_start_day_begin: bool = False, allow_overnight_episodes: bool = False):
+                       always_start_day_begin: bool = False, allow_overnight_episodes: bool = False,
+                       env_params: dict = None):
         """UI에서 학습 시작 요청을 받아 파이프라인 조립 후 워커 실행"""
         if self.worker and self.worker.isRunning():
             self.sig_error.emit("이미 학습이 진행 중입니다.")
@@ -1026,12 +1027,13 @@ class AITrainingViewModel(QObject):
         
         self.prep_task = asyncio.create_task(self._prepare_and_start_training(
             total_timesteps, learning_rate, max_records, feature_mode, use_smart_sampling, ppo_params,
-            always_start_day_begin, allow_overnight_episodes
+            always_start_day_begin, allow_overnight_episodes, env_params
         ))
 
     async def _prepare_and_start_training(self, timesteps: int, lr: float, max_records: int, 
                                           feature_mode: str, use_smart_sampling: bool = False, ppo_params: dict = None,
-                                          always_start_day_begin: bool = False, allow_overnight_episodes: bool = False):
+                                          always_start_day_begin: bool = False, allow_overnight_episodes: bool = False,
+                                          env_params: dict = None):
         self.sig_training_log.emit(f"1. InfluxDB에서 유니버스 전체 데이터 조회 중 (종목당 최대 {max_records}건)...")
         # [안정성 강화] 동시 조회 개수를 3개로 제한
         sem = asyncio.Semaphore(3)
@@ -1095,6 +1097,9 @@ class AITrainingViewModel(QObject):
             "always_start_day_begin": always_start_day_begin,
             "allow_overnight_episodes": allow_overnight_episodes,
         }
+        if env_params:
+            env_config.update(env_params)
+            
         env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
 
         # [핵심] 스마트 샘플링 여부에 따라 모델명/폴더명에 태그 부여
@@ -1837,11 +1842,17 @@ class BacktestViewModel(QObject):
             # 수치형 컬럼 선정
             numeric_cols = ["총수익률(%)", "승률(%)", "MDD(%)", "Profit Factor", "총 매매횟수"]
             
-            # [Average] 행 추가
+            # [Average] 행 추가 (전체 평균 및 거래발생 종목 평균)
             avg_row = {col: "" for col in df.columns}
             avg_row["종목코드(Symbol)"] = "[Average]"
+            active_df = df[df["총 매매횟수"] > 0] if "총 매매횟수" in df.columns else df.iloc[0:0]
             for col in numeric_cols:
-                avg_row[col] = round(df[col].mean(), 2)
+                avg_all = round(df[col].mean(), 2)
+                if not active_df.empty:
+                    avg_active = round(active_df[col].mean(), 2)
+                    avg_row[col] = f"{avg_all} ({avg_active})"
+                else:
+                    avg_row[col] = f"{avg_all} (0.0)"
             
             df = pd.concat([df, pd.DataFrame([avg_row])], ignore_index=True)
 

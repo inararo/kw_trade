@@ -91,6 +91,15 @@ class ScalpingTradingEnv(gym.Env):
         self.cooldown_steps = 10
         self.steps_since_buy = 0
         self.steps_since_sell = 100
+        
+        # [추가] 동적 보상 및 페널티 파라미터 (UI 설정 연동)
+        self.penalty_hold = config.get('penalty_hold', -0.001)
+        self.penalty_holding_step = config.get('penalty_holding_step', -0.005)
+        self.penalty_loss_hold = config.get('penalty_loss_hold', -0.001)
+        self.mdd_threshold = config.get('mdd_threshold', -0.025)
+        self.penalty_mdd_liquidate = config.get('penalty_mdd_liquidate', -5.0)
+        self.sell_loss_multiplier = config.get('sell_loss_multiplier', 10.0)
+        self.sell_profit_multiplier = config.get('sell_profit_multiplier', 5.0)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -492,9 +501,9 @@ class ScalpingTradingEnv(gym.Env):
         # [스캘핑 개조] MDD/손절 페널티 (-2.5% 도달 시 즉시 강제 청산)
         if self.holdings > 0 and self.avg_entry_price > 0:
             unrealized_pnl = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9)
-            if unrealized_pnl <= -0.025: # -2.5% 하드코드
+            if unrealized_pnl <= self.mdd_threshold:
                 # 1. 강력한 페널티 부여
-                step_reward -= 5.0 
+                step_reward += self.penalty_mdd_liquidate 
                 
                 # 2. 강제 전량 청산 (Liquidate 100%)
                 sell_price = current_price * (1 - slippage)
@@ -507,7 +516,7 @@ class ScalpingTradingEnv(gym.Env):
                 action_executed = 4 # Sell로 기록
                 action = 0 # 이번 스텝의 추가 액션 방지
                 
-                self.logger.warning(f"🚨 [MDD LIQUIDATE] 손절한도(-2.5%) 도달! 평가손 {unrealized_pnl*100:.2f}% → 전량 강제 매도 및 계속 진행")
+                self.logger.warning(f"🚨 [MDD LIQUIDATE] 손절한도({self.mdd_threshold*100:.1f}%) 도달! 평가손 {unrealized_pnl*100:.2f}% → 전량 강제 매도 및 페널티 {self.penalty_mdd_liquidate}")
 
         # ──────────────────────────────────────────────
         # [오버라이드 2] 15:20 당일 청산 규칙
@@ -609,8 +618,8 @@ class ScalpingTradingEnv(gym.Env):
                 sell_price = current_price * (1 - slippage)
                 revenue = sell_shares * sell_price
                 realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
-                # [Reality Patch] 수익은 5배, 손실은 10배 페널티
-                reward_multiplier = 10.0 if realized_pnl_pct < 0 else 5.0
+                # [Reality Patch] 수익/손실 배율 설정값 적용
+                reward_multiplier = self.sell_loss_multiplier if realized_pnl_pct < 0 else self.sell_profit_multiplier
                 step_reward += realized_pnl_pct * reward_multiplier
 
                 # [스캘핑 개조] 단기 익절 보너스 (수익률 > 1.5% 에서 매도 시 +2.0)
@@ -636,8 +645,8 @@ class ScalpingTradingEnv(gym.Env):
                 sell_price = current_price * (1 - slippage)
                 revenue = sell_shares * sell_price
                 realized_pnl_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
-                # [Reality Patch] 수익은 5배, 손실은 10배 페널티
-                reward_multiplier = 10.0 if realized_pnl_pct < 0 else 5.0
+                # [Reality Patch] 수익/손실 배율 설정값 적용
+                reward_multiplier = self.sell_loss_multiplier if realized_pnl_pct < 0 else self.sell_profit_multiplier
                 step_reward += realized_pnl_pct * reward_multiplier
 
                 # [스캘핑 개조] 단기 익절 보너스 (수익률 > 1.5% 에서 매도 시 +2.0)
@@ -663,7 +672,7 @@ class ScalpingTradingEnv(gym.Env):
         # ──────────────────────────────────────────────
         if action == 0 and self.holdings == 0:
             # "아무것도 안 하는 죄" - 억지로라도 타점을 찾게 만듦
-            step_reward -= 0.001
+            step_reward += self.penalty_hold
 
         # ──────────────────────────────────────────────
         # 1-2. 첫 매수 진입 보너스 (용기 장려)
@@ -705,11 +714,11 @@ class ScalpingTradingEnv(gym.Env):
         if self.holdings > 0 and self.steps_since_buy > 20:
             current_profit = (current_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
             if current_profit < 0:
-                step_reward -= 0.001
+                step_reward += self.penalty_loss_hold
                 if self.steps_since_buy % 10 == 0:
                     self.logger.debug(f"⏳ 손실 방치 페널티 (Hold: {self.steps_since_buy}스텝)")
         if self.holdings > 0:
-            step_reward -= 0.005
+            step_reward += self.penalty_holding_step
 
         # ──────────────────────────────────────────────
         # 4. 상태 업데이트 및 종료 판정
@@ -756,7 +765,7 @@ class ScalpingTradingEnv(gym.Env):
                 revenue = self.holdings * sell_price
                 profit_pct = (sell_price - self.avg_entry_price) / (self.avg_entry_price + 1e-9) * 100.0
                 # 종료 시 자동 청산 보상에도 동일 멀티플라이어 적용
-                reward_mult = 10.0 if profit_pct < 0 else 5.0
+                reward_mult = self.sell_loss_multiplier if profit_pct < 0 else self.sell_profit_multiplier
                 step_reward += profit_pct * reward_mult
                 self.balance += revenue
                 self.holdings = 0
