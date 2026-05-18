@@ -3,7 +3,7 @@ COND_NAME_MORNING: AI스캘핑주도주장시작
 COND_NAME_NORMAL: AI스캘핑주도주
 SWITCH_TIME: 09:30:00
 account_number: ''
-active_model_path: ./saved_models/bob/best_model_smart_bob.zip
+active_model_path: ./saved_models/bob/best_model_offensive.zip
 ai_buy_threshold: 0.8
 ai_sell_threshold: 0.5
 buy_start_time: 09:03:00
