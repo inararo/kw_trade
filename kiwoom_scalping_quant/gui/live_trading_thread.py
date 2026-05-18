@@ -50,6 +50,7 @@ class LiveTradingThread(QThread):
     # Firebase 원격 제어 시그널 (모바일 앱 → GUI 버튼 상태 동기화)
     signal_monitoring_toggled = pyqtSignal(bool)        # True=감시중지, False=감시중
     signal_ai_trading_toggled = pyqtSignal(bool)        # True=일시정지, False=정상
+    signal_model_switched     = pyqtSignal(str)         # AI 모델 전환 (모드명: "offensive"/"defensive")
 
     def __init__(self, config_manager, order_manager, risk_manager,
                  strategy_manager, condition_manager, broker_api,
@@ -231,6 +232,7 @@ class LiveTradingThread(QThread):
                 "KIWOOM_ACCESS_TOKEN", "INFLUX_URL", "INFLUX_TOKEN", "INFLUX_ORG",
                 "influx_bucket", "INFLUX_BUCKET", "TELEGRAM_BOT_TOKEN",
                 "telegram_chat_id", "FIREBASE_KEY_PATH", "active_model_path",
+                "model_offensive_path", "model_defensive_path",  # [보안] 로컬 모델 경로는 Firebase에 노출 금지
                 "kiwoom", "ws_url", "max_buffer_size", "db_batch_size",
                 "symbols", "universe", "protected_symbols", "global_max_loss",
                 "slippage", "seq_len", "initial_balance", "live_trading_model_type",
@@ -295,20 +297,42 @@ class LiveTradingThread(QThread):
         # ── 리스너 1: settings/core 변경 → ConfigManager 핫 리로드 ──
         def on_settings_changed(data: dict):
             def _apply():
-                _CONTROL_KEYS = {
-                    "last_updated_by_engine", "last_heartbeat",
-                    "engine_status", "current_state", "updated_at"
-                }
-                filtered = {k: v for k, v in data.items() if k not in _CONTROL_KEYS}
-                if not filtered:
-                    return
-                applied = self.config_manager.hot_reload_settings(filtered)
-                if applied:
-                    asyncio.run_coroutine_threadsafe(fb.report_settings_applied(), loop)
-                    self.signal_log_message.emit(
-                        f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}"
+                try:
+                    _CONTROL_KEYS = {
+                        "last_updated_by_engine", "last_heartbeat",
+                        "engine_status", "current_state", "updated_at"
+                    }
+                    filtered = {k: v for k, v in data.items() if k not in _CONTROL_KEYS}
+                    if not filtered:
+                        return
+
+                    # [모델 스위칭] active_model_mode 변경 감지 시 Firebase 리스너에서 직접 통제
+                    new_mode = filtered.get("active_model_mode")
+                    current_mode = getattr(self.strategy_manager, '_current_model_mode', None)
+                    logger.error(
+                        f"[Firebase _apply] active_model_mode 체크: "
+                        f"new_mode={new_mode!r}, current_mode={current_mode!r}, "
+                        f"has_switch_method={hasattr(self.strategy_manager, 'switch_model_by_mode')}"
                     )
+
+                    if new_mode and new_mode != current_mode:
+                        logger.error(f"[Firebase] 원격 모델 전환 실행 시작: {current_mode!r} → {new_mode!r}")
+                        self.strategy_manager.switch_model_by_mode(new_mode, trigger_source="FIREBASE")
+                        self.signal_model_switched.emit(new_mode)
+                        mode_label = "공격형 (Offensive)" if new_mode == "offensive" else "방어형 (Defensive)"
+                        self.signal_log_message.emit(f"🔄 [Firebase] 원격 AI 모델 전환: {mode_label}")
+
+                    applied = self.config_manager.hot_reload_settings(filtered)
+                    if applied:
+                        asyncio.run_coroutine_threadsafe(fb.report_settings_applied(), loop)
+                        self.signal_log_message.emit(
+                            f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}"
+                        )
+                except Exception as e:
+                    import traceback
+                    logger.error(f"[Firebase _apply] 예외 발생: {e}\n{traceback.format_exc()}")
             loop.call_soon_threadsafe(_apply)
+
 
         fb.listen_to_settings(on_settings_changed)
 

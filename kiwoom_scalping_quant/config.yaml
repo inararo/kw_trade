@@ -3,6 +3,7 @@ COND_NAME_MORNING: AI스캘핑주도주장시작
 COND_NAME_NORMAL: AI스캘핑주도주
 SWITCH_TIME: 09:30:00
 account_number: ''
+active_model_mode: true
 active_model_path: ./saved_models/bob/best_model_offensive.zip
 ai_buy_threshold: 0.8
 ai_sell_threshold: 0.5
@@ -32,9 +33,10 @@ max_daily_rise_pct: 14.0
 max_invest_per_symbol: 700000.0
 max_open_positions: 10
 max_position_pct: 100.0
+model_defensive_path: ./saved_models/bob/best_model_defensive.zip
+model_offensive_path: ./saved_models/bob/best_model_offensive.zip
 protected_symbols:
-- '323410'
-- '001510'
+- 090360
 seq_len: 10
 signal_only_mode: false
 slippage: 0.0005

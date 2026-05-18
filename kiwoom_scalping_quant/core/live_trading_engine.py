@@ -854,3 +854,24 @@ class LiveTradingEngine:
             
         self.is_warmed_up = False
         self.logger.info(f"[{self.symbol}] 🗑️ 엔진 메모리 해제 및 파괴 완료.")
+
+    def update_agent(self, new_agent) -> bool:
+        """
+        [Model Hot-Swap] 매매 루프 중단 없이 AI 에이전트 포인터를 교체합니다.
+        destroy()된 엔진에는 적용하지 않습니다.
+
+        Args:
+            new_agent: 교체할 TradingAgentWrapper 인스턴스
+
+        Returns:
+            True: 교체 성공, False: 파괴된 엔진이므로 스킵
+        """
+        if self._is_destroyed:
+            return False
+        if new_agent is None:
+            self.logger.warning(f"[{self.symbol}] update_agent: 새 에이전트가 None이므로 교체를 건너뜁니다.")
+            return False
+        self.agent = new_agent
+        self.logger.info(f"[{self.symbol}] ✅ 에이전트 포인터 교체 완료.")
+        return True
+

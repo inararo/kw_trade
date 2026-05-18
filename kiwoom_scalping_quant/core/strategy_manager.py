@@ -3,7 +3,9 @@ import glob
 import logging
 import os
 import time
-from typing import List, Dict, Any
+import threading
+from datetime import datetime
+from typing import List, Dict, Any, Callable
 import numpy as np
 
 from env.trading_env import ScalpingTradingEnv
@@ -58,6 +60,15 @@ class StrategyManager:
         # [신규] 조건식 스위칭 이벤트 콜백
         self.on_condition_switched_callbacks: List[Callable] = []
 
+        # ── [멀티 모델 스위칭] ──────────────────────────────────────────
+        # 두 모델을 동시에 메모리에 로드해 두고, 포인터만 교체하는 방식으로
+        # 매매 루프 중단 없는 실시간 스위칭(Hot-Swap)을 지원합니다.
+        self._model_offensive: TradingAgentWrapper = None   # 공격형 모델
+        self._model_defensive: TradingAgentWrapper = None   # 방어형 모델
+        self._current_model_mode: str = "offensive"          # 현재 활성 모드
+        self._model_swap_lock = threading.Lock()             # Thread-Safe 교체용 Lock
+        # ────────────────────────────────────────────────────────────────
+
         # [신규] 최소 감시 보장(Minimum Lock Time) 관련 상태
         self.inserted_at: Dict[str, float] = {} # {symbol: timestamp}
         self.MIN_LOCK_TIME = 60 # 초 단위 (깜빡임 방지를 위해 60초로 연장)
@@ -97,29 +108,135 @@ class StrategyManager:
 
     def load_model_from_config(self):
         """
-        config.yaml의 active_model_path를 직접 참조하여 모델을 로드합니다.
-        더 이상 디렉토리를 스캔하며 모델을 자동 탐색하지 않습니다.
+        [하위 호환] config.yaml의 설정을 기반으로 두 모델을 모두 프리로드합니다.
+        preload_all_models()의 앨리어스입니다.
         """
-        try:
-            config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
-            active_path = config_dict.get("active_model_path", "").strip()
-            
-            self.logger.info(f"StrategyManager: 설정된 활성 모델 경로 = [{active_path}]")
-            
-            if active_path:
-                agent = self._load_model_by_path(active_path)
-                if agent:
-                    self.shared_agent = agent
-                    # 하위 호환성을 위해 모델 타입 분기 생략하고 shared_agent로 단일화
-                else:
-                    self._fallback_empty_model()
+        self.preload_all_models()
+
+    def preload_all_models(self):
+        """
+        부팅 시 공격형·방어형 두 모델을 모두 메모리에 로드합니다.
+        스위칭 시 파일 I/O 없이 포인터만 교체하는 Zero-Latency Hot-Swap을 위한 사전 작업입니다.
+        """
+        config_dict = self.config_manager.get_dict() if hasattr(self.config_manager, "get_dict") else {}
+
+        offensive_path = config_dict.get("model_offensive_path", "").strip()
+        defensive_path = config_dict.get("model_defensive_path", "").strip()
+        # bool(True=공격형) 또는 구버전 str("offensive") 모두 처리
+        _raw_mode = config_dict.get("active_model_mode", True)
+        if isinstance(_raw_mode, bool):
+            initial_mode = "offensive" if _raw_mode else "defensive"
+        else:
+            initial_mode = str(_raw_mode).strip().lower()
+
+        self.logger.info(f"StrategyManager: 멀티 모델 프리로드 시작 | 공격형={offensive_path} | 방어형={defensive_path}")
+
+        # 1. 공격형 모델 로드
+        if offensive_path:
+            agent = self._load_model_by_path(offensive_path)
+            if agent:
+                self._model_offensive = agent
+                self.logger.info("StrategyManager: ✅ 공격형 모델(Offensive) 프리로드 완료")
             else:
-                self.logger.warning("StrategyManager: active_model_path가 설정되지 않았습니다. 폴백 모드로 진입합니다.")
-                self._fallback_empty_model()
-                
-        except Exception as e:
-            self.logger.error(f"StrategyManager: 부팅 중 모델 로드 프로세스 실패 ({e}). 폴백 모드로 전환합니다.")
+                self.logger.error("StrategyManager: ❌ 공격형 모델 로드 실패")
+        else:
+            self.logger.warning("StrategyManager: model_offensive_path가 설정되지 않았습니다.")
+
+        # 2. 방어형 모델 로드
+        if defensive_path:
+            agent = self._load_model_by_path(defensive_path)
+            if agent:
+                self._model_defensive = agent
+                self.logger.info("StrategyManager: ✅ 방어형 모델(Defensive) 프리로드 완료")
+            else:
+                self.logger.error("StrategyManager: ❌ 방어형 모델 로드 실패")
+        else:
+            self.logger.warning("StrategyManager: model_defensive_path가 설정되지 않았습니다.")
+
+        # 3. 초기 모드에 따라 shared_agent 설정
+        self._current_model_mode = initial_mode
+        if initial_mode == "defensive" and self._model_defensive:
+            self.shared_agent = self._model_defensive
+        elif self._model_offensive:
+            self.shared_agent = self._model_offensive
+            self._current_model_mode = "offensive"
+        else:
+            self.logger.error("StrategyManager: 두 모델 모두 로드 실패. 폴백 모드로 전환합니다.")
             self._fallback_empty_model()
+            return
+
+        self.logger.info(
+            f"StrategyManager: 🧠 초기 AI 모드 설정 완료 → [{self._current_model_mode.upper()}] "
+            f"(공격형={'OK' if self._model_offensive else 'FAIL'}, "
+            f"방어형={'OK' if self._model_defensive else 'FAIL'})"
+        )
+
+    def switch_model_by_mode(self, mode: str, trigger_source: str = "UNKNOWN") -> bool:
+        """
+        [Hot-Swap] 매매 루프 중단 없이 AI 모델을 실시간으로 교체합니다.
+        threading.Lock()으로 보호되어 멀티스레드 환경에서도 안전합니다.
+
+        Args:
+            mode:           "offensive" 또는 "defensive"
+            trigger_source: 로그 기록용 트리거 소스 ("LOCAL_UI", "FIREBASE", 등)
+
+        Returns:
+            True: 교체 성공, False: 이미 같은 모드이거나 모델 없음
+        """
+        mode = mode.strip().lower()
+        if mode not in ("offensive", "defensive"):
+            self.logger.error(f"StrategyManager: switch_model_by_mode — 알 수 없는 모드 '{mode}'")
+            return False
+
+        with self._model_swap_lock:
+            # 이미 같은 모드라면 스킵
+            if mode == self._current_model_mode:
+                self.logger.info(f"StrategyManager: 이미 [{mode.upper()}] 모드입니다. 스위칭을 건너뜁니다.")
+                return False
+
+            new_agent = self._model_offensive if mode == "offensive" else self._model_defensive
+            if new_agent is None:
+                self.logger.error(
+                    f"StrategyManager: [{mode.upper()}] 모델이 메모리에 없습니다. "
+                    "preload_all_models()가 먼저 호출되었는지 확인하세요."
+                )
+                return False
+
+            prev_mode = self._current_model_mode
+            self._current_model_mode = mode
+
+            # shared_agent 포인터 교체
+            self.shared_agent = new_agent
+
+            # 모든 활성 엔진에 새 에이전트 전파 (방법 A)
+            success_count = 0
+            for sym, engine in self.envs.items():
+                if hasattr(engine, 'update_agent'):
+                    if engine.update_agent(new_agent):
+                        success_count += 1
+
+        # Lock 해제 후 로그 기록 (I/O는 Lock 밖에서 수행)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_msg = (
+            f"[{now_str}] [MODEL_SWITCH] "
+            f"Trigger={trigger_source} | "
+            f"Before={prev_mode.upper()} | "
+            f"After={mode.upper()} | "
+            f"Engines Updated={success_count}/{len(self.envs)}"
+        )
+        self.logger.error(f"🔄 {log_msg}")
+        print(log_msg)  # 콘솔 직접 출력 (가시성 보장)
+
+        # UI 로그 창에도 출력
+        live_vm = getattr(self.config_manager, "_injected_live_vm", None)
+        if live_vm and hasattr(live_vm, 'append_log'):
+            mode_label = "🔴 공격형 (Offensive)" if mode == "offensive" else "🔵 방어형 (Defensive)"
+            live_vm.append_log(
+                f"🔄 [모델 전환] {mode_label} | 트리거: {trigger_source} "
+                f"| 엔진 {success_count}개 갱신 완료"
+            )
+
+        return True
 
     def can_execute_buy(self) -> bool:
         """글로벌 매수 쿨타임 상태를 확인합니다."""

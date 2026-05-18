@@ -581,21 +581,13 @@ class QuantSystem:
         def on_settings_changed(data: dict):
             """백그라운드 스레드에서 호출됨 → call_soon_threadsafe로 메인 루프에서 안전하게 실행"""
             def _apply():
-                # ── [DEBUG] _apply() 실행 확인 ──────────────────────────────
-                logging.info(f"[DEBUG] _apply() 진입 확인 - 수신 키 목록: {list(data.keys())}")
-                for _k, _v in data.items():
-                    logging.info(f"[DEBUG] _apply() 수신 데이터: {_k} -> {_v}")
-
                 # ── [제어 플래그 처리] ──────────────────────────────────────────
-                # is_monitoring_active / is_ai_trading_active 는 settings/core에서 제거되었습니다.
-                # (system_status/engine 리스너에서 별도로 처리합니다.)
                 _CONTROL_KEYS = {
                     "last_updated_by_engine", "last_heartbeat", "engine_status",
                     "current_state", "updated_at"
                 }
 
                 # ── [설정값 동기화] ──────────────────────────────────────────────
-                # 제어 필드 및 시스템 관리 필드를 제거한 뒤 일반 설정값만 처리합니다.
                 filtered_data = {
                     k: v for k, v in data.items()
                     if k not in _CONTROL_KEYS
@@ -604,17 +596,40 @@ class QuantSystem:
                 if not filtered_data:
                     return
 
-                # 1. 메모리 반영 및 파일 저장 (실제 변경이 있을 때만 True 반환)
+                # ── [모델 스위칭] active_model_mode 변경 감지 시 즉시 처리 ──────
+                _raw_mode = filtered_data.get("active_model_mode")
+                # bool(True=공격형) 또는 구버전 str("offensive") 모두 처리
+                if _raw_mode is None:
+                    new_mode = None
+                elif isinstance(_raw_mode, bool):
+                    new_mode = "offensive" if _raw_mode else "defensive"
+                else:
+                    new_mode = str(_raw_mode).strip().lower()
+
+                sm = getattr(self.container.config_manager(), "_injected_strategy_manager", None)
+                current_mode = getattr(sm, "_current_model_mode", None) if sm else None
+
+                if new_mode and sm and new_mode != current_mode:
+                    logging.info(f"[Firebase] 원격 모델 전환: {current_mode!r} → {new_mode!r}")
+                    switched = sm.switch_model_by_mode(new_mode, trigger_source="FIREBASE")
+                    if switched:
+                        # 대시보드 라디오 버튼 동기화
+                        if hasattr(self, 'live_trading_thread'):
+                            self.live_trading_thread.signal_model_switched.emit(new_mode)
+                        if hasattr(self, 'live_vm'):
+                            self.live_vm.sig_model_switched.emit(new_mode)
+
+                # ── [일반 설정 동기화] ─────────────────────────────────────────
                 applied = self.container.config_manager().hot_reload_settings(filtered_data)
 
-                # 2. Firebase에 최종 반영 상태 보고 (실제 변경 시에만 피드백 전송)
                 if applied:
                     asyncio.create_task(self.firebase_manager.report_settings_applied())
 
-                    # 3. GUI 설정 탭 화면 실시간 갱신
+                    # GUI 설정 탭 화면 실시간 갱신
                     settings_vm = self.container.settings_view_model()
                     settings_vm.on_remote_settings_changed(filtered_data)
             loop.call_soon_threadsafe(_apply)
+
 
         self.firebase_manager.listen_to_settings(on_settings_changed)
 

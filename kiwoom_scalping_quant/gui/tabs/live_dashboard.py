@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QProgressBar, QListWidget, QTableWidget, QTableWidgetItem, QHeaderView
+    QGroupBox, QProgressBar, QListWidget, QTableWidget, QTableWidgetItem, QHeaderView,
+    QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import pyqtSlot, Qt
 from gui.components.orderbook_ladder import OrderbookLadderWidget
@@ -117,6 +118,35 @@ class LiveDashboardTab(QWidget):
         sys_ctrl_group.setLayout(sys_ctrl_layout)
         control_layout.addWidget(sys_ctrl_group)
 
+        # [모델 선택 UI] 공격형 / 방어형 라디오 버튼
+        model_group = QGroupBox("🧠 AI 모델 선택")
+        model_group.setStyleSheet("QGroupBox { font-weight: bold; color: #a0cfff; }")
+        model_layout = QVBoxLayout()
+
+        self._model_btn_group = QButtonGroup(self)
+        self.radio_offensive = QRadioButton("🔴 공격형 (Offensive)")
+        self.radio_offensive.setStyleSheet("color: #ff6b6b; font-weight: bold;")
+        self.radio_defensive = QRadioButton("🔵 방어형 (Defensive)")
+        self.radio_defensive.setStyleSheet("color: #74b9ff; font-weight: bold;")
+
+        self._model_btn_group.addButton(self.radio_offensive)
+        self._model_btn_group.addButton(self.radio_defensive)
+
+        self.lbl_current_model = QLabel("현재: 공격형 (Offensive)")
+        self.lbl_current_model.setStyleSheet("color: #ff6b6b; font-size: 11px; padding: 2px;")
+        self.lbl_current_model.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        model_layout.addWidget(self.radio_offensive)
+        model_layout.addWidget(self.radio_defensive)
+        model_layout.addWidget(self.lbl_current_model)
+        model_group.setLayout(model_layout)
+        control_layout.addWidget(model_group)
+
+        # 라디오 버튼 이벤트 연결 (초기화 전에 연결하면 setChecked 시 toggled 발생하므로 이후에 연결)
+        self.radio_offensive.toggled.connect(self._on_model_radio_toggled)
+        self.radio_defensive.toggled.connect(self._on_model_radio_toggled)
+
+
         # 패닉 버튼
         self.panic_btn = QPushButton("🚨 전량 시장가 매도 🚨\n전체 주문 취소")
         self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 14px; font-weight: bold; height: 50px;")
@@ -139,6 +169,16 @@ class LiveDashboardTab(QWidget):
         dashboard_content_layout.addWidget(log_group, stretch=2)
         
         main_layout.addLayout(dashboard_content_layout, stretch=7)
+
+        # [부팅 초기화] config의 active_model_mode 값으로 라디오 버튼 초기 동기화
+        # bool(True=공격형) 또는 구버전 str("offensive") 모두 처리
+        _raw = self.view_model.config_manager.get("active_model_mode", True)
+        if isinstance(_raw, bool):
+            _init_mode = "offensive" if _raw else "defensive"
+        else:
+            _init_mode = str(_raw).strip().lower()
+        self.on_model_switched(_init_mode)
+
 
     # --- 실시간 제어 슬롯 ---
     def _on_monitor_toggle_clicked(self, checked):
@@ -176,6 +216,8 @@ class LiveDashboardTab(QWidget):
         self.view_model.sig_universe_changed.connect(self.on_universe_changed)
         self.view_model.sig_trading_paused.connect(self.on_ai_trading_toggled)
         self.view_model.sig_monitoring_stopped.connect(self.on_monitoring_toggled)
+        # [모델 스위칭] Firebase/원격 제어 시 라디오 버튼 UI 동기화
+        self.view_model.sig_model_switched.connect(self.on_model_switched)
 
         # LiveTradingThread 시그널 연결 (스레드가 주입된 경우)
         if self.live_thread is not None:
@@ -183,6 +225,41 @@ class LiveDashboardTab(QWidget):
             self.live_thread.signal_condition_inserted.connect(self._on_thread_condition_inserted)
             self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
             self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
+
+    def _on_model_radio_toggled(self, checked: bool):
+        """라디오 버튼 선택 시 모델 전환 요청"""
+        if not checked:
+            return  # toggled는 선택/해제 모두 발생하므로 선택(True)만 처리
+        mode = "offensive" if self.radio_offensive.isChecked() else "defensive"
+        self.view_model.switch_model(mode)
+
+    @pyqtSlot(str)
+    def on_model_switched(self, mode: str):
+        """
+        [원격/로컬 공통] 모델 전환 완료 시 라디오 버튼 UI 및 레이블을 동기화합니다.
+        Firebase 원격 변경 시에도 이 슬롯을 통해 UI가 자동 업데이트됩니다.
+        """
+        # blockSignals: setChecked 호출 시 toggled 시그널이 중복 발생하는 것을 방지
+        self.radio_offensive.blockSignals(True)
+        self.radio_defensive.blockSignals(True)
+
+        if mode == "offensive":
+            self.radio_offensive.setChecked(True)
+            self.radio_defensive.setChecked(False)
+            self.lbl_current_model.setText("현재: 🔴 공격형 (Offensive)")
+            self.lbl_current_model.setStyleSheet("color: #ff6b6b; font-size: 11px; padding: 2px;")
+        else:
+            self.radio_offensive.setChecked(False)
+            self.radio_defensive.setChecked(True)
+            self.lbl_current_model.setText("현재: 🔵 방어형 (Defensive)")
+            self.lbl_current_model.setStyleSheet("color: #74b9ff; font-size: 11px; padding: 2px;")
+
+        self.radio_offensive.blockSignals(False)
+        self.radio_defensive.blockSignals(False)
+
+        self.on_log_appended(f"🔄 [모델 전환 완료] {'공격형 (Offensive)' if mode == 'offensive' else '방어형 (Defensive)'}")
+
+
 
     def inject_live_thread(self, live_thread):
         """
@@ -195,6 +272,8 @@ class LiveDashboardTab(QWidget):
         self.live_thread.signal_condition_deleted.connect(self._on_thread_condition_deleted)
         self.live_thread.signal_order_executed.connect(self._on_thread_order_executed)
         self.live_thread.signal_snapshot_received.connect(self.view_model.update_universe_list)
+        # [모델 스위칭] Firebase 원격 전환 시 라디오 버튼 UI 동기화
+        self.live_thread.signal_model_switched.connect(self.on_model_switched)
 
     @pyqtSlot(bool)
     def on_monitoring_toggled(self, stopped: bool):

@@ -584,6 +584,20 @@ async def main():
                 _CONTROL_KEYS = {"last_updated_by_engine", "last_heartbeat", "engine_status", "current_state", "updated_at"}
                 filtered = {k: v for k, v in data.items() if k not in _CONTROL_KEYS}
                 if filtered:
+                    # ── [모델 스위칭] active_model_mode 변경 감지 시 즉시 처리 ──────
+                    _raw_mode = filtered.get("active_model_mode")
+                    if _raw_mode is not None:
+                        # bool(True=공격형) 또는 구버전 str("offensive") 모두 처리
+                        if isinstance(_raw_mode, bool):
+                            new_mode = "offensive" if _raw_mode else "defensive"
+                        else:
+                            new_mode = str(_raw_mode).strip().lower()
+
+                        current_mode = getattr(strategy_manager, "_current_model_mode", None)
+                        if new_mode != current_mode:
+                            logger.info(f"[Firebase] CLI 원격 모델 전환 실행: {current_mode!r} → {new_mode!r}")
+                            strategy_manager.switch_model_by_mode(new_mode, trigger_source="FIREBASE")
+
                     applied = config_manager.hot_reload_settings(filtered)
                     if applied:
                         # [추가] 로그 레벨 실시간 변경 반영
@@ -596,6 +610,7 @@ async def main():
                         logger.info(f"🔧 [Firebase] 원격 설정 반영 완료: {list(filtered.keys())}")
             context["loop"].call_soon_threadsafe(_apply)
         firebase_manager.listen_to_settings(on_settings_changed)
+
 
         # 리스너 2: 엔진 제어 (모니터링, AI 매매)
         def on_engine_status_changed(data: dict):

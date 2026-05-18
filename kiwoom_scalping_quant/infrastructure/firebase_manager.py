@@ -325,6 +325,19 @@ class FirebaseManager:
         except Exception as e:
             logger.error(f"FirebaseManager: 로컬 설정 동기화 실패 ({key}): {e}")
 
+    async def update_model_mode(self, mode: str):
+        """
+        현재 활성 AI 모델 모드를 Firestore의 settings/core 문서에 동기화합니다.
+        True = 공격형(Offensive), False = 방어형(Defensive) 으로 bool 저장합니다.
+
+        Args:
+            mode: "offensive" 또는 "defensive"
+        """
+        bool_value = (mode == "offensive")  # True=공격형, False=방어형
+        await self.update_setting_to_remote("active_model_mode", bool_value)
+        logger.info(f"FirebaseManager: AI 모델 모드 원격 동기화 완료 → {mode} ({bool_value})")
+
+
     async def initialize_default_settings(self, default_config: dict):
         """
         부팅 시 settings/core 도큐먼트에 기본 설정값을 안전하게 업로드합니다.
