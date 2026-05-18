@@ -173,6 +173,29 @@ class OrderManager:
             self.logger.warning(f"⚠️ 주문 가격 보정 발생: {original_price} -> {price} (호가 단위 준수)")
 
         if not orig_order_no:
+            # [🚨 신규] 매수 시작 시간 제한 검사 (BUY에만 적용)
+            if order_type == "BUY":
+                # 장외 시간 테스트 모드(BYPASS_MARKET_HOURS)가 참이 아니면 제한 검사 실행
+                bypass_market = self.config.get("BYPASS_MARKET_HOURS", False) if hasattr(self.config, "get") else False
+                if not bypass_market:
+                    buy_start_str = self.config.get("buy_start_time") if hasattr(self.config, "get") else None
+                    if buy_start_str:
+                        try:
+                            current_time = datetime.now().time()
+                            if len(buy_start_str.split(":")) == 2:
+                                buy_start_time = datetime.strptime(buy_start_str, "%H:%M").time()
+                            else:
+                                buy_start_time = datetime.strptime(buy_start_str, "%H:%M:%S").time()
+                            
+                            if current_time < buy_start_time:
+                                msg = f"BUY_TIME_RESTRICTED: 현재 시각({current_time.strftime('%H:%M:%S')})이 매수 허용 최소 시간({buy_start_str}) 이전입니다. 매수 주문 전송을 생략(스킵)합니다."
+                                self.logger.warning(f"🚫 [매수 주문 제한] {msg}")
+                                raise Exception(msg)
+                        except Exception as e:
+                            if "BUY_TIME_RESTRICTED" in str(e):
+                                raise
+                            self.logger.error(f"매수 시작 시간 검사 중 오류: {e}")
+
             if self.risk_manager and not self.risk_manager.can_order(symbol, price * qty, order_type):
                 raise Exception(f"RiskManager: 글로벌 세이프티 가드 제한으로 인해 신규 주문({order_type} {symbol})이 거부되었습니다.")
             elif not self.risk_manager and not self._check_global_risk(symbol, price, qty, order_type):

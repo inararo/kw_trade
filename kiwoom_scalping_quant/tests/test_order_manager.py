@@ -48,3 +48,44 @@ async def test_send_order_failure(order_manager, mocker):
 
     assert isinstance(result, IOFailure)
     assert isinstance(result.failure()._inner_value, ConnectionError)
+
+@pytest.mark.asyncio
+async def test_buy_time_restriction(mocker):
+    """
+    매수 주문 시 buy_start_time 이전 시점인 경우 BUY_TIME_RESTRICTED 예외로 Failure가 되는지 검증
+    """
+    # 1. 9시 3분으로 매수 시작 시간 설정
+    config = {
+        "buy_start_time": "09:03:00",
+        "BYPASS_MARKET_HOURS": False
+    }
+    order_manager = OrderManager(config)
+    
+    # 2. 현재 시각을 9시 2분으로 모킹
+    import datetime
+    mock_now = datetime.datetime(2026, 5, 18, 9, 2, 0)
+    
+    class MockDatetime:
+        @classmethod
+        def now(cls):
+            return mock_now
+        @classmethod
+        def strptime(cls, *args, **kwargs):
+            return datetime.datetime.strptime(*args, **kwargs)
+            
+    mocker.patch("core.order_manager.datetime", MockDatetime)
+    
+    # 3. 매수 주문 전송 시도
+    result = await order_manager.send_order("BUY", "005930", 50000, 10)
+    
+    # 4. 검증: Failure 객체이며 BUY_TIME_RESTRICTED 예외가 포함되어야 함
+    assert isinstance(result, IOFailure)
+    err = result.failure()._inner_value
+    assert "BUY_TIME_RESTRICTED" in str(err)
+    
+    # 5. 매도(SELL) 주문은 시간 제약을 받지 않고 계속 진행되는지 검증
+    # (토큰 에러나 세마포어 에러가 나더라도 시간 제한 예외는 아니어야 함)
+    result_sell = await order_manager.send_order("SELL", "005930", 50000, 10)
+    assert isinstance(result_sell, IOFailure)
+    err_sell = result_sell.failure()._inner_value
+    assert "BUY_TIME_RESTRICTED" not in str(err_sell)
