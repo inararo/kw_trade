@@ -36,6 +36,7 @@ class LiveDashboardViewModel(QObject):
     # [제어 상태 시그널]
     sig_trading_paused = pyqtSignal(bool)    # True: 일시정지, False: 재개
     sig_monitoring_stopped = pyqtSignal(bool) # True: 중지, False: 감시중
+    sig_model_switched = pyqtSignal(str)      # 모델 전환 완료 (현재 모드명 포함)
 
     def __init__(self, data_collector, order_manager, config_manager, account_service=None, strategy_manager=None):
         super().__init__()
@@ -460,6 +461,36 @@ class LiveDashboardViewModel(QObject):
                 is_monitoring_active=not stopped,
                 is_ai_trading_active=not self._is_ai_paused
             ))
+
+    def switch_model(self, mode: str):
+        """
+        [Local UI 트리거] AI 모델을 실시간으로 전환합니다.
+        StrategyManager에 스위칭을 위임하고 Firebase에도 동기화합니다.
+
+        Args:
+            mode: "offensive" 또는 "defensive"
+        """
+        sm = getattr(self.config_manager, "_injected_strategy_manager", None)
+        if not sm:
+            self.logger.warning("LiveDashboardViewModel: StrategyManager가 주입되지 않았습니다. 모델 전환 불가.")
+            return
+
+        switched = sm.switch_model_by_mode(mode, trigger_source="LOCAL_UI")
+        if not switched:
+            return  # 이미 같은 모드 또는 실패 시 로그는 StrategyManager에서 처리됨
+
+        # [에코 방지] ConfigManager 메모리 값을 먼저 업데이트 → Firebase 리스너가 차이를 감지 못하게 함
+        # True=offensive, False=defensive (bool 저장)
+        if hasattr(self.config_manager, 'set'):
+            self.config_manager.set("active_model_mode", mode == "offensive")
+
+        # [Firebase] 모델 모드 원격 동기화
+        fb = getattr(self.config_manager, "firebase_manager", None)
+        if fb:
+            asyncio.create_task(fb.update_model_mode(mode))
+
+        # UI 시그널 발행
+        self.sig_model_switched.emit(mode)
 
     async def _execute_panic_sell(self):
         try:
