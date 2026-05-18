@@ -1,11 +1,14 @@
-BYPASS_MARKET_HOURS: true
+BYPASS_MARKET_HOURS: false
+COND_NAME_MORNING: AI스캘핑주도주장시작
+COND_NAME_NORMAL: AI스캘핑주도주
+SWITCH_TIME: 09:30:00
 account_number: ''
-active_model_path: ./saved_models/bob/best_model_random_fine1.zip
-ai_buy_threshold: 0.63
+active_model_path: ./saved_models/bob/best_model_smart_bob.zip
+ai_buy_threshold: 0.8
 ai_sell_threshold: 0.5
+buy_start_time: 09:03:00
 cb_timeout_sec: 3
 cutoff_time: '14:00'
-buy_start_time: '09:00:00'
 daily_stop_loss_limit: -100000.0
 db_batch_size: 500
 enable_cutoff: true
@@ -13,9 +16,6 @@ enable_universe_update: false
 global_max_exposure: 30000000.0
 global_max_loss: -500000
 influx_bucket: stock_data
-COND_NAME_MORNING: "AI스캘핑주도주장시작"
-COND_NAME_NORMAL: "AI스캘핑주도주"
-SWITCH_TIME: "09:30:00"
 initial_balance: 10000000
 kiwoom:
   rest_base_url:
@@ -29,8 +29,8 @@ live_trading_model_type: smart
 log_level: ERROR
 max_buffer_size: 100000
 max_daily_rise_pct: 14.0
-max_invest_per_symbol: 300000.0
-max_open_positions: 7
+max_invest_per_symbol: 700000.0
+max_open_positions: 10
 max_position_pct: 100.0
 protected_symbols:
 - '323410'
@@ -42,112 +42,5 @@ stop_loss_pct: -3.5
 strict_filter_mode: false
 symbols: []
 take_profit_pct: 4.0
-symbols:
-- code: 047040_AL
-  flu_rt: 11.9
-  name: 대우건설
-  price: 37150.0
-  volume: 80136354.0
-- code: 009830_AL
-  flu_rt: -2.19
-  name: 한화솔루션
-  price: 49100.0
-  volume: 25896448.0
-- code: 066570_AL
-  flu_rt: 7.54
-  name: LG전자
-  price: 139800.0
-  volume: 8496984.0
-- code: 001510_AL
-  flu_rt: 13.93
-  name: SK증권
-  price: 5520.0
-  volume: 156353478.0
-- code: 001440_AL
-  flu_rt: 5.74
-  name: 대한전선
-  price: 46050.0
-  volume: 19320126.0
-- code: 028050_AL
-  flu_rt: 3.5
-  name: 삼성E&A
-  price: 56200.0
-  volume: 10586813.0
-- code: 006360_AL
-  flu_rt: 4.17
-  name: GS건설
-  price: 42450.0
-  volume: 12241342.0
-- code: 222080_AL
-  flu_rt: 6.01
-  name: 씨아이에스
-  price: 18160.0
-  volume: 28175479.0
-- code: 046890_AL
-  flu_rt: 0.83
-  name: 서울반도체
-  price: 14660.0
-  volume: 32057604.0
-- code: 010140_AL
-  flu_rt: 0.3
-  name: 삼성중공업
-  price: 33550.0
-  volume: 11059521.0
-- code: 010170_AL
-  flu_rt: -5.74
-  name: 대한광통신
-  price: 15100.0
-  volume: 23428268.0
-- code: 093370_AL
-  flu_rt: 6.7
-  name: 후성
-  price: 14010.0
-  volume: 20306842.0
-- code: 241520_AL
-  flu_rt: 13.56
-  name: DSC인베스트먼트
-  price: 18170.0
-  volume: 13968943.0
-- code: 425040_AL
-  flu_rt: 4.28
-  name: 티이엠씨
-  price: 17040.0
-  volume: 13894448.0
-- code: 027360_AL
-  flu_rt: 4.18
-  name: 아주IB투자
-  price: 18710.0
-  volume: 12484502.0
-- code: 006340_AL
-  flu_rt: -0.69
-  name: 대원전선
-  price: 10100.0
-  volume: 22261487.0
-- code: 005010_AL
-  flu_rt: 16.17
-  name: 휴스틸
-  price: 6680.0
-  volume: 33272050.0
-- code: 001200_AL
-  flu_rt: 12.77
-  name: 유진투자증권
-  price: 6270.0
-  volume: 28558402.0
-- code: 018470_AL
-  flu_rt: 6.27
-  name: 조일알미늄
-  price: 1898.0
-  volume: 82974597.0
-- code: 032820_AL
-  flu_rt: -3.89
-  name: 우리기술
-  price: 22250.0
-  volume: 7117854.0
 telegram_chat_id: '8338432975'
-universe:
-- code: 3296
-  name: 대원전선
-- code: '047040'
-  name: 대우건설
-- code: 011930
-  name: 신성이엔지
+universe: []
