@@ -81,7 +81,7 @@ class StrategyManager:
     def _load_model_by_path(self, model_path: str) -> TradingAgentWrapper:
         """지정된 경로의 모델 파이을 다이렉트로 로드합니다."""
         if not model_path or not os.path.exists(model_path):
-            self.logger.error(f"StrategyManager: 지정된 모델 경로가 유효하지 않습니다: {model_path}")
+            self.logger.warning(f"StrategyManager: 지정된 모델 경로가 유효하지 않습니다: {model_path}")
             return None
 
         # .zip 확장자 제거 (Stable Baselines3 규격 대응)
@@ -103,7 +103,7 @@ class StrategyManager:
             print(f"StrategyManager: 모델 로딩 성공 ✅ (차원={model_dim}, 경로={model_path})")
             return agent
         except Exception as e:
-            self.logger.error(f"StrategyManager: 모델 가중치 로드 중 치명적 오류: {e}")
+            self.logger.warning(f"StrategyManager: 모델 가중치 로드 중 치명적 오류: {e}")
             return None
 
     def load_model_from_config(self):
@@ -138,7 +138,7 @@ class StrategyManager:
                 self._model_offensive = agent
                 self.logger.info("StrategyManager: ✅ 공격형 모델(Offensive) 프리로드 완료")
             else:
-                self.logger.error("StrategyManager: ❌ 공격형 모델 로드 실패")
+                self.logger.warning("StrategyManager: ❌ 공격형 모델 로드 실패")
         else:
             self.logger.warning("StrategyManager: model_offensive_path가 설정되지 않았습니다.")
 
@@ -149,7 +149,7 @@ class StrategyManager:
                 self._model_defensive = agent
                 self.logger.info("StrategyManager: ✅ 방어형 모델(Defensive) 프리로드 완료")
             else:
-                self.logger.error("StrategyManager: ❌ 방어형 모델 로드 실패")
+                self.logger.warning("StrategyManager: ❌ 방어형 모델 로드 실패")
         else:
             self.logger.warning("StrategyManager: model_defensive_path가 설정되지 않았습니다.")
 
@@ -161,7 +161,7 @@ class StrategyManager:
             self.shared_agent = self._model_offensive
             self._current_model_mode = "offensive"
         else:
-            self.logger.error("StrategyManager: 두 모델 모두 로드 실패. 폴백 모드로 전환합니다.")
+            self.logger.warning("StrategyManager: 두 모델 모두 로드 실패. 폴백 모드로 전환합니다.")
             self._fallback_empty_model()
             return
 
@@ -185,7 +185,7 @@ class StrategyManager:
         """
         mode = mode.strip().lower()
         if mode not in ("offensive", "defensive"):
-            self.logger.error(f"StrategyManager: switch_model_by_mode — 알 수 없는 모드 '{mode}'")
+            self.logger.warning(f"StrategyManager: switch_model_by_mode — 알 수 없는 모드 '{mode}'")
             return False
 
         with self._model_swap_lock:
@@ -196,7 +196,7 @@ class StrategyManager:
 
             new_agent = self._model_offensive if mode == "offensive" else self._model_defensive
             if new_agent is None:
-                self.logger.error(
+                self.logger.warning(
                     f"StrategyManager: [{mode.upper()}] 모델이 메모리에 없습니다. "
                     "preload_all_models()가 먼저 호출되었는지 확인하세요."
                 )
@@ -224,7 +224,7 @@ class StrategyManager:
             f"After={mode.upper()} | "
             f"Engines Updated={success_count}/{len(self.envs)}"
         )
-        self.logger.error(f"🔄 {log_msg}")
+        self.logger.warning(f"🔄 {log_msg}")
         print(log_msg)  # 콘솔 직접 출력 (가시성 보장)
 
         # UI 로그 창에도 출력
@@ -277,7 +277,7 @@ class StrategyManager:
     async def update_engines(self, to_add: List[str], to_remove: List[str]):
         """매매 엔진 동기화 (추가/삭제)"""
         if not self.shared_agent:
-            self.logger.error("StrategyManager: 모델이 로드되지 않아 엔진을 업데이트할 수 없습니다.")
+            self.logger.warning("StrategyManager: 모델이 로드되지 않아 엔진을 업데이트할 수 없습니다.")
             return
 
         # 1. 제거 처리
@@ -638,7 +638,7 @@ class StrategyManager:
     # ==========================================
     async def handle_condition_snapshot(self, symbols: List[str]):
         """초기 조건검색 스냅샷(예: 31개) 수신 처리"""
-        self.logger.error(f"📋 [조건검색 스냅샷] 전체 {len(symbols)} 종목 수신 (8슬롯 & Queue 로직 적용)")
+        self.logger.info(f"📋 [조건검색 스냅샷] 전체 {len(symbols)} 종목 수신 (8슬롯 & Queue 로직 적용)")
         
         async with self._swap_lock:
             # 1. 현재 관리 중인 종목(보유 종목 등)은 유지하고, 

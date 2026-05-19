@@ -122,7 +122,7 @@ class LiveTradingEngine:
                     
                     self.logger.info(f"정규화기 웜업 완료: {len(all_features)}개 분봉 기반 {len(self.normalizer.history)}개 윈도우 학습됨.")
                 except Exception as e:
-                    self.logger.error(f"정규화기 웜업 중 오류: {e}")
+                    self.logger.warning(f"정규화기 웜업 중 오류: {e}")
 
             if added_count == 0:
                 self.logger.warning(f"⚠️ [{self.symbol}] 웜업 완료되었으나 적재된 데이터가 0개입니다. (서버 응답 없음 또는 형식 불일치)")
@@ -213,7 +213,7 @@ class LiveTradingEngine:
                         if pnl_pct <= sl_limit or pnl_pct >= tp_limit:
                             reason = "스탑로스" if pnl_pct <= sl_limit else "익절"
                             msg = f"🚨 [긴급] {self.symbol} 틱 단위 {reason} 발동! (수익률: {pnl_pct * 100:.2f}%)"
-                            self.logger.error(msg)
+                            print(msg)
                             self._ui_log(msg)
                             self._is_order_pending = True
                             
@@ -249,7 +249,7 @@ class LiveTradingEngine:
         except Exception as e:
             # 🚨 암살당하던 에러를 멱살 잡고 끌어올려 터미널에 전시합니다!
             import traceback
-            self.logger.error(f"[{self.symbol}] 🚨 엔진 update_tick 치명적 에러 발생!\n{traceback.format_exc()}")
+            self.logger.warning(f"[{self.symbol}] 🚨 엔진 update_tick 치명적 에러 발생!\n{traceback.format_exc()}")
 
     async def _finalize_candle(self):
         if not self.current_candle: return
@@ -295,7 +295,7 @@ class LiveTradingEngine:
         try:
             features = AdvancedFeatureEngineer.process_historical_data(buffer_list)
         except Exception as e:
-            self.logger.error(f"피처 계산 에러: {e}")
+            self.logger.warning(f"피처 계산 에러: {e}")
             return
 
         seq_len = getattr(self.agent, 'seq_len', 10)
@@ -402,7 +402,7 @@ class LiveTradingEngine:
                                 asyncio.create_task(self.order_manager.cancel_order(self.symbol, oid))
                                 
             except Exception as e:
-                self.logger.error(f"Engine ({self.symbol}) Update Tick Error: {e}")
+                self.logger.warning(f"Engine ({self.symbol}) Update Tick Error: {e}")
                 
         # 매도 가능 조건: 보유 수량 있음 & 주문 미진행
         can_sell = (holdings > 0 and not self._is_order_pending)
@@ -548,7 +548,7 @@ class LiveTradingEngine:
                     f" [🔥 매수 주문 전송] 종목: {self.symbol} | Action: {ACTION_LABELS[action]} | API 전송 완료!"
                 )
                 print(
-                    f"[📤 매수 주문 전송 상세] {self.symbol} | {qty}주 @ {valid_price:,}원"
+                    f"[📤 매수 주문 전송 상세] {self.symbol} | {qty}주 x {valid_price:,}원"
                     f" | 투자금: {invest_amount:,.0f}원 | 비율: {buy_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("BUY", valid_price, qty))
@@ -564,7 +564,7 @@ class LiveTradingEngine:
                 self._is_order_pending = True
                 valid_price = get_valid_tick_price(current_price * 0.999, "SELL")
                 print(
-                    f"[📤 매도 주문 전송] {self.symbol} | {sell_qty}주 @ {valid_price:,}원"
+                    f"[📤 매도 주문 전송] {self.symbol} | {sell_qty}주 x {valid_price:,}원"
                     f" | 보유: {real_holdings}주 | 비율: {sell_ratio*100:.0f}%"
                 )
                 asyncio.create_task(self._execute_order_background("SELL", valid_price, sell_qty))

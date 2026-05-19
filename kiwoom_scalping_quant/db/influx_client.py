@@ -72,7 +72,7 @@ class AsyncInfluxDBClient:
                 await self._flush_batch()
 
         except Exception as e:
-            self.logger.error(f"Point 변환 오류: {e}")
+            self.logger.warning(f"Point 변환 오류: {e}")
 
     async def get_last_timestamp(self, symbol: str) -> str:
         """특정 종목의 가장 최신 데이터 타임스탬프를 가져옵니다. (증분 수집용)"""

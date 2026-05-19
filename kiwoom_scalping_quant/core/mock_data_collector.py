@@ -66,7 +66,7 @@ class MockDataCollector:
             self.logger.info("✅ [MOCK MODE] 파일의 모든 가상 데이터 재생이 완료되었습니다!")
 
         except FileNotFoundError:
-            self.logger.error(f"🚨 [MOCK MODE] 재생할 파일이 없습니다: {self.data_file}")
+            self.logger.warning(f"🚨 [MOCK MODE] 재생할 파일이 없습니다: {self.data_file}")
             self.logger.info("프로젝트 루트에 mock_data.csv 파일을 생성해주세요.")
         except Exception as e:
             self.logger.error(f"🚨 [MOCK MODE] 재생 중 에러: {e}")

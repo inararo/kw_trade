@@ -285,7 +285,7 @@ class LiveDashboardViewModel(QObject):
 
         except Exception as e:
             import traceback
-            self.logger.error(f"[VIEWMODEL Error] _on_data_received: {e}\n{traceback.format_exc()}")
+            self.logger.warning(f"[VIEWMODEL Error] _on_data_received: {e}\n{traceback.format_exc()}")
 
     def _flush_ui_update(self):
         """QTimer 100ms 주기로 호출: 변경이 있을 때만 최신 상태 스냅샷을 UI로 emit"""
@@ -391,7 +391,7 @@ class LiveDashboardViewModel(QObject):
                     self.sig_risk_metrics_updated.emit(realized_pnl, evaluation_pnl, total_cash, per_symbol_limit)
                     self.sig_balance_updated.emit(self.order_manager.current_balance)
             except Exception as e:
-                self.logger.error(f"Polling 중 오류: {e}")
+                self.logger.warning(f"Polling 중 오류: {e}")
 
             await asyncio.sleep(1.0)
         
@@ -789,7 +789,7 @@ class AssetDataViewModel(QObject):
                                 "volume": old_s.get("volume", 0.0)
                             })
             except Exception as e:
-                self.logger.error(f"보유 종목 강제 유지 로직 에러: {e}")
+                self.logger.warning(f"보유 종목 강제 유지 로직 에러: {e}")
 
         # 결과 처리
         if not new_symbols:
@@ -846,7 +846,7 @@ class AssetDataViewModel(QObject):
                 )
                 self.symbol_update_success.emit(f"[테스트] {log_type} 로그 전송 성공!")
             except Exception as e:
-                self.logger.error(f"테스트 로그 전송 실패: {e}")
+                self.logger.warning(f"테스트 로그 전송 실패: {e}")
                 self.symbol_update_failed.emit(f"로그 전송 실패: {e}")
 
         asyncio.create_task(_send())
@@ -959,7 +959,7 @@ class AssetDataViewModel(QObject):
             if isinstance(fetch_result, IOFailure):
                 failure_val = str(fetch_result.failure()._inner_value if hasattr(fetch_result.failure(), '_inner_value') else fetch_result.failure())
                 if failure_val == "TOKEN_EXPIRED":
-                    self.logger.error(f"[{symbol}] 토큰 만료 감지됨. 토큰을 갱신하고 재시도합니다.")
+                    self.logger.warning(f"[{symbol}] 토큰 만료 감지됨. 토큰을 갱신하고 재시도합니다.")
                     self.sig_status_updated.emit(f"[{symbol}] 토큰 갱신 및 재시도 중...")
                     await self.token_manager.refresh_token()
                     access_token = self.token_manager.get_token()
@@ -999,7 +999,7 @@ class AssetDataViewModel(QObject):
                 self.logger.info(f"[{symbol}] InfluxDB 적재 성공: {fetch_count}건 추가 완료.")
                 total_data_collected += fetch_count
             except Exception as e:
-                self.logger.error(f"[{symbol}] DB 처리 중 에러 발생: {e}")
+                self.logger.warning(f"[{symbol}] DB 처리 중 에러 발생: {e}")
                 self.symbol_update_failed.emit(f"[{symbol}] DB 처리 에러: {e}")
 
         self.sig_progress_updated.emit(100)
@@ -1370,7 +1370,7 @@ class SettingsViewModel(QObject):
         influx_org = updates.get("INFLUX_ORG", "")
         influx_bucket = self.config_manager.get("influx_bucket", "")
 
-        self.logger.error(f"influx_url: {influx_url}, influx_org: {influx_org}, influx_bucket: {influx_bucket}, influx_token: {influx_token}")
+        self.logger.warning(f"influx_url: {influx_url}, influx_org: {influx_org}, influx_bucket: {influx_bucket}, influx_token: {influx_token}")
 
         if not influx_token:
             self.connection_test_completed.emit(False, f"{kiwoom_msg}\n[경고] InfluxDB 토큰이 비어있습니다.")
@@ -1401,7 +1401,7 @@ class SettingsViewModel(QObject):
             error_msg = f"{kiwoom_msg}\nInfluxDB 연결 에러: {e}"
             self.connection_test_completed.emit(False, error_msg)
 
-        self.logger.error(f"influx_msg: {influx_msg}")
+        self.logger.warning(f"influx_msg: {influx_msg}")
         self.connection_test_completed.emit(True, f"{kiwoom_msg}\n{influx_msg}")
 
     def check_db_status(self):

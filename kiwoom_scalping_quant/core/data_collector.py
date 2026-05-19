@@ -186,7 +186,7 @@ class DataCollector:
                 self.logger.info(f"DataCollector: {len(clean_removes)}개 종목 일괄 구독 해제 전송")
                 await asyncio.sleep(0.5)
             except Exception as e:
-                self.logger.error(f"DataCollector: UNREG 전송 중 오류 발생: {e}")
+                self.logger.warning(f"DataCollector: UNREG 전송 중 오류 발생: {e}")
 
         # 2. 일괄 등록 (REG)
         if to_add:
@@ -213,7 +213,7 @@ class DataCollector:
                     self.logger.info(f"DataCollector: {len(clean_adds)}개 종목 일괄 구독 등록 전송")
                     await asyncio.sleep(0.5)
                 except Exception as e:
-                    self.logger.error(f"DataCollector: REG 전송 중 오류 발생: {e}")
+                    self.logger.warning(f"DataCollector: REG 전송 중 오류 발생: {e}")
 
         # 3. 맵 갱신 및 워치독 타이머 리셋 (재연결 방지)
         self._update_symbol_map()
@@ -270,7 +270,7 @@ class DataCollector:
                     self.logger.info("DataCollector 루프 완전 취소됨.")
                     break
                 except Exception as e:
-                    self.logger.error(f"WebSocket 연결 오류: {e}")
+                    self.logger.warning(f"WebSocket 연결 오류: {e}")
                     if self.is_running:
                         self.logger.info(f"재연결 시도 중... ({retry_delay}초 대기)")
                         await asyncio.sleep(retry_delay)
@@ -321,7 +321,7 @@ class DataCollector:
                         login_success = True
                         self.login_success_event.set() # 구독 발송 대기자들에게 신호 발송
                     else:
-                        self.logger.error(
+                        self.logger.warning(
                             f"LOGIN Auth Failed: {login_res.get('return_msg')} "
                             f"(Code: {login_res.get('return_code')}) "
                             f"-> Requesting token refresh and waiting for reconnect"
@@ -329,14 +329,14 @@ class DataCollector:
                         # [Token Auth Failure] Refresh token via config.token_manager
                         token_mgr = getattr(self.config, '_token_manager', None) or getattr(self.config, 'token_manager', None)
                         if token_mgr and hasattr(token_mgr, 'refresh_token'):
-                            self.logger.error("LOGIN Failed: Attempting to refresh token...")
+                            self.logger.warning("LOGIN Failed: Attempting to refresh token...")
                             await token_mgr.refresh_token()
                             await asyncio.sleep(3.0)  # Wait for server processing
                         else:
                             await asyncio.sleep(10.0)  # Wait 10s if no manager
                         return  # Terminate ws context -> Auto reconnection loop
                 except Exception as e:
-                    self.logger.error(f"LOGIN 응답 대기 중 오류: {e}")
+                    self.logger.warning(f"LOGIN 응답 대기 중 오류: {e}")
                     return
 
                 # LOGIN 성공 시 즉시 조건검색식 목록 요청 (CNSRLST)
@@ -368,12 +368,12 @@ class DataCollector:
                         try:
                             data = json.loads(message)
                         except json.JSONDecodeError:
-                            self.logger.error(f"JSON 파싱 에러 (비정상 메시지): {message}")
+                            self.logger.warning(f"JSON 파싱 에러 (비정상 메시지): {message}")
                             continue
 
                         # 진단 로그: 모든 루트 키 확인을 위해 로그 포맷 변경
                         root_keys = list(data.keys()) if isinstance(data, dict) else "Not Dict"
-                        # self.logger.error(f"WS RECV (keys={root_keys}, len={len(message)})")
+                        # self.logger.warning(f"WS RECV (keys={root_keys}, len={len(message)})")
                         self.circuit_breaker_active = False
 
                         if not self.first_data_received_event.is_set():
@@ -407,7 +407,7 @@ class DataCollector:
                 self.logger.info("DataCollector: [WS SEND] CNSRLST 전송 (수동 요청)")
                 return True
             except Exception as e:
-                self.logger.error(f"DataCollector: CNSRLST 전송 실패: {e}")
+                self.logger.warning(f"DataCollector: CNSRLST 전송 실패: {e}")
         return False
 
     async def _process_tick(self, message_data):
@@ -476,7 +476,7 @@ class DataCollector:
             
             # [디버그] 시장가 데이터가 아닌 모든 메시지 로깅
             if msg_type not in ["0B", "0D"]:
-                self.logger.error(f"🔍 [WS Message] Type: {msg_type} | Content: {str(entry)[:200]}")
+                self.logger.warning(f"🔍 [WS Message] Type: {msg_type} | Content: {str(entry)[:200]}")
             
             # [신규] 조건검색 실시간 이벤트 처리 (trnm="REAL" 및 type="02" 또는 name="조건검색")
             if msg_type == "02" or entry.get("name") == "조건검색":
@@ -508,7 +508,7 @@ class DataCollector:
             has_order_info = "ord_no" in entry or "ord_no" in message_data or msg_type in ['ORDR', 'CNTG', 'K1', 'H1', 'SC']
             
             if has_order_info:
-                self.logger.error(f"🔔 [Chejan] 주문 관련 데이터 감지 (Type: {msg_type})")
+                self.logger.warning(f"🔔 [Chejan] 주문 관련 데이터 감지 (Type: {msg_type})")
                 
                 # 데이터 병합 (entry와 message_data에서 정보 추출)
                 combined = {**message_data, **entry} if isinstance(message_data, dict) and isinstance(entry, dict) else entry
@@ -525,7 +525,7 @@ class DataCollector:
                         "timestamp": combined.get("timestamp") or combined.get("time") or combined.get("curr_time")
                     }
                     
-                    self.logger.error(f"🚀 [Chejan Dispatch] {chejan_data}")
+                    self.logger.warning(f"🚀 [Chejan Dispatch] {chejan_data}")
 
                     # 등록된 콜백(OrderManager 등)으로 전달
                     for callback in self.on_execution_callbacks:
@@ -535,7 +535,7 @@ class DataCollector:
                             try:
                                 callback(chejan_data)
                             except Exception as e:
-                                self.logger.error(f"Chejan 콜백 실행 에러: {e}")
+                                self.logger.warning(f"Chejan 콜백 실행 에러: {e}")
                     
                     if msg_type in ["ORDR", "CNTG"]:
                         continue # 주문 데이터 처리를 마쳤으면 다음 엔트리로
@@ -676,9 +676,9 @@ class DataCollector:
                                 self.logger.error(f"🚨 [동기 콜백 붕괴] {e}\n{traceback.format_exc()}")
 
             except (ValueError, TypeError, Exception) as e:
-                self.logger.error(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {e}")
+                self.logger.warning(f"[DC ERROR] Data 파싱 중 오류 ({raw_code}): {e}")
                 import traceback
-                self.logger.error(traceback.format_exc())  # [추가] 정확히 어디서 터졌는지 추적
+                self.logger.warning(traceback.format_exc())  # [추가] 정확히 어디서 터졌는지 추적
                 continue
 
         # [최적화] 개별 틱이 아닌 메시지 한 묶음 처리가 끝난 후 한 번만 양보하여 UI 기회 제공
@@ -723,7 +723,7 @@ class DataCollector:
 
                 # [수정] 5.0초는 너무 짧아 30.0초로 연장 (장외 시간/저변동성 대응)
                 if idle_time > 30.0 and not self.circuit_breaker_active:
-                    self.logger.error(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동 (재연결 시도).")
+                    self.logger.warning(f"Watchdog: {idle_time:.1f}초간 시세 미수신! Circuit Breaker 발동 (재연결 시도).")
                     self.circuit_breaker_active = True
 
                     if self.ws_connection:

@@ -54,7 +54,7 @@ class TokenManager:
 
         if not app_key or not app_secret:
             msg = "Cannot refresh token: App Key or Secret is missing in configuration."
-            self.logger.error(msg)
+            self.logger.warning(msg)
             self.signals.token_error.emit(msg)
             return
 
@@ -101,11 +101,11 @@ class TokenManager:
                     else:
                         err_text = await response.text()
                         msg = f"Failed to refresh token: HTTP {response.status} - {err_text}"
-                        self.logger.error(msg)
+                        self.logger.warning(msg)
                         self.signals.token_error.emit(f"토큰 갱신 실패 ({response.status})")
         except Exception as e:
             msg = f"Exception during token refresh: {e}"
-            self.logger.error(msg)
+            self.logger.warning(msg)
             self.signals.token_error.emit("토큰 갱신 중 에러 발생")
 
     async def _monitor_loop(self):

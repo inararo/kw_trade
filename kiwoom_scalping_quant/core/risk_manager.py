@@ -68,7 +68,7 @@ class RiskManager:
 
         limit = self.get_daily_stop_loss_limit()
         if not self.is_stopped_for_day and self.daily_realized_pnl <= limit:
-            self.logger.error(f"🚨 [CRITICAL] Daily Stop-Loss Hit! Current: {self.daily_realized_pnl:,.0f} / Limit: {limit:,.0f}")
+            print(f"🚨 [CRITICAL] Daily Stop-Loss Hit! Current: {self.daily_realized_pnl:,.0f} / Limit: {limit:,.0f}")
             self.is_stopped_for_day = True
             self.signals.daily_stop_loss_hit.emit(self.daily_realized_pnl)
 

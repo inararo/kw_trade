@@ -318,7 +318,7 @@ class MarketScheduler:
                             self.signals.condition_switched.emit(normal_cond)
                             switched_today = True
                     except Exception as e:
-                        self.logger.error(f"스위칭 로직 실행 중 에러: {e}")
+                        self.logger.warning(f"스위칭 로직 실행 중 에러: {e}")
 
             # Check every second
             await asyncio.sleep(1)

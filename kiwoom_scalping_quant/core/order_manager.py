@@ -137,7 +137,7 @@ class OrderManager:
             return True
 
         if self.daily_realized_pnl <= self.global_max_loss:
-            self.logger.error(f"Global Risk: 일일 최대 손실({self.global_max_loss}) 초과. 신규 진입 차단.")
+            print(f"Global Risk: 일일 최대 손실({self.global_max_loss}) 초과. 신규 진입 차단.")
             return False
 
         # 총 노출 금액 = 모든 종목의 (보유 수량 * 현재가(또는 진입가))
@@ -151,7 +151,7 @@ class OrderManager:
 
         limit = self.config.get("global_max_exposure", 50000000)
         if current_exposure + (price * qty) > limit:
-            self.logger.error(f"Global Risk: 최대 노출 금액({limit}) 초과. 신규 진입 차단.")
+            print(f"Global Risk: 최대 노출 금액({limit}) 초과. 신규 진입 차단.")
             return False
 
         return True
@@ -194,7 +194,7 @@ class OrderManager:
                         except Exception as e:
                             if "BUY_TIME_RESTRICTED" in str(e):
                                 raise
-                            self.logger.error(f"매수 시작 시간 검사 중 오류: {e}")
+                            self.logger.warning(f"매수 시작 시간 검사 중 오류: {e}")
 
             if self.risk_manager and not self.risk_manager.can_order(symbol, price * qty, order_type):
                 raise Exception(f"RiskManager: 글로벌 세이프티 가드 제한으로 인해 신규 주문({order_type} {symbol})이 거부되었습니다.")
@@ -211,13 +211,13 @@ class OrderManager:
                 if not self.account_service.can_afford(price * qty):
                     order_amt = price * qty
                     available = self.account_service.orderable_cash
-                    self.logger.error(f"❌ [자금 부족] 주문 가능 금액 초과: 필요 {order_amt:,.0f}원 / 가용 {available:,.0f}원")
+                    print(f"❌ [자금 부족] 주문 가능 금액 초과: 필요 {order_amt:,.0f}원 / 가용 {available:,.0f}원")
                     raise Exception(f"INSUFFICIENT_FUNDS: Required {order_amt:,.0f}, Available {available:,.0f}")
             except asyncio.TimeoutError:
                 self.logger.warning("⚠️ 주문 가능 금액 동기화 타임아웃. 내부 잔고 기준으로 계속 진행합니다.")
             except Exception as e:
                 if "INSUFFICIENT_FUNDS" in str(e): raise
-                self.logger.error(f"계좌 동기화 중 오류 발생: {e}")
+                self.logger.warning(f"계좌 동기화 중 오류 발생: {e}")
 
         async with self.order_semaphore:
             internal_id = f"INT_{int(time.time() * 1000)}"
@@ -295,7 +295,7 @@ class OrderManager:
             token      = self.auth_manager.get_token()            if self.auth_manager else None
 
             if not token:
-                self.logger.error("❌ 유효한 API 토큰이 없어 주문을 거절합니다. 토큰 갱신을 확인하세요.")
+                self.logger.warning("❌ 유효한 API 토큰이 없어 주문을 거절합니다. 토큰 갱신을 확인하세요.")
                 self.active_orders[internal_id]['status'] = OrderState.FAILED
                 raise Exception("API_TOKEN_MISSING")
 
@@ -368,7 +368,7 @@ class OrderManager:
                 "api-id":       str(api_id),
             }
 
-            self.logger.info(f"📤 주문 전송 [{api_id}] {order_type} {symbol} {qty}주 @ {price:,}원")
+            print(f"📤 주문 전송 [{api_id}] {order_type} {symbol} {qty}주 @ {price:,}원")
             self.logger.debug(f"   └ Body: {body}")
 
             # 4. 비동기 HTTP POST (키움 증권사 서버망)
@@ -401,7 +401,7 @@ class OrderManager:
                             self.active_orders[internal_id]['ack_event'].set()
 
                         else:
-                            self.logger.error(f"❌ 키움 주문 거부: [{return_code}] {return_msg}")
+                            self.logger.warning(f"❌ 키움 주문 거부: [{return_code}] {return_msg}")
                             
                             # [핵심 패치] 매도가능수량 부족 시 잔고 강제 동기화 (무한 매도 시도 방지)
                             if "매도가능수량" in return_msg or "800033" in return_msg:
@@ -424,7 +424,7 @@ class OrderManager:
                             raise Exception(f"KIWOOM_ORDER_REJECTED: {return_msg}")
 
             except asyncio.TimeoutError:
-                self.logger.error(f"⏰ 키움 API 응답 타임아웃 (10초 초과)! ID: {internal_id}")
+                self.logger.warning(f"⏰ 키움 API 응답 타임아웃 (10초 초과)! ID: {internal_id}")
                 self.active_orders[internal_id]['status'] = OrderState.FAILED
                 self.active_orders[internal_id]['ack_event'].set()
                 # [내부 예약 해제]
@@ -436,7 +436,7 @@ class OrderManager:
             except Exception as e:
                 # 이미 KIWOOM_ 접두어가 붙은 예외는 중복 처리 방지
                 if "KIWOOM_" not in str(e):
-                    self.logger.error(f"🔥 주문 전송 중 예외 발생: {e}")
+                    self.logger.warning(f"🔥 주문 전송 중 예외 발생: {e}")
                     self.active_orders[internal_id]['status'] = OrderState.FAILED
                     self.active_orders[internal_id]['ack_event'].set()
                     
@@ -455,7 +455,7 @@ class OrderManager:
         """
         order = self.active_orders.get(internal_id)
         if not order:
-            self.logger.error(f"취소 실패: 내부 ID {internal_id}를 찾을 수 없습니다.")
+            self.logger.warning(f"취소 실패: 내부 ID {internal_id}를 찾을 수 없습니다.")
             return False
 
         broker_id = order.get('broker_id')
@@ -471,7 +471,7 @@ class OrderManager:
             self.logger.warning(f"취소 지연: 주문 {internal_id}의 브로커 주문번호가 아직 없습니다. (PENDING 상태)")
             return False
 
-        self.logger.error(f"🚫 미체결 취소 요청 시작: {order['symbol']} | 원주문번호: {broker_id} | 취소수량: {unexecuted_qty}")
+        print(f"🚫 미체결 취소 요청 시작: {order['symbol']} | 원주문번호: {broker_id} | 취소수량: {unexecuted_qty}")
         
         # kt10003 취소 주문 실행 (send_order의 CANCEL 타입 활용)
         try:
@@ -479,7 +479,7 @@ class OrderManager:
             result = await self.send_order("CANCEL", order['symbol'], 0, unexecuted_qty, orig_order_no=broker_id)
             return True
         except Exception as e:
-            self.logger.error(f"취소 주문 전송 중 오류 발생: {e}")
+            self.logger.warning(f"취소 주문 전송 중 오류 발생: {e}")
             return False
 
 
@@ -493,7 +493,7 @@ class OrderManager:
         except asyncio.TimeoutError:
             if order['status'] == OrderState.PENDING:
                 order['status'] = OrderState.FAILED
-                self.logger.error(f"주문 응답 타임아웃 (3초 초과)! 실패 처리됨. ID: {internal_id}")
+                self.logger.warning(f"주문 응답 타임아웃 (3초 초과)! 실패 처리됨. ID: {internal_id}")
 
     async def _mock_broker_ack(self, internal_id: str):
         """Mock: 브로커가 0.1초 후 접수 확인(ACCEPTED)을 준다고 가정"""
@@ -666,7 +666,7 @@ class OrderManager:
                         self.logger.warning(f"📤 [Firebase 전송 시도] {symbol} {order['type']} {exec_qty}주 @ {exec_price}")
                         asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
                     else:
-                        self.logger.error(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
+                        self.logger.warning(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
                     
                     # [신규] 매도 완료 시 시간 기록 및 실현 손익 동기화
                     if order['type'] == 'SELL':
@@ -727,7 +727,7 @@ class OrderManager:
 
             # [Firebase] 체결 로그 Firestore 전송 (테스트 스키마와 통합)
             if self.firebase_manager:
-                self.logger.error(f"🚀 [Firebase] 전송 로직 진입 ({symbol})")
+                self.logger.warning(f"🚀 [Firebase] 전송 로직 진입 ({symbol})")
                 # 1. 추가 정보 수집
                 symbol_name = symbol
                 universe = self.config.get_symbols() if hasattr(self.config, 'get_symbols') else []
@@ -752,10 +752,10 @@ class OrderManager:
 
                 # 3. 비동기 업로드
                 if self.firebase_manager:
-                    self.logger.error(f"📤 [Firebase 전송 시도] {symbol} {order['type']} {exec_qty}주 @ {exec_price}")
+                    self.logger.warning(f"📤 [Firebase 전송 시도] {symbol} {order['type']} {exec_qty}주 @ {exec_price}")
                     asyncio.create_task(self.firebase_manager.add_trade_log(trade_data))
                 else:
-                    self.logger.error(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
+                    self.logger.warning(f"⚠️ [Firebase 전송 건너뜀] FirebaseManager가 주입되지 않았습니다. ({symbol})")
 
         elif msg_type == '취소확인':
             order['status'] = OrderState.CANCELLED

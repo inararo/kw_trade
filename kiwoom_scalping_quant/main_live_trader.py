@@ -86,7 +86,7 @@ class KiwoomBrokerWrapper:
         logger.info(f"🔑 키움증권 REST API 로그인 시도: {self.base_url}")
         endpoint = f"{self.base_url}/oauth2/token"
         if not self.app_key or not self.app_secret:
-            logger.error("❌ 환경변수(.env) 또는 설정에서 API KEY(KIWOOM_APP_KEY, KIWOOM_APP_SECRET)를 불러오지 못했습니다. 값이 비어있습니다!")
+            logger.warning("❌ 환경변수(.env) 또는 설정에서 API KEY(KIWOOM_APP_KEY, KIWOOM_APP_SECRET)를 불러오지 못했습니다. 값이 비어있습니다!")
             return False
 
         payload = {
@@ -108,10 +108,10 @@ class KiwoomBrokerWrapper:
                 logger.info("✅ 키움 API 토큰 발급 및 로그인 완료!")
                 return True
             else:
-                logger.error(f"❌ 토큰 응답에 access_token이 없습니다. API 서버 원본 응답: {data}")
+                logger.warning(f"❌ 토큰 응답에 access_token이 없습니다. API 서버 원본 응답: {data}")
                 return False
         except Exception as e:
-            logger.error(f"❌ 로그인 통신 에러: {e}")
+            logger.warning(f"❌ 로그인 통신 에러: {e}")
             return False
 
     async def reissue_token(self):
@@ -134,10 +134,10 @@ class KiwoomBrokerWrapper:
                         data = await resp.json()
                         return data.get("conditions", {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"})
                     else:
-                        logger.error(f"❌ 조건식 조회 HTTP 에러: {resp.status}")
+                        logger.warning(f"❌ 조건식 조회 HTTP 에러: {resp.status}")
                         return {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"} # Fallback
         except Exception as e:
-            logger.error(f"❌ 조건식 조회 통신 에러: {e}")
+            logger.warning(f"❌ 조건식 조회 통신 에러: {e}")
             return {"0": "AI스캘핑주도주장시작", "1": "AI스캘핑주도주"} # Fallback
 
     async def send_order(self, action: int, symbol: str, price: float, qty: int):

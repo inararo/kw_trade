@@ -60,10 +60,10 @@ class UniverseManager:
                         self.logger.info(f"✅ 조건식 목록 수신 완료 ({len(conditions)}개 항목)")
                         return conditions
                     else:
-                        self.logger.error(f"❌ 조건식 목록 조회 실패 (Status {resp.status})")
+                        self.logger.warning(f"❌ 조건식 목록 조회 실패 (Status {resp.status})")
                         return {}
         except Exception as e:
-            self.logger.error(f"❌ 조건식 목록 조회 통신 에러: {e}")
+            self.logger.warning(f"❌ 조건식 목록 조회 통신 에러: {e}")
             return {}
 
     async def get_condition_symbols(self, access_token: str, cond_idx: str, cond_nm: str) -> List[Dict[str, Any]]:
@@ -101,11 +101,11 @@ class UniverseManager:
                                 "flu_rt": float(str(item.get("flu_rt", 0)).replace(',', '')),
                                 "volume": float(str(item.get("trde_qty", 0)).replace(',', ''))
                             })
-                        self.logger.error(f"✅ 조건검색 결과 수신 완료: {cond_nm} ({len(symbols)}개 종목)")
+                        print(f"✅ 조건검색 결과 수신 완료: {cond_nm} ({len(symbols)}개 종목)")
                     else:
-                        self.logger.error(f"❌ 조건검색 종목 조회 실패 (Status {resp.status})")
+                        self.logger.warning(f"❌ 조건검색 종목 조회 실패 (Status {resp.status})")
         except Exception as e:
-            self.logger.error(f"❌ 조건검색 종목 조회 통신 에러: {e}")
+            self.logger.warning(f"❌ 조건검색 종목 조회 통신 에러: {e}")
         
         return symbols
 
@@ -140,7 +140,7 @@ class UniverseManager:
                     self._name_cache = json.load(f)
                 self.logger.info(f"로컬 종목명 캐시 로드 완료: {len(self._name_cache)}건")
         except Exception as e:
-            self.logger.error(f"종목명 캐시 로드 에러: {e}")
+            self.logger.warning(f"종목명 캐시 로드 에러: {e}")
 
     def _save_name_cache(self):
         """메모리상의 종목명 캐시를 로컬 JSON 파일로 저장합니다."""
@@ -151,7 +151,7 @@ class UniverseManager:
             with open(self.cache_path, "w", encoding="utf-8") as f:
                 json.dump(self._name_cache, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            self.logger.error(f"종목명 캐시 저장 에러: {e}")
+            self.logger.warning(f"종목명 캐시 저장 에러: {e}")
 
     async def get_stock_name(self, access_token: str, code: str) -> Optional[str]:
         """키움 API 마스터 정보를 활용하여 종목코드에 해당하는 한글명을 반환합니다."""
@@ -194,7 +194,7 @@ class UniverseManager:
                             self.logger.warning(f"종목명 매핑 실패 (데이터 없음): {clean_code} | Keys: {list(data.keys())}")
                     else:
                         err_text = await response.text()
-                        self.logger.error(f"종목명 조회 API 에러 (Status {status}): {err_text}")
+                        self.logger.warning(f"종목명 조회 API 에러 (Status {status}): {err_text}")
         except Exception as e:
             self.logger.warning(f"종목명 조회 예외 발생 ({clean_code}): {e}")
             
@@ -369,7 +369,7 @@ class UniverseManager:
                     self._save_name_cache()
 
         except Exception as e:
-            self.logger.error(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
+            self.logger.warning(f"유니버스 데이터 수집 중 에러 발생: {str(e)}")
             raise e
 
         # 1. 노이즈 및 현재 강세 기준(상태, 등락률, 가격 한도) 필터링
@@ -530,5 +530,5 @@ class UniverseManager:
             return top_30
 
         except Exception as e:
-            self.logger.error(f"Top 30 스캔 중 에러: {e}")
+            self.logger.warning(f"Top 30 스캔 중 에러: {e}")
             raise e
