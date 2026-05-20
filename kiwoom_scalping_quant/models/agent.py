@@ -127,7 +127,12 @@ class TradingAgentWrapper:
         """GUI에서 모델을 동적으로 교체하기 위한 메서드"""
         if os.path.exists(path + ".zip") or os.path.exists(path):
             try:
-                self.model = MaskablePPO.load(path, env=self.env, device=self.device)
+                # [개선] 연속 학습 시 사용자가 UI에서 지정한 최신 하이퍼파라미터가 있다면 오버라이드하여 적용
+                override_kwargs = {}
+                for key in ["learning_rate", "ent_coef", "clip_range", "gamma", "gae_lambda"]:
+                    if key in self.config:
+                        override_kwargs[key] = self.config[key]
+                self.model = MaskablePPO.load(path, env=self.env, device=self.device, **override_kwargs)
             except ValueError as e:
                 # Value Error: 보통 Observation Space Dimension mismatch 시 발생
                 raise ValueError(f"Observation Space 차원 불일치 (현재 피처 모드: {self.feature_mode}): {e}")
