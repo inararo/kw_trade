@@ -108,12 +108,38 @@ class AccountService:
     def _parse_orderable(self, data: dict):
         is_offline = self._is_offline()
         self.logger.info(f"DEBUG: AccountService check -> is_offline={is_offline}")
-        if not is_offline:
-            self.logger.debug(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
+        # [진단] kt00010 RAW 응답을 항상 WARNING으로 출력 (필드 확인용)
+        self.logger.warning(f"🔍 [ID:{id(self)}] [kt00010] RAW Response: {data}")
  
-        if str(data.get("return_code")) == "0" or "ord_alowa" in data:
+        if str(data.get("return_code")) == "0" or any(k in data for k in ["ord_alowa", "tdy_reu_alowa", "d2entra"]):
             output = data.get("output", [{}])[0] if isinstance(data.get("output"), list) else (data.get("output") or {})
-            self.orderable_cash = float(data.get("ord_alowa") or output.get("ord_alowa", output.get("ord_psbl_amt", 0)))
+            # [핑시등분석] 키움 kt00010 응답 필드 우선순위:
+            # 1. tdy_reu_alowa : 당일재사용가능금액 (실질적 매수가능 현금)
+            # 2. d2entra      : D+2 예수금 (정산 기준 현금)
+            # 3. ord_alowa    : 주문가능금액 (신용 미사용 시 0으로 올 수 있음)
+            # 4. profa_20ord_alow_amt : 증거금 20% 기준 (레버리지 포함으로 과대 표시)
+            
+            def _safe_int(v):
+                try:
+                    return int(str(v).replace(',', '').strip()) if v else 0
+                except:
+                    return 0
+            
+            cash = (
+                _safe_int(data.get("profa_100ord_alow_amt"))   # 증거금 100% = 순수 보유 현금 ✅ 최우선
+                or _safe_int(output.get("profa_100ord_alow_amt"))
+                or _safe_int(data.get("d2entra"))               # D+2 예수금
+                or _safe_int(output.get("d2entra"))
+                or _safe_int(data.get("tdy_reu_alowa"))         # 당일재사용가능금액
+                or _safe_int(output.get("tdy_reu_alowa"))
+                or _safe_int(data.get("ord_alowa"))             # 주문가능금액 (신용 미사용 시 0)
+                or _safe_int(output.get("ord_alowa"))
+                or _safe_int(output.get("ord_psbl_amt"))
+                or _safe_int(output.get("ord_able_amt"))
+                or 0
+            )
+            self.orderable_cash = float(cash)
+            self.logger.warning(f"💳 [ID:{id(self)}] [kt00010] 가용현금 파싱 결과: {self.orderable_cash:,.0f}원")
         else:
             is_offline = self._is_offline()
             if not is_offline and data.get("return_code") != "OFFLINE":

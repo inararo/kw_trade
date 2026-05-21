@@ -1029,30 +1029,42 @@ class OrderManager:
                             loan_amt = find_val(res_data, ['tot_crd_loan_amt', 'tot_loan_amt', 'crd_loan_amt']) or 0.0
 
                             # 4. 실제 주문 가능 현금 (Orderable Cash)
-                            # [핵심] AccountService가 kt00010으로 가져온 정확한 가용 현금을 우선 사용합니다.
+                            # [핵심] AccountService(kt00010)가 있으면 우선 사용, 없거나 0이면 kt00018 응답에서 직접 파싱
+                            cash_val = 0.0
                             if self.account_service:
                                 summary = self.account_service.get_summary()
                                 cash_val = summary.get("orderable_cash", 0.0)
                                 if cash_val > 0:
                                     self._broker_orderable_cash = cash_val
-                                    self.logger.info(f"💳 [자금 동기화] AccountService [ID:{id(self.account_service)}] 기반 가용현금 동기화 완료: {self._broker_orderable_cash:,.0f}원")
-                                else:
-                                    self.logger.warning(f"⚠️ [자금 동기화] AccountService [ID:{id(self.account_service)}]에 가용현금 데이터가 아직 없거나 0입니다. 폴백 파싱을 시도합니다.")
-                            else:
-                                cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt', 'n_ord_psbl_amt', 'dnca_tot_amt']
-                                cash_val = find_val(res_data, cash_candidates)
+                                    self.logger.info(f"💳 [자금 동기화] AccountService(kt00010) 기반 가용현금: {self._broker_orderable_cash:,.0f}원")
+
+                            # [폴백 핵심 수정] AccountService가 없거나 orderable_cash=0인 경우
+                            # kt00018 응답에서 직접 가용 현금을 계산합니다.
+                            if cash_val <= 0:
+                                self.logger.warning(f"⚠️ [자금 동기화] AccountService 가용현금={cash_val:,.0f}원 → kt00018 응답에서 직접 파싱 시도")
                                 
-                                if cash_val is not None and cash_val > 0:
-                                    self._broker_orderable_cash = cash_val
-                                    self.logger.warning(f"💰 [파싱 결과] 주문 가능 현금 발견: {cash_val:,.0f}")
+                                # kt00018의 prsm_dpst_aset_amt = 추정예탁자산(현금성 자산)
+                                # 보유 종목 평가금액이 없으면 총자산 = 가용현금으로 간주
+                                cash_candidates = ['puse_amt', 'd2_dpst_amt', 'dpst_amt', 'ord_psbl_amt',
+                                                   'n_ord_psbl_amt', 'dnca_tot_amt', 'prsm_dpst_aset_amt']
+                                direct_cash = find_val(res_data, cash_candidates)
+                                
+                                if direct_cash is not None and direct_cash > 0:
+                                    self._broker_orderable_cash = direct_cash
+                                    self.logger.warning(f"💰 [자금 폴백] kt00018 응답에서 가용현금 파싱 성공: {direct_cash:,.0f}원")
                                 else:
+                                    # 최후 수단: 총자산 - 주식 평가금액
                                     tot_evlt_amt = find_val(res_data, ['tot_evlt_amt', 'evlt_amt_tot']) or 0.0
                                     net_equity_in_stocks = max(0, tot_evlt_amt - loan_amt)
                                     calculated_cash = max(0, balance - net_equity_in_stocks)
-                                    
                                     self._broker_orderable_cash = calculated_cash
-                                    self.logger.warning(f"⚠️ [파싱 결과] 가용 현금 필드 미발견 -> 자동 계산 적용")
-                                    self.logger.warning(f"   (총자산 {balance:,.0f} - (평가액 {tot_evlt_amt:,.0f} - 융자 {loan_amt:,.0f})) = {calculated_cash:,.0f}")
+                                    self.logger.warning(f"⚠️ [자금 폴백] 계산 기반 가용현금 적용: "
+                                                        f"총자산({balance:,.0f}) - 주식평가({net_equity_in_stocks:,.0f}) = {calculated_cash:,.0f}원")
+
+                                # AccountService에도 역주입하여 이후 조회 때 일관성 보장
+                                if self.account_service and self._broker_orderable_cash > 0:
+                                    self.account_service.orderable_cash = self._broker_orderable_cash
+                                    self.logger.warning(f"🔄 [역주입] AccountService.orderable_cash ← {self._broker_orderable_cash:,.0f}원")
 
                             # 5. 보유 종목 (Holdings) 파싱
                             holdings_list = res_data.get('output2') or res_data.get('items') or res_data.get('acnt_evlt_remn_indv_tot') or []
