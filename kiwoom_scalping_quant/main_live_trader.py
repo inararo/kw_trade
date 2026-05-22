@@ -345,7 +345,16 @@ class KiwoomBrokerWrapper:
                             if trnm == "LOGIN":
                                 if str(response.get("return_code")) != "0":
                                     logger.error(f"❌ 웹소켓 로그인 실패: {response.get('return_msg')}")
-                                    return
+                                    # [안정화] 토큰 만료 대응: 토큰 재발급 후 재접속 유도
+                                    logger.warning("🔄 [WS] 토큰 만료 가능성으로 인해 토큰 재발급을 시도합니다...")
+                                    new_token = await self.reissue_token()
+                                    if new_token:
+                                        logger.info("✅ [WS] 토큰 재발급 완료. 웹소켓 재접속을 트리거합니다.")
+                                        await ws.close()
+                                        continue
+                                    else:
+                                        logger.error("❌ [WS] 토큰 재발급 실패. 웹소켓 리스너를 중단합니다.")
+                                        return
                                 logger.info("✅ 웹소켓 로그인 성공! 조건검색식 목록을 요청합니다.")
                                 # 로그인 성공 시 조건검색식 목록(CNSRLST) 요청
                                 await ws.send(json.dumps({"trnm": "CNSRLST"}))

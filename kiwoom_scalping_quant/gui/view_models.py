@@ -1455,7 +1455,7 @@ class BacktestViewModel(QObject):
     def set_model_path(self, path: str):
         self.model_path = path
 
-    def start_backtest(self, start_date: str, end_date: str, symbol: str):
+    def start_backtest(self, start_date: str, end_date: str, symbol: str, force_daily_liquidation: bool = True):
         if not self.model_path:
             self.sig_bt_error.emit("학습된 모델 파일(.zip)을 먼저 선택해주세요.")
             return
@@ -1464,9 +1464,9 @@ class BacktestViewModel(QObject):
             self.sig_bt_error.emit("이미 백테스트가 진행 중입니다. 완료 후 다시 시도해주세요.")
             return
 
-        asyncio.create_task(self._run_backtest_task(start_date, end_date, symbol))
+        asyncio.create_task(self._run_backtest_task(start_date, end_date, symbol, force_daily_liquidation))
 
-    async def _run_backtest_task(self, start_date: str, end_date: str, symbol: str):
+    async def _run_backtest_task(self, start_date: str, end_date: str, symbol: str, force_daily_liquidation: bool):
         self._is_task_running = True
         try:
             # 1. 대상 종목 및 데이터 로드 (실제 DB 연동)
@@ -1507,7 +1507,8 @@ class BacktestViewModel(QObject):
                 "mode": "backtest",
                 "feature_mode": detected_mode,
                 "target_dim": model_dim, # [핵심] 환경이 모델에 맞출 수 있도록 목표 차원 전달
-                "all_symbols": all_symbols_list
+                "all_symbols": all_symbols_list,
+                "force_daily_liquidation": force_daily_liquidation
             }
             env = ScalpingTradingEnv(self.data_collector, self.order_manager, env_config)
             
@@ -1607,7 +1608,7 @@ class BacktestViewModel(QObject):
         except Exception as export_e:
             self.logger.error(f"Backtest 결과 Export 중 오류 발생: {export_e}")
 
-    def start_auto_backtest_batch(self, start_date: str, end_date: str):
+    def start_auto_backtest_batch(self, start_date: str, end_date: str, force_daily_liquidation: bool = True):
         """[NEW] 원클릭 Top 30 거래량 종목 자동 백테스트 실행 (선택한 종료일 데이터 사용)"""
         if not self.model_path:
             # 설정의 active_model_path 확인
@@ -1637,10 +1638,10 @@ class BacktestViewModel(QObject):
         self._is_task_running = True
         
         # 태스크 완료 시 플래그 해제 콜백 연결
-        task = asyncio.create_task(self._run_auto_batch_task(end_date, end_date))
+        task = asyncio.create_task(self._run_auto_batch_task(end_date, end_date, force_daily_liquidation))
         task.add_done_callback(lambda _: self._reset_task_flag())
 
-    async def _run_auto_batch_task(self, start_date: str, end_date: str):
+    async def _run_auto_batch_task(self, start_date: str, end_date: str, force_daily_liquidation: bool):
         try:
             # 1. Top 30 종목 스캔
             if not self.universe_manager:
@@ -1736,7 +1737,8 @@ class BacktestViewModel(QObject):
                     "mode": "backtest",
                     "feature_mode": detected_mode,
                     "target_dim": model_dim,
-                    "all_symbols": all_symbols_list
+                    "all_symbols": all_symbols_list,
+                    "force_daily_liquidation": force_daily_liquidation
                 }
                 return ScalpingTradingEnv(self.data_collector, self.order_manager, env_config), df
 
@@ -1776,7 +1778,7 @@ class BacktestViewModel(QObject):
         self.logger.info(f"BT 배치 [{idx+1}/{total}] {status_msg}")
         self.sig_bt_progress.emit(idx + 1, total, 0.0)
 
-    def start_multi_threshold_batch(self, start_date: str, end_date: str):
+    def start_multi_threshold_batch(self, start_date: str, end_date: str, force_daily_liquidation: bool = True):
         """[신규] 7가지 임계값 조합에 대해 순차적으로 자동 백테스트 수행 (스레드 분리)"""
         if getattr(self, "_is_task_running", False):
             self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
@@ -1806,7 +1808,7 @@ class BacktestViewModel(QObject):
         self.multi_th_worker = MultiThresholdBatchWorker(
             self.config_manager, self.engine, self.historical_fetcher, 
             self.universe_manager, self.token_manager, self.influx_client,
-            self.model_path, start_date, end_date
+            self.model_path, start_date, end_date, force_daily_liquidation
         )
         
         # 시그널 연결
@@ -1918,7 +1920,7 @@ class BacktestViewModel(QObject):
         except Exception as e:
             self.logger.error(f"CSV 저장 중 오류: {e}")
 
-    def start_batch_backtest(self, model_paths: List[str], start_date: str, end_date: str):
+    def start_batch_backtest(self, model_paths: List[str], start_date: str, end_date: str, force_daily_liquidation: bool = True):
         """[NEW] 다중 모델 x 전 종목 일괄 백테스트 실행 (QThread 기반)"""
         if not model_paths:
             self.sig_bt_error.emit("선택된 모델 파일이 없습니다.")
@@ -1941,7 +1943,7 @@ class BacktestViewModel(QObject):
         
         self.batch_worker = BatchBacktestWorker(
             model_paths, symbols, start_date, end_date, 
-            self.engine, self.influx_client, self.config_manager
+            self.engine, self.influx_client, self.config_manager, force_daily_liquidation
         )
         
         # 워커 시그널 연결

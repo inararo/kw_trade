@@ -28,6 +28,8 @@ class ScalpingTradingEnv(gym.Env):
         # [추가] 에피소드 길이 개선을 위한 신규 옵션들
         self.always_start_day_begin = config.get('always_start_day_begin', False)
         self.allow_overnight_episodes = config.get('allow_overnight_episodes', False)
+        # [신규] 15:20 당일 강제 청산 여부 (기본값: True로 데이트레이딩 모드 유지)
+        self.force_daily_liquidation = config.get('force_daily_liquidation', True)
         
         # [모드 분기] 
         self.single_feature_dim = 11 if self.feature_mode == 'advanced' else 5
@@ -455,9 +457,9 @@ class ScalpingTradingEnv(gym.Env):
         portfolio_state = self._get_portfolio_state()
         position_ratio = portfolio_state[0]
 
-        # [당일 청산 규칙] 15:20 이후 매수 차단
+        # [당일 청산 규칙] 15:20 이후 매수 차단 (force_daily_liquidation 활성화 시에만 적용)
         is_closing_time = False
-        if self.historical_data is not None:
+        if self.force_daily_liquidation and self.historical_data is not None:
             import datetime
             idx = min(self.current_step, len(self.historical_data)-1)
             ts = self.historical_data[idx].get("timestamp")
@@ -521,7 +523,7 @@ class ScalpingTradingEnv(gym.Env):
         # ──────────────────────────────────────────────
         # [오버라이드 2] 15:20 당일 청산 규칙
         # ──────────────────────────────────────────────
-        if self.historical_data is not None:
+        if self.force_daily_liquidation and self.historical_data is not None:
             import datetime
             idx = min(self.current_step, len(self.historical_data)-1)
             ts = self.historical_data[idx].get("timestamp")

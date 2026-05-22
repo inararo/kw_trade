@@ -41,11 +41,13 @@ class ConditionService:
                 
                 for entry in entries:
                     e_type = entry.get("type")
-                    if e_type == "02" or entry.get("name") == "조건검색" or trnm == "COND":
+                    if e_type == "02" or entry.get("name") == "조건검색" or trnm == "COND" or entry.get("type") == "COND":
                         values = entry.get("values", {})
-                        code = (values.get("9001") or entry.get("item", "")).lstrip("A")
-                        status = values.get("843", "I")
-                        self.update_realtime_condition(code, status)
+                        code = (values.get("9001") or entry.get("item") or entry.get("stk_cd") or entry.get("symbol") or entry.get("code") or "").lstrip("A").strip()
+                        status_val = values.get("843") or entry.get("status") or entry.get("type") or "I"
+                        status = "I" if str(status_val).upper() in ["I", "INSERT", "편입", "1"] else "D"
+                        if code:
+                            self.update_realtime_condition(code, status)
                 
         except Exception as e:
             self.logger.error(f"ConditionService: 메시지 파싱 에러: {e}")

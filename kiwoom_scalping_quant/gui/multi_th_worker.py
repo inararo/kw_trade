@@ -17,7 +17,7 @@ class MultiThresholdBatchWorker(QThread):
     sig_error = pyqtSignal(str)
 
     def __init__(self, config_manager, engine, historical_fetcher, universe_manager, token_manager, 
-                 influx_client, model_path, start_date, end_date):
+                 influx_client, model_path, start_date, end_date, force_daily_liquidation: bool = True):
         super().__init__()
         # [복원] 스레드 고유의 루프를 사용하기 위해 main_loop 제거
             
@@ -30,6 +30,7 @@ class MultiThresholdBatchWorker(QThread):
         self.model_path = model_path
         self.start_date = start_date
         self.end_date = end_date
+        self.force_daily_liquidation = force_daily_liquidation
         self.is_running = True
         self.logger = logging.getLogger("MultiThWorker")
 
@@ -149,7 +150,8 @@ class MultiThresholdBatchWorker(QThread):
                     env_config = {
                         "symbol": sym, "initial_balance": 10000000, "historical_data": data,
                         "mode": "backtest", "feature_mode": detected_mode, "target_dim": model_dim,
-                        "all_symbols": all_symbols_list
+                        "all_symbols": all_symbols_list,
+                        "force_daily_liquidation": self.force_daily_liquidation
                     }
                     cached_data[sym] = (env_config, df)
                 else:

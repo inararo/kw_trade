@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter, QComboBox, QProgressDialog)
+                             QPushButton, QLabel, QDateEdit, QFileDialog, QMessageBox, QSplitter, QComboBox, QProgressDialog, QCheckBox)
 from PyQt6.QtCore import QDate, Qt, pyqtSlot, QTimer
 import pyqtgraph as pg
 
@@ -53,6 +53,11 @@ class BacktestStudioTab(QWidget):
         self.lbl_model_path = QLabel("선택된 모델: 없음")
         self.lbl_model_path.setStyleSheet("color: #888888; font-size: 11px;")
         settings_layout.addWidget(self.lbl_model_path)
+        
+        # [신규 옵션] 15:20 당일 청산 (Day Trading) 체크박스
+        self.chk_force_daily = QCheckBox("15:20 당일 청산 (Day Trading)")
+        self.chk_force_daily.setChecked(True)
+        settings_layout.addWidget(self.chk_force_daily)
         
         settings_layout.addStretch(1)
         group_layout.addLayout(settings_layout)
@@ -213,7 +218,7 @@ class BacktestStudioTab(QWidget):
         self.sell_60_scatter.setData([])
         self.lbl_progress.setText("진행률: 시작...")
 
-        self.view_model.start_backtest(start_dt, end_dt, symbol)
+        self.view_model.start_backtest(start_dt, end_dt, symbol, force_daily_liquidation=self.chk_force_daily.isChecked())
 
     @pyqtSlot()
     @pyqtSlot(list)
@@ -274,7 +279,7 @@ class BacktestStudioTab(QWidget):
             self.progress_dialog.setMinimumDuration(0)
             self.progress_dialog.show()
 
-            self.view_model.start_auto_backtest_batch(start_dt, end_dt)
+            self.view_model.start_auto_backtest_batch(start_dt, end_dt, force_daily_liquidation=self.chk_force_daily.isChecked())
 
     def _on_start_multi_threshold_batch(self):
         """[신규] 7종 임계값 조합 순회 배치 시작"""
@@ -302,7 +307,7 @@ class BacktestStudioTab(QWidget):
             self.progress_dialog.canceled.connect(self.view_model.stop_batch_backtest)
             self.progress_dialog.show()
 
-            self.view_model.start_multi_threshold_batch(start_dt, end_dt)
+            self.view_model.start_multi_threshold_batch(start_dt, end_dt, force_daily_liquidation=self.chk_force_daily.isChecked())
 
     def _on_batch_complete(self, *args):
         """[신규] 배치 작업 완료/에러 시 UI 복구"""
@@ -345,7 +350,7 @@ class BacktestStudioTab(QWidget):
             self.progress_dialog.canceled.connect(self.view_model.stop_batch_backtest)
             self.progress_dialog.show()
 
-            self.view_model.start_batch_backtest(files, start_dt, end_dt)
+            self.view_model.start_batch_backtest(files, start_dt, end_dt, force_daily_liquidation=self.chk_force_daily.isChecked())
 
     @pyqtSlot(dict)
     def on_bt_finished(self, kpi: dict):
@@ -425,19 +430,31 @@ class BacktestStudioTab(QWidget):
                 y = target_df['high'].values * 1.002
             return x, y
 
-        # Buy Markers
+        # Buy Markers (빈 배열 주입 시 pyqtgraph C++/Qt 바인딩 세그폴트 방지)
         x_b40, y_b40 = get_execution_coords('Buy40%', is_buy=True)
-        self.buy_40_scatter.setData(x=x_b40, y=y_b40)
+        if len(x_b40) > 0:
+            self.buy_40_scatter.setData(x=x_b40, y=y_b40)
+        else:
+            self.buy_40_scatter.clear()
         
         x_b60, y_b60 = get_execution_coords('Buy60%', is_buy=True)
-        self.buy_60_scatter.setData(x=x_b60, y=y_b60)
+        if len(x_b60) > 0:
+            self.buy_60_scatter.setData(x=x_b60, y=y_b60)
+        else:
+            self.buy_60_scatter.clear()
         
         # Sell Markers
         x_s40, y_s40 = get_execution_coords('Sell40%', is_buy=False)
-        self.sell_40_scatter.setData(x=x_s40, y=y_s40)
+        if len(x_s40) > 0:
+            self.sell_40_scatter.setData(x=x_s40, y=y_s40)
+        else:
+            self.sell_40_scatter.clear()
         
         x_s60, y_s60 = get_execution_coords('Sell60%', is_buy=False)
-        self.sell_60_scatter.setData(x=x_s60, y=y_s60)
+        if len(x_s60) > 0:
+            self.sell_60_scatter.setData(x=x_s60, y=y_s60)
+        else:
+            self.sell_60_scatter.clear()
 
     @pyqtSlot(str)
     def on_bt_error(self, err_msg: str):

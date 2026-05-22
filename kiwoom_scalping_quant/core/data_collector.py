@@ -413,11 +413,11 @@ class DataCollector:
     async def _process_tick(self, message_data):
         """수신된 실시간 데이터를 루프 돌며 파싱하여 피처 엔진 및 버퍼에 업데이트"""
         
-        # 1. 결과 응답(REG, LOGIN, CNSRLST, CNSRREQ 등) 처리
+        # 1. 결과 응답(REG, LOGIN, CNSRLST, CNSRREQ, COND 등) 처리
         trnm = message_data.get("trnm")
-        if trnm in ["LOGIN", "REG", "UNREG", "CNSRLST", "CNSRREQ"]:
-            # [Handshake] 조건검색 관련 응답은 전용 콜백으로 라우팅
-            if trnm in ["CNSRLST", "CNSRREQ"] and self.on_condition_message_callback:
+        if trnm in ["LOGIN", "REG", "UNREG", "CNSRLST", "CNSRREQ", "COND"]:
+            # [Handshake & Realtime Condition] 조건검색 관련 응답은 전용 콜백으로 라우팅
+            if trnm in ["CNSRLST", "CNSRREQ", "COND"] and self.on_condition_message_callback:
                 self.on_condition_message_callback(json.dumps(message_data))
                 
                 # CNSRLST 수신 시 자동으로 대상 조건식에 대해 CNSRREQ 요청
@@ -478,29 +478,36 @@ class DataCollector:
             if msg_type not in ["0B", "0D"]:
                 self.logger.warning(f"🔍 [WS Message] Type: {msg_type} | Content: {str(entry)[:200]}")
             
-            # [신규] 조건검색 실시간 이벤트 처리 (trnm="REAL" 및 type="02" 또는 name="조건검색")
-            if msg_type == "02" or entry.get("name") == "조건검색":
+            # [신규] 조건검색 실시간 이벤트 처리 (trnm="REAL"/"COND" 및 type="02" 또는 name="조건검색" 또는 type="COND" 등 전방위 매칭)
+            is_cond_event = (
+                msg_type in ["02", "COND"] or 
+                trnm == "COND" or 
+                entry.get("name") == "조건검색" or 
+                entry.get("type") in ["02", "COND"]
+            )
+            if is_cond_event:
                 if self.on_condition_message_callback:
                     values = entry.get("values", {})
-                    status_val = values.get("843", "I")
-                    clean_code = (values.get("9001") or entry.get("item", "")).lstrip("A")
+                    status_val = values.get("843") or entry.get("status") or entry.get("type") or "I"
+                    clean_code = (values.get("9001") or entry.get("item") or entry.get("stk_cd") or entry.get("symbol") or entry.get("code") or "").lstrip("A").strip()
                     
-                    # I: 편입, D: 이탈
-                    mapped_status = "I" if status_val in ["I", "INSERT", "편입", "1"] else "D"
-                    
-                    # [최적화] ConditionService 인스턴스인 경우 직접 메서드 호출
-                    service = getattr(self.on_condition_message_callback, "__self__", None)
-                    if service and hasattr(service, "update_realtime_condition"):
-                        service.update_realtime_condition(clean_code, mapped_status)
-                    else:
-                        # Fallback: 기존 JSON 문자열 방식
-                        routing_data = {
-                            "type": mapped_status,
-                            "symbol": clean_code,
-                            "event": "condition",
-                            "status": mapped_status
-                        }
-                        self.on_condition_message_callback(json.dumps(routing_data))
+                    if clean_code:
+                        # I: 편입, D: 이탈
+                        mapped_status = "I" if str(status_val).upper() in ["I", "INSERT", "편입", "1"] else "D"
+                        
+                        # [최적화] ConditionService 인스턴스인 경우 직접 메서드 호출
+                        service = getattr(self.on_condition_message_callback, "__self__", None)
+                        if service and hasattr(service, "update_realtime_condition"):
+                            service.update_realtime_condition(clean_code, mapped_status)
+                        else:
+                            # Fallback: 기존 JSON 문자열 방식
+                            routing_data = {
+                                "type": mapped_status,
+                                "symbol": clean_code,
+                                "event": "condition",
+                                "status": mapped_status
+                            }
+                            self.on_condition_message_callback(json.dumps(routing_data))
                 continue
             
             # [신규] 주문/체결(Chejan) 데이터 처리
