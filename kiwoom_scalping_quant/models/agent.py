@@ -125,6 +125,8 @@ class TradingAgentWrapper:
 
     def load_weights(self, path: str):
         """GUI에서 모델을 동적으로 교체하기 위한 메서드"""
+        import torch
+        torch.set_num_threads(1)
         if os.path.exists(path + ".zip") or os.path.exists(path):
             try:
                 # [개선] 연속 학습 시 사용자가 UI에서 지정한 최신 하이퍼파라미터가 있다면 오버라이드하여 적용

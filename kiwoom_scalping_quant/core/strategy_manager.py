@@ -47,8 +47,8 @@ class StrategyManager:
         self._order_lock = asyncio.Lock() # [신규] 비동기 레이스 컨디션 방지용 락
         self._pending_buy_symbols: set = set() # [신규] 동기적 중복 진입 차단용 집합
         
-        # [동적 유니버스 필터링] 8슬롯 로직 명시적 설정
-        self.MAX_CONCURRENT_STOCKS = 8
+        # [동적 유니버스 필터링] 감시 슬롯 수 로직 (설정값 로드, 기본값 15)
+        self.MAX_CONCURRENT_STOCKS = int(config_manager.get("max_concurrent_stocks", 15))
         self.pending_universe_queue: List[str] = [] # 조건검색 대기열 (초과분 저장)
         
         # [신규] 순차 웜업 큐 및 워커

@@ -107,9 +107,7 @@ class BacktestStudioTab(QWidget):
         ctrl_group.setLayout(group_layout)
         main_layout.addWidget(ctrl_group)
 
-        # Splitter for Chart and Results
-        splitter = QSplitter(Qt.Orientation.Vertical)
-
+        # Remove vertical splitter to prevent vertical stretching and preserve optimal chart area
         # --- 2. Center Chart Panel (pyqtgraph) ---
         chart_group = QGroupBox("시가총액 및 매매 타점 시각화 (Trade Visualizer)")
         chart_layout = QVBoxLayout()
@@ -144,18 +142,24 @@ class BacktestStudioTab(QWidget):
 
         chart_layout.addWidget(self.plot_widget)
         chart_group.setLayout(chart_layout)
-        splitter.addWidget(chart_group)
+        main_layout.addWidget(chart_group, stretch=1)
 
         # --- 3. Bottom KPI Panel ---
         kpi_group = QGroupBox("성과 분석 (KPI Dashboard)")
+        kpi_group.setFixedHeight(85) # 충분한 높이 확보 (60px은 마진/패딩으로 인해 라벨이 완전히 잘림)
         kpi_layout = QHBoxLayout()
+        kpi_layout.setContentsMargins(15, 10, 15, 10) # 레이아웃 마진 조절로 컷오프 방지
 
         self.lbl_return = QLabel("총 수익률: - %")
-        self.lbl_return.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.lbl_return.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         self.lbl_winrate = QLabel("승률: - %")
+        self.lbl_winrate.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         self.lbl_mdd = QLabel("MDD: - %")
+        self.lbl_mdd.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         self.lbl_profit_factor = QLabel("Profit Factor: -")
+        self.lbl_profit_factor.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         self.lbl_progress = QLabel("진행률: 대기 중")
+        self.lbl_progress.setStyleSheet("color: #007acc; font-size: 14px; font-weight: bold;")
 
         kpi_layout.addWidget(self.lbl_return)
         kpi_layout.addWidget(self.lbl_winrate)
@@ -165,9 +169,7 @@ class BacktestStudioTab(QWidget):
         kpi_layout.addWidget(self.lbl_progress)
 
         kpi_group.setLayout(kpi_layout)
-        splitter.addWidget(kpi_group)
-
-        main_layout.addWidget(splitter, stretch=1)
+        main_layout.addWidget(kpi_group)
 
     def _connect_signals(self):
         from PyQt6.QtCore import Qt
@@ -359,6 +361,7 @@ class BacktestStudioTab(QWidget):
         
         self.btn_start.setEnabled(True)
         self.lbl_progress.setText("진행률: 완료")
+        self.lbl_progress.setStyleSheet("color: #007acc; font-size: 14px; font-weight: bold;")
 
         if "Batch Count" in kpi:
             count = kpi["Batch Count"]
@@ -372,14 +375,17 @@ class BacktestStudioTab(QWidget):
 
         self.lbl_return.setText(f"총 수익률: {kpi.get('Total Return', 0):.2f} %")
         if kpi.get('Total Return', 0) > 0:
-            self.lbl_return.setStyleSheet("color: red; font-size: 16px; font-weight: bold;")
+            self.lbl_return.setStyleSheet("color: #ff4d4d; font-size: 14px; font-weight: bold;") # 프리미엄 Red
         else:
-            self.lbl_return.setStyleSheet("color: green; font-size: 16px; font-weight: bold;")
+            self.lbl_return.setStyleSheet("color: #4caf50; font-size: 14px; font-weight: bold;") # 프리미엄 Green
 
         self.lbl_winrate.setText(f"승률: {kpi.get('Win Rate', 0):.2f} %")
+        self.lbl_winrate.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         self.lbl_mdd.setText(f"MDD: {kpi.get('MDD', 0):.2f} %")
+        self.lbl_mdd.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
         pf = kpi.get('Profit Factor', 0)
         self.lbl_profit_factor.setText(f"Profit Factor: {'inf' if pf == float('inf') else f'{pf:.2f}'}")
+        self.lbl_profit_factor.setStyleSheet("color: #e0e0e0; font-size: 14px; font-weight: bold;")
 
         QMessageBox.information(self, "백테스트 완료", "백테스트 시뮬레이션 및 분석이 완료되었습니다.")
 
@@ -406,12 +412,16 @@ class BacktestStudioTab(QWidget):
             self.plot_widget.setXRange(steps.min(), steps.max(), padding=0.02)
             self.plot_widget.enableAutoRange(axis='y', enable=False) # 수동 설정 후 자동추적 중지 (고정)
 
-        # 3. 평단가 데이터 (보유 중일 때만 유효값, 아니면 NaN)
         import numpy as np
         avg_entries = df['avg_entry_price'].values.copy()
         holdings = df['holdings'].values
         avg_entries[holdings == 0] = np.nan
-        self.avg_entry_curve.setData(steps, avg_entries)
+        
+        # [안정화] 모든 평단가 데이터가 NaN인 경우(거래가 아예 없었던 경우) pyqtgraph C++ 바인딩 세그폴트 방지
+        if np.isnan(avg_entries).all():
+            self.avg_entry_curve.clear()
+        else:
+            self.avg_entry_curve.setData(steps, avg_entries)
 
         # 4. 매매 마커 (Action별 분기)
         def get_execution_coords(action_name, is_buy=True):

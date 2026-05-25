@@ -272,18 +272,22 @@ class AITrainingStudioTab(QWidget):
         self.info_group.setLayout(info_layout)
         
         # 좌측 레이아웃 구성
-        # 스크롤 영역을 추가하여 내용이 길어져도 UI가 깨지지 않도록 함
+        # params_group과 reward_group을 가로(Side-by-Side)로 배치하여 세로 높이를 대폭 축소 (2560x1600 모니터 한눈에 보기 최적화)
+        top_hbox = QHBoxLayout()
+        top_hbox.addWidget(params_group, stretch=1)
+        top_hbox.addWidget(reward_group, stretch=1)
+
         from PyQt6.QtWidgets import QScrollArea
         left_container = QWidget()
         left_panel = QVBoxLayout(left_container)
         left_panel.setContentsMargins(0, 0, 0, 0)
-        left_panel.addWidget(params_group)
-        left_panel.addWidget(reward_group)
+        left_panel.addLayout(top_hbox)
         left_panel.addWidget(self.info_group)
         
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setWidget(left_container)
+        scroll_area.setMinimumWidth(580) # 좌측 파라미터 영역이 항상 양쪽 폼 레이아웃을 넉넉히 수용하도록 가로 최소폭 설정 (300px + 280px)
         scroll_area.setStyleSheet("QScrollArea { border: none; }")
         
         main_layout.addWidget(scroll_area, stretch=1)
@@ -312,7 +316,7 @@ class AITrainingStudioTab(QWidget):
         chart_layout.addWidget(self.log_list, stretch=1)
 
         chart_group.setLayout(chart_layout)
-        main_layout.addWidget(chart_group, stretch=2)
+        main_layout.addWidget(chart_group, stretch=1)
 
         self._step_data = []
         self._reward_data = []

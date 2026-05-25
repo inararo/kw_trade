@@ -1784,12 +1784,11 @@ class BacktestViewModel(QObject):
             self.sig_bt_error.emit("이미 백테스트가 진행 중입니다.")
             return
 
-        # 이전 워커 완벽 정리 (Segmentation Fault 방지)
+        # 이전 워커 완벽 정리 (Segmentation Fault 방지: deleteLater() 제거 및 GC 위임)
         if hasattr(self, 'multi_th_worker') and self.multi_th_worker is not None:
             if self.multi_th_worker.isRunning():
                 self.multi_th_worker.stop()
                 self.multi_th_worker.wait()
-            self.multi_th_worker.deleteLater()
             self.multi_th_worker = None
 
         # [추가] 주말(토/일)인 경우 직전 금요일로 자동 조정
@@ -1837,19 +1836,17 @@ class BacktestViewModel(QObject):
         self._is_task_running = False
 
     def stop_batch_backtest(self):
-        """배치 작업 중단 및 워커 완벽 정리"""
+        """배치 작업 중단 및 워커 완벽 정리 (deleteLater() 제거 및 GC 위임)"""
         if hasattr(self, 'multi_th_worker') and self.multi_th_worker is not None:
             if self.multi_th_worker.isRunning():
                 self.multi_th_worker.stop()
                 self.multi_th_worker.wait()
-            self.multi_th_worker.deleteLater()
             self.multi_th_worker = None
             
         if hasattr(self, 'batch_worker') and self.batch_worker is not None:
             if self.batch_worker.isRunning():
                 self.batch_worker.stop()
                 self.batch_worker.wait()
-            self.batch_worker.deleteLater()
             self.batch_worker = None
             
         self._is_task_running = False
@@ -1931,12 +1928,11 @@ class BacktestViewModel(QObject):
             self.sig_bt_error.emit("유니버스에 등록된 종목이 없습니다.")
             return
 
-        # 이전 워커 완벽 정리 (Segmentation Fault 방지)
+        # 이전 워커 완벽 정리 (Segmentation Fault 방지: deleteLater() 제거 및 GC 위임)
         if hasattr(self, 'batch_worker') and self.batch_worker is not None:
             if self.batch_worker.isRunning():
                 self.batch_worker.stop()
                 self.batch_worker.wait()
-            self.batch_worker.deleteLater()
             self.batch_worker = None
 
         self.logger.info(f"일괄 백테스트 시작: 모델 {len(model_paths)}개, 종목 {len(symbols)}개")
@@ -1955,8 +1951,4 @@ class BacktestViewModel(QObject):
         # 스레드 시작
         self.batch_worker.start()
 
-    def stop_batch_backtest(self):
-        """일괄 백테스트 중단 요청"""
-        if self.batch_worker and self.batch_worker.isRunning():
-            self.batch_worker.stop()
-            self.logger.info("일괄 백테스트 중단 요청됨.")
+

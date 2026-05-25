@@ -24,29 +24,38 @@ class LiveDashboardTab(QWidget):
 
     def _init_ui(self):
         main_vertical_layout = QVBoxLayout(self)
+        main_vertical_layout.setContentsMargins(2, 2, 2, 2)
+        main_vertical_layout.setSpacing(3)
 
-        # Risk / Status Bar (Top)
+        # Risk / Status Bar (Top) - 패딩을 파격적으로 줄여 수직 해상도 대폭 확보
         self.status_bar = QLabel("시스템 정상 대기 중")
-        self.status_bar.setStyleSheet("background-color: #2b5b84; color: white; padding: 10px; font-weight: bold;")
+        self.status_bar.setStyleSheet("background-color: #2b5b84; color: white; padding: 3px; font-size: 11px; font-weight: bold;")
         self.status_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_vertical_layout.addWidget(self.status_bar)
 
         self.risk_bar = QLabel("당일 누적 손익: 0원 | 잔여 매수 가능 한도: 계산 중...")
-        self.risk_bar.setStyleSheet("background-color: #3b3b3b; color: #a9b7c6; padding: 5px; font-weight: bold;")
+        self.risk_bar.setStyleSheet("background-color: #3b3b3b; color: #a9b7c6; padding: 2px; font-size: 11px; font-weight: bold;")
         self.risk_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_vertical_layout.addWidget(self.risk_bar)
 
         main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(4)
         main_vertical_layout.addLayout(main_layout)
 
         # 1. 좌측 패널: 통합 다중 종목 마스터 테이블
         master_group = QGroupBox("전체 감시 종목 (Universe)")
         master_layout = QVBoxLayout()
+        master_layout.setContentsMargins(2, 4, 2, 2)
+        master_layout.setSpacing(2)
 
         self.summary_table = QTableWidget(0, 8)
         self.summary_table.setHorizontalHeaderLabels(["종목코드", "종목명", "현재가", "등락률", "거래량", "AI 신호", "보유량", "수익률"])
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.summary_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        # 행 높이를 20px로 초소형 압축하여 스크롤 필요 없이 한화면에 19개 종목이 전부 쏙 들어가게 보정
+        self.summary_table.verticalHeader().setDefaultSectionSize(20)
         
         # 선택된 행 하이라이트 강화 (밝은 파란색 계열)
         self.summary_table.setStyleSheet("""
@@ -66,74 +75,100 @@ class LiveDashboardTab(QWidget):
         master_group.setLayout(master_layout)
         main_layout.addWidget(master_group, stretch=8) # [가로 사이즈 대폭 확대]
 
-        # 2. 우측 통합 영역 (호가창 + AI제어 + 하단로그)
+        # 2. 우측 통합 영역 (호가창 + AI제어 + 하단로그) - 컴팩트 레이아웃
         dashboard_content_layout = QVBoxLayout()
+        dashboard_content_layout.setContentsMargins(0, 0, 0, 0)
+        dashboard_content_layout.setSpacing(4)
         
         # 2-A. 상단 구역: 호가창(좌) + AI/제어(우)
         top_row_layout = QHBoxLayout()
+        top_row_layout.setContentsMargins(0, 0, 0, 0)
+        top_row_layout.setSpacing(4)
         
         # [상세 호가창 래더]
         ladder_group = QGroupBox("상세 호가창 래더")
         ladder_layout = QVBoxLayout()
+        ladder_layout.setContentsMargins(2, 4, 2, 2)
+        ladder_layout.setSpacing(2)
         self.orderbook_widget = OrderbookLadderWidget(self.view_model)
         ladder_layout.addWidget(self.orderbook_widget)
         ladder_group.setLayout(ladder_layout)
         top_row_layout.addWidget(ladder_group, stretch=5)
 
-        # [상세 AI 모니터 및 컨트롤]
+        # [상세 AI 모니터 및 컨트롤] - 복구된 그룹박스 스타일 및 상단 글자 컷팅 방지용 마진 설정
         control_group = QGroupBox("상세 AI 모니터링 및 제어")
+        control_group.setStyleSheet("QGroupBox { font-weight: bold; color: #1e90ff; }")
         control_layout = QVBoxLayout()
+        control_layout.setContentsMargins(4, 15, 4, 4) # 상단 마진 15px 부여하여 타이틀 글자가 절대 잘리지 않도록 안전 공간 확보
+        control_layout.setSpacing(8) # 컴포넌트 간 여백을 8px로 조밀하게 정돈
 
         # AI 신뢰도 모니터
         ai_layout = QVBoxLayout()
-        ai_layout.addWidget(QLabel("AI 에이전트 행동 신뢰도:"))
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_layout.setSpacing(4)
+        
+        lbl_ai = QLabel("AI 에이전트 행동 신뢰도:")
+        lbl_ai.setStyleSheet("font-size: 11px; font-weight: bold; color: #a9b7c6;")
+        ai_layout.addWidget(lbl_ai)
+        
         self.prog_hold = QProgressBar()
-        self.prog_hold.setStyleSheet("QProgressBar::chunk { background-color: gray; }")
+        self.prog_hold.setStyleSheet("QProgressBar { font-size: 11px; font-weight: bold; } QProgressBar::chunk { background-color: gray; }")
         self.prog_hold.setFormat("관망: %p%")
+        self.prog_hold.setFixedHeight(20) # 30% 크기 키움 (15px -> 20px)
+        
         self.prog_buy = QProgressBar()
-        self.prog_buy.setStyleSheet("QProgressBar::chunk { background-color: red; }")
+        self.prog_buy.setStyleSheet("QProgressBar { font-size: 11px; font-weight: bold; } QProgressBar::chunk { background-color: red; }")
         self.prog_buy.setFormat("매수: %p%")
+        self.prog_buy.setFixedHeight(20) # 30% 크기 키움 (15px -> 20px)
+        
         self.prog_sell = QProgressBar()
-        self.prog_sell.setStyleSheet("QProgressBar::chunk { background-color: blue; }")
+        self.prog_sell.setStyleSheet("QProgressBar { font-size: 11px; font-weight: bold; } QProgressBar::chunk { background-color: blue; }")
         self.prog_sell.setFormat("매도: %p%")
+        self.prog_sell.setFixedHeight(20) # 30% 크기 키움 (15px -> 20px)
+        
         ai_layout.addWidget(self.prog_hold)
         ai_layout.addWidget(self.prog_buy)
         ai_layout.addWidget(self.prog_sell)
         control_layout.addLayout(ai_layout)
 
-        # 시스템 실시간 제어 패널 (위로 이동)
+        # 시스템 실시간 제어 패널 - 내부 타이틀 글자 노출 복구
         sys_ctrl_group = QGroupBox("실시간 매매/감시 제어")
+        sys_ctrl_group.setStyleSheet("QGroupBox { font-weight: bold; color: #a9b7c6; }")
         sys_ctrl_layout = QVBoxLayout()
+        sys_ctrl_layout.setContentsMargins(4, 15, 4, 4) # 상단 마진 15px 부여하여 타이틀 글자 복원
+        sys_ctrl_layout.setSpacing(4)
 
         self.btn_monitor_toggle = QPushButton("🛰️ 종목 감시 중지")
         self.btn_monitor_toggle.setCheckable(True)
-        self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 35px;")
+        self.btn_monitor_toggle.setStyleSheet("background-color: #2b5b84; font-weight: bold; height: 26px; font-size: 11px;")
         self.btn_monitor_toggle.clicked.connect(self._on_monitor_toggle_clicked)
         sys_ctrl_layout.addWidget(self.btn_monitor_toggle)
         self.btn_ai_toggle = QPushButton("🤖 AI 매매 일시 정지")
         self.btn_ai_toggle.setCheckable(True)
-        self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 35px;")
+        self.btn_ai_toggle.setStyleSheet("background-color: #5b2b84; font-weight: bold; height: 26px; font-size: 11px;")
         self.btn_ai_toggle.clicked.connect(self._on_ai_toggle_clicked)
         sys_ctrl_layout.addWidget(self.btn_ai_toggle)
         sys_ctrl_group.setLayout(sys_ctrl_layout)
         control_layout.addWidget(sys_ctrl_group)
 
-        # [모델 선택 UI] 공격형 / 방어형 라디오 버튼
+        # [모델 선택 UI] 공격형 / 방어형 라디오 버튼 - 내부 타이틀 글자 노출 복구
         model_group = QGroupBox("🧠 AI 모델 선택")
         model_group.setStyleSheet("QGroupBox { font-weight: bold; color: #a0cfff; }")
         model_layout = QVBoxLayout()
+        model_layout.setContentsMargins(4, 15, 4, 4) # 상단 마진 15px 부여하여 타이틀 글자 복원
+        model_layout.setSpacing(6) # 라디오 버튼 사이에 6px 여유 공간 배치하여 서로 붙지 않게 분리
 
         self._model_btn_group = QButtonGroup(self)
         self.radio_offensive = QRadioButton("🔴 공격형 (Offensive)")
-        self.radio_offensive.setStyleSheet("color: #ff6b6b; font-weight: bold;")
+        self.radio_offensive.setStyleSheet("color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 0px;")
         self.radio_defensive = QRadioButton("🔵 방어형 (Defensive)")
-        self.radio_defensive.setStyleSheet("color: #74b9ff; font-weight: bold;")
+        self.radio_defensive.setStyleSheet("color: #74b9ff; font-weight: bold; font-size: 11px; padding: 2px 0px;")
 
         self._model_btn_group.addButton(self.radio_offensive)
         self._model_btn_group.addButton(self.radio_defensive)
 
         self.lbl_current_model = QLabel("현재: 공격형 (Offensive)")
-        self.lbl_current_model.setStyleSheet("color: #ff6b6b; font-size: 11px; padding: 2px;")
+        self.lbl_current_model.setStyleSheet("color: #ff6b6b; font-size: 10px; padding: 1px;")
         self.lbl_current_model.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         model_layout.addWidget(self.radio_offensive)
@@ -142,31 +177,34 @@ class LiveDashboardTab(QWidget):
         model_group.setLayout(model_layout)
         control_layout.addWidget(model_group)
 
-        # 라디오 버튼 이벤트 연결 (초기화 전에 연결하면 setChecked 시 toggled 발생하므로 이후에 연결)
+        # 라디오 버튼 이벤트 연결
         self.radio_offensive.toggled.connect(self._on_model_radio_toggled)
         self.radio_defensive.toggled.connect(self._on_model_radio_toggled)
 
-
-        # 패닉 버튼
-        self.panic_btn = QPushButton("🚨 전량 시장가 매도 🚨\n전체 주문 취소")
-        self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 14px; font-weight: bold; height: 50px;")
+        # 패닉 버튼 - 슬림형 한 줄 배치
+        self.panic_btn = QPushButton("🚨 전량 시장가 매도 및 전체 주문 취소 🚨")
+        self.panic_btn.setStyleSheet("background-color: darkred; color: white; font-size: 11px; font-weight: bold; height: 30px;")
         self.panic_btn.clicked.connect(self.view_model.trigger_panic_sell)
         control_layout.addWidget(self.panic_btn)
         
-        control_layout.addStretch(1) # [여백] 나머지 요소를 위로 밀착
+        # 남은 유휴 공간을 하단에서 최종 흡수하기 위한 단일 신축 레이어 배치
+        control_layout.addStretch(1)
+        
         control_group.setLayout(control_layout)
         top_row_layout.addWidget(control_group, stretch=2)
 
-        dashboard_content_layout.addLayout(top_row_layout, stretch=5)
+        dashboard_content_layout.addLayout(top_row_layout, stretch=4)
 
         # 2-B. 하단 구역: 시스템 및 체결 로그 (너비 확장)
         log_group = QGroupBox("시스템 및 체결 로그")
         log_layout = QVBoxLayout()
+        log_layout.setContentsMargins(2, 4, 2, 2)
+        log_layout.setSpacing(2)
         self.log_list = QListWidget()
         self.log_list.setStyleSheet("background-color: #2b2b2b; color: #90EE90; font-family: monospace; font-size: 11px;")
         log_layout.addWidget(self.log_list)
         log_group.setLayout(log_layout)
-        dashboard_content_layout.addWidget(log_group, stretch=2)
+        dashboard_content_layout.addWidget(log_group, stretch=3)
         
         main_layout.addLayout(dashboard_content_layout, stretch=7)
 

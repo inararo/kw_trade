@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtWidgets import QMainWindow, QTabWidget, QWidget, QVBoxLayout, QMenuBar, QMenu, QStatusBar, QMessageBox
-from PyQt6.QtGui import QAction, QDesktopServices
+from PyQt6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PyQt6.QtCore import QUrl, pyqtSlot
 
 from gui.tabs.live_dashboard import LiveDashboardTab
@@ -21,7 +21,7 @@ class MainWindow(QMainWindow):
         self.view_model = view_model
 
         self.setWindowTitle("스캘핑 퀀트")
-        self.setGeometry(100, 100, 1200, 800)
+        self._apply_optimal_geometry()
 
         self._init_menu_bar()
         self._init_tabs()
@@ -190,3 +190,47 @@ class MainWindow(QMainWindow):
         # 시스템의 비동기 종료 루틴을 백그라운드 태스크로 실행
         import asyncio
         asyncio.create_task(self.system.stop())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 창이 화면에 올라간(Render) 직후, macOS 시스템의 창 복원 및 snapping 패스가 종료될 때까지 100ms 지연 후 크기 강제 패치
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(100, self._force_apply_geometry)
+
+    def _force_apply_geometry(self):
+        from PyQt6.QtCore import Qt
+        # macOS의 창 상태 캐싱(Zoom/Maximized)을 원천 무력화하고 강제로 일반 창 모드 설정
+        self.setWindowState(Qt.WindowState.WindowNoState)
+        self.showNormal()
+        self._apply_optimal_geometry()
+
+    def _apply_optimal_geometry(self):
+        from PyQt6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            geom = screen.availableGeometry()
+            ratio = screen.devicePixelRatio()
+            
+            # Retina 디스플레이 대응: 만약 물리적 해상도로 보고될 경우 디바이스 픽셀 비율로 나누어 완벽한 논리적 해상도 도출
+            logical_w = geom.width()
+            logical_h = geom.height()
+            logical_x = geom.x()
+            logical_y = geom.y()
+            
+            if logical_h > 1200 and ratio > 1.0:
+                logical_w = int(logical_w / ratio)
+                logical_h = int(logical_h / ratio)
+                logical_x = int(logical_x / ratio)
+                logical_y = int(logical_y / ratio)
+                
+            w = int(logical_w * 0.98)
+            h = int(logical_h * 0.96)
+            x = logical_x + (logical_w - w) // 2
+            y = logical_y + (logical_h - h) // 2
+            
+            print(f"★ [DEBUG RETINA] ratio: {ratio}, logical: {logical_w}x{logical_h}, target: {w}x{h}, Y: {y}")
+            self.resize(w, h)
+            self.move(x, y)
+            self.update()
+        else:
+            self.setGeometry(100, 80, 1500, 850)

@@ -25,14 +25,14 @@ class SettingsTab(QWidget):
 
         # 버튼 레이아웃 (상단 고정)
         btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(15, 10, 15, 0)
+        btn_layout.setContentsMargins(6, 4, 6, 0)
         
         self.btn_test = QPushButton("연결 테스트")
-        self.btn_test.setFixedHeight(35)
+        self.btn_test.setFixedHeight(28)
         self.btn_test.clicked.connect(self._on_test_clicked)
 
         self.btn_save = QPushButton("설정 저장")
-        self.btn_save.setFixedHeight(35)
+        self.btn_save.setFixedHeight(28)
         self.btn_save.setStyleSheet("background-color: #2b5b84; color: white; font-weight: bold;")
         self.btn_save.clicked.connect(self._on_save_clicked)
 
@@ -48,15 +48,17 @@ class SettingsTab(QWidget):
         # 실제 컨텐츠가 들어갈 위젯
         content_widget = QWidget()
         main_v_layout = QVBoxLayout(content_widget)
-        main_v_layout.setContentsMargins(15, 15, 15, 15)
-        main_v_layout.setSpacing(20)
+        main_v_layout.setContentsMargins(6, 6, 6, 6)
+        main_v_layout.setSpacing(6)
 
-        # 2열 구성을 위한 컨테이너 레이아웃
+        # 3열 구성을 위한 컨테이너 레이아웃 (맥북 2560x1600 와이드 화면 및 한눈에 보기 최적화)
         columns_layout = QHBoxLayout()
-        left_column = QVBoxLayout()
-        right_column = QVBoxLayout()
-        columns_layout.addLayout(left_column, stretch=1)
-        columns_layout.addLayout(right_column, stretch=1)
+        col1 = QVBoxLayout()
+        col2 = QVBoxLayout()
+        col3 = QVBoxLayout()
+        columns_layout.addLayout(col1, stretch=1)
+        columns_layout.addLayout(col2, stretch=1)
+        columns_layout.addLayout(col3, stretch=1)
         
         main_v_layout.addLayout(columns_layout)
 
@@ -80,7 +82,7 @@ class SettingsTab(QWidget):
         broker_form.addRow("매매 모드:", self.combo_mode)
 
         broker_group.setLayout(broker_form)
-        left_column.addWidget(broker_group)
+        col1.addWidget(broker_group)
 
         # 2. Database Group (.env & config.yaml 혼합)
         db_group = QGroupBox("데이터베이스")
@@ -100,7 +102,7 @@ class SettingsTab(QWidget):
         db_form.addRow("버킷:", self.input_db_bucket)
 
         db_group.setLayout(db_form)
-        left_column.addWidget(db_group)
+        col1.addWidget(db_group)
 
         # [신규] 2.5 자동 조건 전환 Group (config.yaml)
         switch_group = QGroupBox("자동 조건 전환 (스케줄러)")
@@ -120,7 +122,7 @@ class SettingsTab(QWidget):
         switch_form.addRow("조건식 전환 시간:", self.time_switch)
 
         switch_group.setLayout(switch_form)
-        left_column.addWidget(switch_group)
+        col1.addWidget(switch_group)
 
         # 3. Risk Management Group (config.yaml)
         risk_group = QGroupBox("리스크 관리")
@@ -183,7 +185,7 @@ class SettingsTab(QWidget):
         risk_form.addRow("매수 금지 상승률 (Max Rise):", self.spin_max_daily_rise)
 
         risk_group.setLayout(risk_form)
-        right_column.addWidget(risk_group)
+        col2.addWidget(risk_group)
 
         # 4. Time Management Group
         time_group = QGroupBox("매매 스케줄 관리")
@@ -207,7 +209,7 @@ class SettingsTab(QWidget):
         time_form.addRow("갱신 설정:", self.chk_enable_universe_update)
 
         time_group.setLayout(time_form)
-        right_column.addWidget(time_group)
+        col3.addWidget(time_group)
 
         # 5. System Group
         system_group = QGroupBox("시스템 알림 및 로깅")
@@ -231,7 +233,7 @@ class SettingsTab(QWidget):
         sys_form.addRow("테스트 설정:", self.chk_bypass_market)
 
         system_group.setLayout(sys_form)
-        left_column.addWidget(system_group) # [이동] 우측 -> 좌측
+        col3.addWidget(system_group)
         
         # 6. AI Settings Group
         ai_group = QGroupBox("AI 매매 설정")
@@ -253,11 +255,12 @@ class SettingsTab(QWidget):
         ai_form.addRow("필터 모드:", self.chk_strict_filter)
         
         ai_group.setLayout(ai_form)
-        right_column.addWidget(ai_group) # [이동] 좌측 -> 우측
+        col3.addWidget(ai_group)
         
         # 컬럼 하단 여백 채우기
-        left_column.addStretch()
-        right_column.addStretch()
+        col1.addStretch()
+        col2.addStretch()
+        col3.addStretch()
 
         scroll.setWidget(content_widget)
         outer_layout.addWidget(scroll)

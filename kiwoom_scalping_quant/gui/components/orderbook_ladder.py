@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PyQt6.QtCore import pyqtSlot
+from PyQt6.QtCore import pyqtSlot, Qt
 from typing import Dict
 import pyqtgraph as pg
 import numpy as np
@@ -17,11 +17,13 @@ class OrderbookLadderWidget(QWidget):
 
     def _init_ui(self):
         self.layout = QVBoxLayout(self)
-        self.title_label = QLabel("호가창 래더")
-        self.layout.addWidget(self.title_label)
+        self.layout.setContentsMargins(2, 2, 2, 2)
+        self.layout.setSpacing(2)
 
+        # QGroupBox 타이틀이 있으므로 중복되는 내부 타이틀은 제거하여 상하 공간 확보
         self.price_label = QLabel("현재가: -")
-        self.price_label.setStyleSheet("font-size: 18px; font-weight: bold; color: orange;")
+        self.price_label.setStyleSheet("font-size: 13px; font-weight: bold; color: orange; padding: 1px;")
+        self.price_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.layout.addWidget(self.price_label)
 
         # PyQtGraph 설정

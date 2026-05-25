@@ -21,7 +21,8 @@ class BatchBacktestWorker(QThread):
     sig_error = pyqtSignal(str)       # 에러 메시지
 
     def __init__(self, model_paths: List[str], symbols: List[Dict[str, str]], 
-                 start_date: str, end_date: str, backtest_engine, influx_client, config_manager):
+                 start_date: str, end_date: str, backtest_engine, influx_client, config_manager,
+                 force_daily_liquidation: bool = True):
         super().__init__()
         self.model_paths = model_paths
         self.symbols = symbols
@@ -30,6 +31,7 @@ class BatchBacktestWorker(QThread):
         self.engine = backtest_engine
         self.influx_client = influx_client
         self.config_manager = config_manager
+        self.force_daily_liquidation = force_daily_liquidation
         self.logger = logging.getLogger("BatchBacktestWorker")
         self.is_running = True
 
@@ -148,7 +150,8 @@ class BatchBacktestWorker(QThread):
                     env_config = {
                         "symbol": symbol, "initial_balance": 10000000, "historical_data": data_list,
                         "mode": "backtest", "feature_mode": detected_mode,
-                        "target_dim": model_dim, "all_symbols": all_symbols_list
+                        "target_dim": model_dim, "all_symbols": all_symbols_list,
+                        "force_daily_liquidation": self.force_daily_liquidation
                     }
                     
                     env = ScalpingTradingEnv(None, None, env_config)

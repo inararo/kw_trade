@@ -1,5 +1,19 @@
 import sys
 import os
+
+# [안정화] PyTorch 및 OpenMP/MKL 멀티스레딩으로 인한 PyQt6 세그멘테이션 결함(Segfault) 방지
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+try:
+    import torch
+    torch.set_num_threads(1)
+except ImportError:
+    pass
+
 import asyncio
 import yaml
 import logging
@@ -842,6 +856,31 @@ class QuantSystem:
         self.shutdown_event.set()
 
 def main():
+    # macOS 환경에서 Cocoa의 자동 창 복원(Saved Application State) 및 캐싱 버그를 완벽 무력화하기 위한 조치
+    if sys.platform == "darwin":
+        import shutil
+        from pathlib import Path
+        
+        # 1. Cocoa 시스템에 창 복원 비활성화 파라미터 주입
+        if "-ApplePersistenceIgnoreState" not in sys.argv:
+            sys.argv.extend(["-ApplePersistenceIgnoreState", "YES"])
+            
+        # 2. Python 및 Qt 관련 OS 창 복원 캐시 폴더 물리적 삭제
+        home = Path.home()
+        paths_to_clean = [
+            home / "Library/Saved Application State/org.python.python.savedState",
+            home / "Library/Saved Application State/org.qt-project.Qt.Qt6.savedState",
+            home / "Library/Saved Application State/org.qt-project.python.savedState",
+            home / "Library/Saved Application State/com.apple.Terminal.savedState",
+        ]
+        for p in paths_to_clean:
+            if p.exists():
+                try:
+                    shutil.rmtree(p)
+                    print(f"★ [SYSTEM] macOS OS 창 캐시 폴더 초기화 완료: {p}")
+                except Exception as e:
+                    pass
+
     app = QApplication(sys.argv)
     
     # [추가] 마우스 휠 값 변경 방지 필터 설치
