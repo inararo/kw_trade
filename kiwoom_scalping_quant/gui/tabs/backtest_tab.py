@@ -398,7 +398,7 @@ class BacktestStudioTab(QWidget):
         steps = df['step'].values
         prices = df['price'].values
 
-        self.price_curve.setData(steps, prices)
+        self.price_curve.setData(steps, prices, connect='finite')
 
         # [혁신] Y축 자동 스케일링: 데이터 범위에 맞춰 축 최적화
         if len(prices) > 0:
@@ -411,17 +411,24 @@ class BacktestStudioTab(QWidget):
             self.plot_widget.setYRange(y_min - margin, y_max + margin, padding=0)
             self.plot_widget.setXRange(steps.min(), steps.max(), padding=0.02)
             self.plot_widget.enableAutoRange(axis='y', enable=False) # 수동 설정 후 자동추적 중지 (고정)
-
         import numpy as np
-        avg_entries = df['avg_entry_price'].values.copy()
+        avg_entries = df['avg_entry_price'].values
         holdings = df['holdings'].values
-        avg_entries[holdings == 0] = np.nan
         
-        # [안정화] 모든 평단가 데이터가 NaN인 경우(거래가 아예 없었던 경우) pyqtgraph C++ 바인딩 세그폴트 방지
-        if np.isnan(avg_entries).all():
+        # [안정화] NaNs 및 zero-length line-to-self 그리기 예방을 위해 보유 중인(valid) 좌표만 정밀 필터링하여 바인딩
+        valid_mask = (holdings > 0) & (~np.isnan(avg_entries))
+        if not valid_mask.any():
             self.avg_entry_curve.clear()
         else:
-            self.avg_entry_curve.setData(steps, avg_entries)
+            x_valid = steps[valid_mask]
+            y_valid = avg_entries[valid_mask]
+            
+            # 인접한 인덱스가 연속인 경우에만 그리기를 연결 (불연속 구간은 자연스럽게 끊어지도록 처리)
+            connect_array = np.zeros(len(x_valid), dtype=bool)
+            if len(x_valid) > 1:
+                connect_array[:-1] = (x_valid[1:] == x_valid[:-1] + 1)
+            
+            self.avg_entry_curve.setData(x_valid, y_valid, connect=connect_array)
 
         # 4. 매매 마커 (Action별 분기)
         def get_execution_coords(action_name, is_buy=True):
