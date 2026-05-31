@@ -802,7 +802,7 @@ async def main():
     async def on_tick_ws_event(tick_data: dict):
         sym = tick_data["symbol"]
         engine = strategy_manager.envs.get(sym)
-        if engine and not getattr(engine, 'is_condition_deleted', False):
+        if engine:
             # LiveTradingEngine으로 틱 직접 푸시
             import datetime
             await engine.update_tick(
